@@ -1162,6 +1162,91 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     let totals = replay::totals();
     eprintln!("E8 pd_witness: {:?}", totals.pd_witness);
     eprintln!("E7 rows compared: {:?}", totals.per_row);
+    // S6 (D-S2c-15): hand the replay's counts to `scripts/shadow_soak_verdict.py`. The file is
+    // written when this test function *returns*, after the E7 divergence checks (a diverging
+    // sub-run fails earlier) and after the E8 assertion below: a failed test leaves no file, and
+    // a file from an older run cannot be mistaken for this one: the path must be new (an
+    // existing file is refused, never overwritten), and the revision it names is the one this
+    // test binary was *built* from (`build.rs`'s `MURMUR_GIT_SHA`), not whatever the source
+    // checkout's HEAD is when the test runs. Numbers keyed by row id and PD number, and a
+    // revision hash; no content.
+    struct E7Dump(std::ffi::OsString);
+    impl Drop for E7Dump {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                return;
+            }
+            let totals = crate::dictation_shadow::replay::totals();
+            // Per row: `compared` (the header count, for information), `matched` (flights that
+            // ran to their end and matched) and `delegated` (a delegated row's verified
+            // no-reply closes). E3 reads `matched`, plus `delegated` for the rows of
+            // `replay::DELEGATED_ROWS`, which is `Totals::e3_credit`; never `compared`.
+            let credit = totals.e3_credit();
+            let mut keys: std::collections::BTreeSet<(u16, u16)> =
+                totals.per_row.keys().copied().collect();
+            keys.extend(totals.row_matched.keys().copied());
+            keys.extend(totals.row_delegated.keys().copied());
+            let count = |map: &std::collections::BTreeMap<(u16, u16), u64>, key: &(u16, u16)| {
+                map.get(key).copied().unwrap_or(0)
+            };
+            let per_row: serde_json::Map<String, serde_json::Value> = keys
+                .iter()
+                .map(|key| {
+                    (
+                        format!("{}.{}", key.0, key.1),
+                        serde_json::json!({
+                            "compared": count(&totals.per_row, key),
+                            "matched": count(&totals.row_matched, key),
+                            "delegated": count(&totals.row_delegated, key),
+                            "e3_credit": count(&credit, key),
+                        }),
+                    )
+                })
+                .collect();
+            let pd_witness: serde_json::Map<String, serde_json::Value> = totals
+                .pd_witness
+                .iter()
+                .map(|(pd, count)| (format!("PD-{pd}"), serde_json::json!(count)))
+                .collect();
+            let repeat = std::env::var("MURMUR_GOLDEN_REPEAT")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1);
+            let git = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            };
+            // The revision compiled into this binary. A checkout whose HEAD is not that revision
+            // (a binary built earlier, run after a checkout) is not a clean run of it.
+            let built = option_env!("MURMUR_GIT_SHA").unwrap_or("unknown");
+            let head = git(&["rev-parse", "HEAD"]);
+            let dump = serde_json::json!({
+                "git_sha": built,
+                "dirty": head.as_deref() != Some(built)
+                    || git(&["status", "--porcelain", "--untracked-files=no"])
+                        .is_none_or(|status| !status.is_empty()),
+                "golden_repeat": repeat,
+                "per_row": per_row,
+                "pd_witness": pd_witness,
+            });
+            use std::io::Write as _;
+            // `create_new`: a path that already exists is a reused one, and a failed rerun
+            // would leave the earlier run's dump in place for the verdict to accept.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&self.0)
+                .expect("MURMUR_E7_PER_ROW_OUT must be a new path: use a fresh file for each run");
+            file.write_all(&serde_json::to_vec_pretty(&dump).expect("E7 dump JSON"))
+                .expect("write MURMUR_E7_PER_ROW_OUT");
+        }
+    }
+    let _e7_dump = std::env::var_os("MURMUR_E7_PER_ROW_OUT").map(E7Dump);
     let missing: Vec<u8> = [1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
         .into_iter()
         .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)

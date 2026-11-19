@@ -34,10 +34,110 @@ CI_BUILD_JOBS = (
     "rust-lint",
     "rust-macos",
 )
+# The condition each build job runs under: the change filters that select it. A weaker or
+# narrower one (say `github` alone) would skip the job on a Rust-only PR, and `ci-pass`
+# accepts a skipped job unless its filter selected it.
+CI_JOB_CONDITIONS = {
+    "typecheck": "needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'",
+    "ui-tests": "needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'",
+    "rust-lint": "needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'",
+    "rust-macos": "needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'",
+}
+CI_SELECTED_JOB_CHECKS = (
+    (
+        ("rust", "github"),
+        ("rust-lint", "rust-macos"),
+        "Rust",
+    ),
+    (
+        ("frontend", "github"),
+        ("typecheck", "ui-tests"),
+        "frontend",
+    ),
+)
+# The change filters and the outputs that select jobs from them. A misspelt glob
+# (`app/src-taurii/**`) or an output forced to `false` would skip the Rust jobs on a Rust-only
+# PR, and `ci-pass` accepts a job its filters did not select.
+CI_FILTER_PATHS = {
+    "frontend": (
+        "app/src/**",
+        "app/public/**",
+        "app/index.html",
+        "app/log-viewer.html",
+        "app/overlay.html",
+        "app/package.json",
+        "app/package-lock.json",
+        "app/tsconfig*.json",
+        "app/vite.config.ts",
+        "app/vitest.config.ts",
+        "app/vitest.setup.ts",
+        "app/visual-fixtures.html",
+        "app/visual-tests/**",
+        "app/playwright*.ts",
+        "app/src-tauri/tauri.conf.json",
+        "app/src-tauri/capabilities/**",
+    ),
+    "rust": (
+        "app/src-tauri/**",
+        "scripts/configure_ci_rust_library.py",
+        "app/src-tauri/Cargo.toml",
+        "app/src-tauri/Cargo.lock",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rustfmt.toml",
+    ),
+    "github": (".github/**",),
+    "rust-cache": (
+        "scripts/configure_ci_rust_library.py",
+        "**/Cargo.toml",
+        "**/Cargo.lock",
+        "rust-toolchain*",
+        ".cargo/**",
+        ".github/workflows/ci.yml",
+    ),
+}
+CI_CHANGES_OUTPUTS = {
+    "verified": "${{ steps.verified.outputs.verified == 'true' }}",
+    "frontend": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}",
+    "rust": "${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}",
+    "github": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}",
+}
+CI_FILTER_RESULT_STEP = """      - name: Require the change filter result
+        env:
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          GITHUB_CHANGED: ${{ steps.filter.outputs.github }}
+          RUST_CACHE: ${{ steps.filter.outputs.rust-cache }}
+        run: |
+          for value in "$FRONTEND" "$RUST" "$GITHUB_CHANGED" "$RUST_CACHE"; do
+            if [ "$value" != "true" ] && [ "$value" != "false" ]; then
+              echo "the change filter produced no answer: '$value'"
+              exit 1
+            fi
+          done
+"""
 CI_RUST_TEST_STEPS = (
     "Run tests",
+    "Run dictation shadow tests",
+    "Run golden dictation scenarios 100 times with the dictation shadow",
     "Run capture worker unit tests",
     "Run deterministic dictation evaluation",
+)
+# What the dictation-shadow test step must select: the shadow's own tests, its build policy
+# tests, E8, the site-order check, and the read and allocation pins.
+SHADOW_TEST_SELECTIONS = (
+    "dictation_shadow::",
+    "dictation_shadow_policy_tests::",
+    "every_family_pd_is_witnessed",
+    "headers_leave_d",
+    "pd_witness_tests::under_d::",
+    "the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal",
+    # The module E8 lives in: its controls (e8_rejects_a_fixture_the_compiled_harness_skips)
+    # and any added later run with it, not by name.
+    "pd_witness_tests::",
+    # The ready-handoff module, with the feature-only skip-reason test. A term that matches
+    # nothing is harmless in the union (nextest fails only on an empty selection).
+    "ready_handoff_tests::",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -71,6 +171,49 @@ def named_step_block(text: str, name: str, indent: int) -> str:
     if next_step < 0:
         next_step = len(text)
     return text[start:next_step]
+
+
+def step_fields(block: str, indent: int) -> dict[str, str]:
+    """The executable fields of one workflow step: `key -> value`, the value of a block scalar
+    joined on spaces (a folded `run` is one line to the shell). Comment lines between keys are
+    skipped, so a field that was commented out is missing. A step line that is not a field is
+    refused, and so is a key given twice."""
+    fields: dict[str, list[str]] = {}
+    key = None
+    for line in block.split("\n")[1:]:
+        if not line.strip():
+            continue
+        pad = len(line) - len(line.lstrip())
+        text = line.strip()
+        if pad == indent + 2 and not text.startswith("#"):
+            match = re.fullmatch(r"([A-Za-z_-]+):\s*(.*)", text)
+            if not match or match.group(1) in fields:
+                raise AssertionError(f"unreadable or repeated step field: {line!r}")
+            key = match.group(1)
+            fields[key] = [match.group(2)]
+        elif pad > indent + 2 and key is not None:
+            fields[key].append(text)
+        elif text.startswith("#") and pad >= indent + 2:
+            continue
+        else:
+            raise AssertionError(f"unexpected line in a step: {line!r}")
+    values = {}
+    for name, parts in fields.items():
+        value = " ".join(part for part in parts if part).strip()
+        values[name] = re.sub(r"^[>|][-+]?\s*", "", value)
+    return values
+
+
+def validate_exact_step(job: str, name: str, expected: dict[str, str]) -> None:
+    """A step that must run exactly as written: its fields are `expected`, no more (no
+    `continue-on-error`, `shell`, `working-directory` or any other key), and its `run` text is
+    the whole command, so `|| true`, a `;`-chained command, a command in a comment and a
+    weakened `if` all fail (the job's failure then reaches `ci-pass`)."""
+    fields = step_fields(named_step_block(job, name, 6), 6)
+    fields.pop("name", None)
+    assert fields == expected, (
+        f"step {name!r} must be exactly {expected!r}, found {fields!r}"
+    )
 
 
 def validate_sherpa_refresh(job: str, build_marker: str) -> None:
@@ -176,7 +319,7 @@ def validate_ci(ci: str) -> int:
     )
     assert "if: github.event_name == 'push'" in verified
     assert "run: bash scripts/ci_verified_tree.sh" in verified
-    assert changes.count("run:") == 1, "changes must only filter paths"
+    assert changes.count("run:") == 2, "changes must only filter paths"
     assert (
         "verified: ${{ steps.verified.outputs.verified == 'true' }}" in changes
     )
@@ -194,26 +337,66 @@ def validate_ci(ci: str) -> int:
     assert "needs:" not in policy, "policy must start without waiting"
     for job in CI_BUILD_JOBS:
         assert scalar(job_block(ci, job), "needs") == "changes"
+        assert scalar(job_block(ci, job), "if") == CI_JOB_CONDITIONS[job], (
+            f"{job} must run when its change filters select it"
+        )
     assert scalar(dependency_audit, "if") == CI_GUARD
     assert scalar(ci_pass, "needs") == f"[changes, policy, {', '.join(CI_BUILD_JOBS)}]"
     assert scalar(ci_pass, "if") == CI_PASS_GUARD
     ci_pass_step = named_step_block(ci_pass, "Check CI result", 6)
     for job in ("changes", "policy", *CI_BUILD_JOBS):
         assert f"${{{{ needs.{job}.result }}}}" in ci_pass_step, job
-    rust_filter = re.search(
-        r"^            rust:\n(?P<paths>(?:^              - .+\n)+)",
-        changes,
-        re.MULTILINE,
+    # A job its filters select must have succeeded: `ci-pass` accepts a skipped job only when
+    # no filter selected it.
+    for outputs, jobs, label in CI_SELECTED_JOB_CHECKS:
+        condition = " || \\\n             ".join(
+            f'[ "${{{{ needs.changes.outputs.{name} }}}}" = "true" ]' for name in outputs
+        )
+        results = " \\\n              ".join(f'"${{{{ needs.{job}.result }}}}"' for job in jobs)
+        selected = (
+            f"          if {condition}; then\n"
+            f"            for result in \\\n              {results}; do\n"
+            '              if [ "$result" != "success" ]; then\n'
+            f'                echo "a selected {label} job did not succeed: $result"\n'
+            "                exit 1\n"
+            "              fi\n"
+            "            done\n"
+            "          fi\n"
+        )
+        assert selected in ci_pass_step, f"ci-pass must require success from {jobs} when {outputs} select them"
+    # The filter step and what it selects, pinned exactly (a glob that matches nothing, or an
+    # output that is always false, would let a Rust-only PR skip both Rust jobs).
+    assert "      - uses: dorny/paths-filter@v3\n        id: filter\n        with:\n" in changes
+    # The filter step runs on every event: no `if:` (a `github.event_name == 'push'` would skip
+    # it on a PR and leave every selector false), and no `continue-on-error`.
+    filter_start = changes.index("      - uses: dorny/paths-filter@v3\n")
+    filter_end = changes.find("\n      - ", filter_start + 1)
+    filter_step = changes[filter_start : filter_end if filter_end >= 0 else len(changes)]
+    assert not re.search(r"^        (if|continue-on-error):", filter_step, re.MULTILINE), (
+        "the paths-filter step must run unconditionally"
     )
-    assert rust_filter, "missing rust paths filter"
-    assert "'rustfmt.toml'" in rust_filter.group("paths")
-    assert "'scripts/configure_ci_rust_library.py'" in rust_filter.group("paths")
-    cache_filter = re.search(
-        r"^            rust-cache:\n(?P<paths>(?:^              - .+\n)+)",
-        changes,
-        re.MULTILINE,
+    # And `changes` fails when the filter produced no answer: every output exactly true/false.
+    assert CI_FILTER_RESULT_STEP in changes, "changes must require the change filter result"
+    for name, expected in CI_FILTER_PATHS.items():
+        found = re.search(
+            rf"^            {re.escape(name)}:\n(?P<paths>(?:^              (?:- |#).*\n)+)",
+            changes,
+            re.MULTILINE,
+        )
+        assert found, f"missing {name} paths filter"
+        listed = tuple(
+            line.strip()[2:].strip().strip("'")
+            for line in found.group("paths").splitlines()
+            if line.strip().startswith("- ")
+        )
+        assert listed == expected, f"the {name} change filter is not the pinned list: {listed}"
+    outputs = re.search(r"^    outputs:\n(?P<body>(?:^      .+\n)+)", changes, re.MULTILINE)
+    assert outputs, "missing changes outputs"
+    declared = dict(
+        (line.split(":", 1)[0].strip(), line.split(":", 1)[1].strip())
+        for line in outputs.group("body").splitlines()
     )
-    assert cache_filter and "'scripts/configure_ci_rust_library.py'" in cache_filter.group("paths")
+    assert declared == CI_CHANGES_OUTPUTS, f"the changes outputs are not the pinned expressions: {declared}"
     validation = named_step_block(policy, "Validate workflow policy", 6)
     for marker in (
         "python3 -m pip install -r requirements-test.txt",
@@ -247,6 +430,39 @@ def validate_ci(ci: str) -> int:
         in lint_step
     )
     assert "cargo clippy" not in capture_build
+    # The shadow feature is off in every other step: its own lint, build and tests are
+    # pinned here (D-S2c-15 C1), so a PR cannot drop the only job that compiles it.
+    validate_exact_step(
+        rust_lint,
+        "Lint Rust with the dictation shadow",
+        {"run": "cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings"},
+    )
+    selection = " | ".join(f"test(/{name}/)" for name in SHADOW_TEST_SELECTIONS)
+    validate_exact_step(
+        rust_macos,
+        "Run dictation shadow tests",
+        {
+            "if": "needs.changes.outputs.verified != 'true'",
+            "timeout-minutes": "25",
+            "run": "cd app/src-tauri && cargo nextest run --lib --features dictation-shadow"
+            f" -E '{selection}'",
+        },
+    )
+    validate_exact_step(
+        rust_macos,
+        "Run golden dictation scenarios 100 times with the dictation shadow",
+        {
+            "if": "needs.changes.outputs.verified != 'true'",
+            "timeout-minutes": "10",
+            "env": 'MURMUR_GOLDEN_REPEAT: "100"',
+            "run": "cd app/src-tauri && cargo nextest run --lib --features dictation-shadow"
+            " -E 'kind(lib) & test(/golden_tests::golden_/)'",
+        },
+    )
+    # No failure of either job is suppressed, and `ci-pass` waits on both of them.
+    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
+        assert "continue-on-error" not in job, f"{job_name} must not suppress a failure"
+        assert f"needs.{job_name}.result" in ci_pass, f"ci-pass must read {job_name}"
     for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
         cache = named_step_block(job, "Cache Rust dependencies", 6)
         assert (

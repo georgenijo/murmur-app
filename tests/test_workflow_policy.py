@@ -338,6 +338,94 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
+    def test_ci_builds_lints_and_tests_the_dictation_shadow_feature(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        validate_ci(workflow)
+        for old, new in (
+            # The feature lint dropped, or lost its feature.
+            ("      - name: Lint Rust with the dictation shadow\n", "      - name: Unrelated lint\n"),
+            ("cargo clippy --all-targets --features dictation-shadow", "cargo clippy --all-targets"),
+            # The feature test step dropped, or built without the feature.
+            ("      - name: Run dictation shadow tests\n", "      - name: Unrelated\n"),
+            (
+                "          cargo nextest run --lib --features dictation-shadow\n"
+                "          -E 'test(/dictation_shadow::/)",
+                "          cargo nextest run --lib\n          -E 'test(/dictation_shadow::/)",
+            ),
+            # The goldens no longer repeated, or run without the feature.
+            ('          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --lib --features dictation-shadow\n",
+             '          MURMUR_GOLDEN_REPEAT: "1"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --lib --features dictation-shadow\n"),
+            ("      - name: Run golden dictation scenarios 100 times with the dictation shadow\n",
+             "      - name: Unrelated goldens\n"),
+        ):
+            with self.subTest(rewrite=old.strip()[:60]):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_the_dictation_shadow_steps_cannot_be_weakened_into_passing(self) -> None:
+        # Sol round 1, finding 10: each of these used to pass validation.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        lint_run = "        run: cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings\n"
+        goldens = "          -E 'kind(lib) & test(/golden_tests::golden_/)'\n"
+        tests_run = "-test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/)'\n"
+        for label, old, new in (
+            ("continue-on-error on the lint", lint_run, "        continue-on-error: true\n" + lint_run),
+            ("clippy commented out", lint_run, "        # " + lint_run.strip() + "\n"),
+            ("clippy failure swallowed", lint_run, lint_run.rstrip("\n") + " || true\n"),
+            ("clippy chained after a no-op", lint_run, lint_run.replace("cargo clippy", "true; cargo clippy").replace("-D warnings", "-D warnings; true")),
+            ("continue-on-error on the goldens", "        timeout-minutes: 10\n", "        timeout-minutes: 10\n        continue-on-error: true\n"),
+            ("goldens swallowed", goldens, goldens.rstrip("\n") + " || true\n"),
+            ("goldens shell changed", "        timeout-minutes: 10\n", "        timeout-minutes: 10\n        shell: bash {0} || true\n"),
+            ("continue-on-error on the tests", "        timeout-minutes: 25\n", "        timeout-minutes: 25\n        continue-on-error: true\n"),
+            ("tests timeout raised", "        timeout-minutes: 25\n", "        timeout-minutes: 250\n"),
+            ("the job suppresses failures", "  rust-macos:\n    needs: changes\n", "  rust-macos:\n    continue-on-error: true\n    needs: changes\n"),
+            ("the tests step's if weakened", "      - name: Run dictation shadow tests\n        if: needs.changes.outputs.verified != 'true'\n", "      - name: Run dictation shadow tests\n        if: always()\n"),
+        ):
+            with self.subTest(label=label):
+                self.assertIn(old, workflow, label)
+                # The goldens filter is also in `Run tests`: the shadow step is the last one.
+                at = workflow.rindex(old) if label == "goldens swallowed" else workflow.index(old)
+                mutated = workflow[:at] + new + workflow[at + len(old) :]
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_a_commented_out_run_line_is_a_missing_step_field(self) -> None:
+        from scripts.validate_workflow_policy import step_fields
+
+        block = "      - name: x\n        # run: cargo clippy\n        timeout-minutes: 5\n"
+        self.assertEqual(step_fields(block, 6), {"timeout-minutes": "5"})
+
+    def test_the_dictation_shadow_test_step_selects_every_required_group(self) -> None:
+        from scripts.validate_workflow_policy import SHADOW_TEST_SELECTIONS
+
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for selection in SHADOW_TEST_SELECTIONS:
+            with self.subTest(selection=selection):
+                mutated = workflow.replace(f" | test(/{selection}/)", "", 1).replace(
+                    f"-E 'test(/{selection}/) | ", "-E '", 1
+                )
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_the_dictation_shadow_steps_skip_on_a_verified_push(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for name in (
+            "Run dictation shadow tests",
+            "Run golden dictation scenarios 100 times with the dictation shadow",
+        ):
+            with self.subTest(step=name):
+                old = f"      - name: {name}\n        if: needs.changes.outputs.verified != 'true'\n"
+                mutated = workflow.replace(old, f"      - name: {name}\n", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_dependency_audits_are_present_and_advisory(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old in (
@@ -397,10 +485,9 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_ci_pass_requires_ui_tests_result(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            '            "${{ needs.ui-tests.result }}" \\\n',
-            "",
-            1,
+        # Every mention goes: the success-required block names it too.
+        mutated = "".join(
+            line for line in workflow.splitlines(keepends=True) if "needs.ui-tests.result" not in line
         )
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
@@ -410,10 +497,10 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for job in ("policy", "ui-tests", "rust-lint"):
             with self.subTest(job=job):
-                result = f'            "${{{{ needs.{job}.result }}}}"'
-                start = workflow.index(result)
-                end = workflow.index("\n", start) + 1
-                mutated = workflow[:start] + workflow[end:]
+                result = f"needs.{job}.result"
+                mutated = "".join(
+                    line for line in workflow.splitlines(keepends=True) if result not in line
+                )
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
                 needs = "needs: [changes, policy, typecheck, ui-tests, rust-lint, rust-macos]"
@@ -421,6 +508,117 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 self.assertNotEqual(workflow, dropped)
                 with self.assertRaises(AssertionError):
                     validate_ci(dropped)
+
+    def test_build_jobs_run_under_the_filters_that_select_them(self) -> None:
+        # Sol round 2, finding 5: a Rust job that runs only on workflow changes skips on a
+        # Rust-only PR, and `ci-pass` accepts a skipped job.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        rust = "    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'\n"
+        self.assertEqual(workflow.count(rust), 2)
+        for replacement in (
+            "    if: needs.changes.outputs.github == 'true'\n",
+            "    if: needs.changes.outputs.rust == 'true'\n",
+            "    if: always()\n",
+            "",
+        ):
+            for index in range(2):
+                with self.subTest(replacement=replacement, job=index):
+                    start = -1
+                    for _ in range(index + 1):
+                        start = workflow.index(rust, start + 1)
+                    mutated = workflow[:start] + replacement + workflow[start + len(rust):]
+                    with self.assertRaises(AssertionError):
+                        validate_ci(mutated)
+        frontend = "    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'\n"
+        mutated = workflow.replace(frontend, "    if: needs.changes.outputs.github == 'true'\n", 1)
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_a_rust_change_cannot_bypass_the_rust_jobs_through_the_filters(self) -> None:
+        # Sol round 3, finding 2: a misspelt glob, or an output forced to false, leaves a
+        # Rust-only PR with both Rust jobs skipped, and `ci-pass` accepts that.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            ("              - 'app/src-tauri/**'\n", "              - 'app/src-taurii/**'\n"),
+            ("              - 'app/src-tauri/**'\n", ""),
+            ("              - '.github/**'\n", "              - '.githubb/**'\n"),
+            ("              - 'app/src/**'\n", "              - 'app/sr/**'\n"),
+            ("              - '**/Cargo.lock'\n", ""),
+            ("      rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}\n", "      rust: false\n"),
+            ("      rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}\n", "      rust: ${{ steps.filter.outputs.github == 'true' }}\n"),
+            ("      github: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}\n", "      github: ${{ 'false' == 'true' }}\n"),
+            ("      frontend: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}\n", "      frontend: false\n"),
+            ("        id: filter\n", "        id: filtered\n"),
+        ):
+            with self.subTest(old=old.strip()[:50], new=new.strip()[:40]):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_the_filter_step_cannot_be_skipped_and_its_result_is_required(self) -> None:
+        # Sol round 4, finding 2: `if: github.event_name == 'push'` on the paths-filter step
+        # skips it on a PR and leaves the Rust and GitHub selectors false.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        step = "      - uses: dorny/paths-filter@v3\n        id: filter\n        with:\n"
+        self.assertEqual(workflow.count(step), 1)
+        for replacement in (
+            "      - uses: dorny/paths-filter@v3\n        id: filter\n        if: github.event_name == 'push'\n        with:\n",
+            "      - uses: dorny/paths-filter@v3\n        id: filter\n        if: always()\n        with:\n",
+            "      - uses: dorny/paths-filter@v3\n        id: filter\n        continue-on-error: true\n        with:\n",
+        ):
+            with self.subTest(replacement=replacement.splitlines()[2].strip()):
+                mutated = workflow.replace(step, replacement, 1)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+        start = workflow.index("      - name: Require the change filter result\n")
+        end = workflow.index("  policy:\n")
+        for mutated in (
+            workflow[:start] + workflow[end:],
+            workflow.replace(
+                "      - name: Require the change filter result\n",
+                "      - name: Require the change filter result\n        if: github.event_name == 'push'\n",
+                1,
+            ),
+            workflow.replace('[ "$value" != "true" ] && [ "$value" != "false" ]', '[ "$value" = "maybe" ]', 1),
+            workflow.replace("              exit 1\n            fi\n          done\n\n  policy:", "              exit 0\n            fi\n          done\n\n  policy:", 1),
+            workflow.replace("RUST: ${{ steps.filter.outputs.rust }}", "RUST: true", 1),
+        ):
+            self.assertNotEqual(workflow, mutated)
+            with self.assertRaises(AssertionError):
+                validate_ci(mutated)
+
+    def test_the_filter_result_step_fails_on_a_missing_or_malformed_answer(self) -> None:
+        import subprocess
+
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        start = workflow.index("      - name: Require the change filter result\n")
+        block = workflow[start : workflow.index("  policy:\n")]
+        script = block.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        base = {"FRONTEND": "false", "RUST": "true", "GITHUB_CHANGED": "false", "RUST_CACHE": "false", "PATH": "/usr/bin:/bin"}
+        ok = subprocess.run(["bash", "-c", script], env=base, capture_output=True, text=True)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        for key in ("FRONTEND", "RUST", "GITHUB_CHANGED", "RUST_CACHE"):
+            for bad in ("", "True", "yes"):
+                with self.subTest(key=key, value=bad):
+                    result = subprocess.run(["bash", "-c", script], env={**base, key: bad}, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("no answer", result.stdout)
+
+    def test_ci_pass_requires_success_from_a_job_its_filters_selected(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            ('                echo "a selected Rust job did not succeed: $result"\n                exit 1\n', '                echo "skipped"\n'),
+            ('              if [ "$result" != "success" ]; then\n                echo "a selected frontend', '              if [ "$result" = "failure" ]; then\n                echo "a selected frontend'),
+            ('             [ "${{ needs.changes.outputs.github }}" = "true" ]; then\n            for result in \\\n              "${{ needs.rust-lint.result }}"', '             [ "${{ needs.changes.outputs.nope }}" = "true" ]; then\n            for result in \\\n              "${{ needs.rust-lint.result }}"'),
+        ):
+            with self.subTest(old=old[:40]):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
 
     def test_ci_changes_job_stays_filter_only(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
