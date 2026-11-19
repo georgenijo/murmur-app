@@ -607,6 +607,27 @@ fn the_rings_are_built_on_the_comparison_thread_and_early_recorders_are_unavaila
         assert!(std::time::Instant::now() < deadline, "never published");
         std::thread::sleep(Duration::from_millis(1));
     }
+    // Wait until the comparison thread has folded the early drops into its books: its
+    // first summary, written after its first drain, shows them. Without this the live
+    // message below races that first drain, and a batch that holds a flight's first message
+    // and also the first sight of a loss is given up by design (`abandoned_by_loss`, fail
+    // closed: the pass already carries `dropped_unavailable`). Whether the two meet in one
+    // batch depends on scheduling, which is what a parallel test run changes.
+    let folded = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let seen = std::fs::read_to_string(dir.join(SUMMARY_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|summary| summary["dropped_unavailable"] == 3);
+        if seen {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < folded,
+            "the early drops were never folded"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     // A recorder created after the publication has the transport.
     let live = recorder_from(slot, counter);
     mark(&live, Mark::Reply(ReplyKind::Ok));
