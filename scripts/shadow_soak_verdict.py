@@ -25,8 +25,9 @@ S1-S4 evidence and cannot count.
 The row manifests (docs/testing/shadow-rows/<family>.json) list each family's C3 rows, the
 rows a native pass cannot produce (with the golden or unit test that drives each), and the
 rows a step of the runbook drives (those need 5 native `matched` closes of their own: replay
-hits do not count for them). A manifest may also list `delegated` rows (a row whose decision is
-compared at another row, such as R205.4 at R206): they are credited with the target's closes. The summary
+hits do not count for them). `delegated` rows (R201.4, R205.4: they decide a reply another site
+returns, so they close as the announced no-reply close and have no `matched`) mirror
+`replay::DELEGATED_ROWS` and are credited `matched + delegated`, never the header count. The summary
 fields it reads are the ones the dictation shadow writes: `session`, `outstanding_at_exit`,
 `per_row[..].matched`, `incomplete_closes`, `conservation` (`total` books with `balanced`,
 headers per site, `non_family` by file:line), `core_divergences`, and `final` (true only on the
@@ -144,8 +145,8 @@ def load_manifest(family: str, directory: Path = MANIFESTS) -> dict:
     for entry in manifest.get("delegated", []):
         if entry.get("row") not in rows:
             problems.append(f"{entry.get('row')}: delegated but not a row of the family")
-        if not str(entry.get("to", "")).strip() or not str(entry.get("why", "")).strip():
-            problems.append(f"{entry.get('row')}: a delegated row names its target (`to`) and a reason")
+        if not str(entry.get("why", "")).strip():
+            problems.append(f"{entry.get('row')}: a delegated row gives a reason")
         if entry.get("row") in reachable:
             problems.append(f"{entry.get('row')}: both delegated and not natively reachable")
     for entry in manifest.get("runbook_driven", []):
@@ -156,18 +157,6 @@ def load_manifest(family: str, directory: Path = MANIFESTS) -> dict:
     if problems:
         raise ValueError(f"{family} manifest: " + "; ".join(problems))
     return manifest
-
-
-def row_total(summary: dict, key: str, field: str) -> int | None:
-    """`per_row[key][field]` of one summary: 0 when the row was never hit, `None` when the
-    summary has per_row entries that lack `field` (a build before it was written)."""
-    per_row = summary.get("per_row", {})
-    entry = per_row.get(key)
-    if entry is None:
-        return 0
-    if field not in entry:
-        return None
-    return entry[field]
 
 
 def lost_for(summary: dict, sites: list[int]) -> int:
@@ -296,44 +285,56 @@ def evaluate_family(
     # native closes of its own: the replay's hits never stand in for the step.
     waived = {entry["row"] for entry in manifest["not_natively_reachable"]}
     driven = {entry["row"] for entry in manifest.get("runbook_driven", [])}
-    delegated = {entry["row"]: entry["to"] for entry in manifest.get("delegated", [])}
+    delegated = {entry["row"] for entry in manifest.get("delegated", [])}
     e7_rows = (e7 or {}).get("per_row", {})
+    stale_in: list[str] = []
 
-    def native(key: str) -> tuple[int, bool]:
-        total, stale = 0, False
+    def credit(entry: dict | None, key: str) -> int | None:
+        """E3 credit of one per-row entry: `matched`, plus `delegated` for a delegated row (its
+        reply is another site's, so it has no `matched` of its own). `None` when the counter is
+        absent: the evidence is from a build before it was written and fails closed."""
+        if entry is None:
+            return 0
+        if not isinstance(entry, dict):
+            return None
+        fields = ("matched", "delegated") if key in delegated else ("matched",)
+        values = [entry.get(field) for field in fields]
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+            return None
+        return sum(values)
+
+    def native(key: str) -> int:
+        total = 0
         for summary in summaries:
-            value = row_total(summary, key, "matched")
+            value = credit((summary.get("per_row") or {}).get(key), key)
             if value is None:
-                stale = True
+                stale_in.append(Path(summary["_path"]).name)
                 value = 0
             total += value
-        return total, stale
+        return total
 
     def replay(key: str) -> int:
-        value = e7_rows.get(key, 0)
-        if isinstance(value, dict):  # the export of per-row matched closes
-            value = value.get("matched", 0)
-        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+        value = credit(e7_rows.get(key), key)
+        if value is None:
+            stale_in.append("the E7 dump")
+            return 0
+        return value
 
     short = []
-    stale_in = []
     for entry in manifest["rows"]:
         key = entry["row"]
         if key in waived:
             continue
-        source = delegated.get(key, key)
-        total, stale = native(source)
-        if stale:
-            stale_in.extend(Path(s["_path"]).name for s in summaries)
+        total = native(key)
         if key not in driven:
-            total += replay(source)
+            total += replay(key)
         if total < E3_HITS:
             short.append(f"{entry['id']}={total}" + (" (native only: a runbook step drives it)" if key in driven else ""))
     stale = sorted(set(stale_in))
     checked = len(manifest["rows"]) - len(waived)
     detail = f"rows_checked={checked} waived={len(waived)} below_{E3_HITS}={len(short)}"
     if stale:
-        detail += f"; per_row.matched missing in {stale} (a build before S2)"
+        detail += f"; per_row `matched` (or `delegated`, for a delegated row) missing in {stale}: evidence from a build before it was written fails closed"
     if short:
         detail += ": " + ", ".join(short)
     verdicts.append(Verdict(family, "E3", not short and not stale, detail))
@@ -450,7 +451,17 @@ def evaluate_family(
             taint.append(f"{name}:conservation.unclassified={unclassified}")
     # The books and the global counters are not per family: they taint every family. The
     # named no-reply close (`named_no_reply`) is an expected kind and is never taint.
-    verdicts.append(Verdict(family, "E9", not taint, "tainted: " + "; ".join(taint) if taint else "no taint"))
+    # Live error replies with dynamic text (Smart Auto, shell) match no fixed class: counted,
+    # reported, and not taint by themselves.
+    errs = [s.get("unclassified_err_replies") for s in summaries]
+    err_text = (
+        f"unclassified_err_replies={sum(e for e in errs if isinstance(e, int))} (informational, not taint)"
+        if all(isinstance(e, int) and not isinstance(e, bool) for e in errs)
+        else "unclassified_err_replies=n/a (a summary lacks it)"
+    )
+    verdicts.append(
+        Verdict(family, "E9", not taint, ("tainted: " + "; ".join(taint) if taint else "no taint") + "; " + err_text)
+    )
     return verdicts
 
 

@@ -25,12 +25,25 @@ def natively_required(family: str) -> list[str]:
     return [entry["row"] for entry in data["rows"] if entry["row"] not in waived]
 
 
+def delegated_rows() -> set[str]:
+    return {entry["row"] for family in verdict.FAMILIES for entry in manifest(family).get("delegated", [])}
+
+
+def row_entry(matched: int = 0, delegated: int = 0, compared: int = 0) -> dict:
+    """One row of the E7 dump, as the E8 test writes it."""
+    return {"compared": compared, "matched": matched, "delegated": delegated, "e3_credit": matched + delegated}
+
+
 def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
     """A summary of one clean native pass: every natively required row matched 10 times."""
     per_row = {}
     for family in verdict.FAMILIES:
         for key in natively_required(family):
-            per_row[key] = {"compared": 10, "matched": 10, "mismatched": 0, "pd_witness": 0}
+            if key in delegated_rows():
+                # The reply is another site's: no `matched`, the verified delegated closes instead.
+                per_row[key] = {"compared": 10, "matched": 0, "delegated": 10, "mismatched": 0, "pd_witness": 0}
+            else:
+                per_row[key] = {"compared": 10, "matched": 10, "delegated": 0, "mismatched": 0, "pd_witness": 0}
     sites = {site for family in verdict.FAMILIES for site in manifest(family)["sites"]}
     summary = {
         "session": {
@@ -62,6 +75,7 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
         "core_divergences": 0,
         "final": True,
         "named_no_reply": 2,
+        "unclassified_err_replies": 3,
         # The shape PR #1173 writes: per-site objects hold only `headers`; the four books and
         # `balanced` are in `total`; `non_family` is keyed by file:line.
         "conservation": {str(site): {"headers": 6} for site in sorted(sites)}
@@ -268,7 +282,7 @@ class E3Tests(unittest.TestCase):
         for index, summary in enumerate(passes):
             summary["per_row"][key]["matched"] = 1 if index < 2 else 0
         self.assertFalse(by(evaluate(passes), "start", "E3").passed)  # 2 hits
-        dump = e7_dump(per_row={key: 3})
+        dump = e7_dump(per_row={key: row_entry(matched=3)})
         self.assertTrue(by(evaluate(passes, dump), "start", "E3").passed)  # 2 + 3
 
     def test_the_summary_counts_matched_closes_not_compared(self):
@@ -284,7 +298,7 @@ class E3Tests(unittest.TestCase):
             passes = three_passes()
             for summary in passes:
                 summary["per_row"].pop(key, None)
-            result = by(evaluate(passes, e7_dump(per_row={key: 5})), family, "E3")
+            result = by(evaluate(passes, e7_dump(per_row={key: row_entry(matched=5)})), family, "E3")
             self.assertFalse(result.passed, key)
             self.assertIn("native only", result.detail)
             passes = three_passes()
@@ -292,32 +306,73 @@ class E3Tests(unittest.TestCase):
                 summary["per_row"][key]["matched"] = 2 if index < 2 else 1  # five native closes
             self.assertTrue(by(evaluate(passes), family, "E3").passed, key)
 
-    def test_the_replay_exports_per_row_matched_as_an_object_too(self):
+    def test_the_replay_credit_is_matched_not_compared(self):
         passes = three_passes()
         key = natively_required("start")[0]
         for summary in passes:
             summary["per_row"][key]["matched"] = 0
-        self.assertTrue(by(evaluate(passes, e7_dump(per_row={key: {"matched": 5}})), "start", "E3").passed)
-        self.assertFalse(by(evaluate(passes, e7_dump(per_row={key: {"matched": 4}})), "start", "E3").passed)
+        self.assertTrue(by(evaluate(passes, e7_dump(per_row={key: row_entry(matched=5)})), "start", "E3").passed)
+        self.assertFalse(by(evaluate(passes, e7_dump(per_row={key: row_entry(matched=4)})), "start", "E3").passed)
+        self.assertFalse(by(evaluate(passes, e7_dump(per_row={key: row_entry(matched=0, compared=500)})), "start", "E3").passed)
 
-    def test_a_delegated_row_is_credited_by_its_targets_closes(self):
-        data = copy.deepcopy(manifest("cancel"))
-        data["delegated"] = [{"row": "205.4", "to": "206.1", "why": "R205.4 closes as the named no-reply close; its comparison stays at R206"}]
-        passes = three_passes()
-        for summary in passes:
-            summary["per_row"]["205.4"] = {"compared": 0, "matched": 0, "mismatched": 0}
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "cancel.json").write_text(json.dumps(data))
-            loaded = []
+    def test_a_delegated_row_is_credited_matched_plus_delegated_and_other_rows_matched_only(self):
+        # R201.4 and R205.4 decide a reply another site returns: no `matched`, a `delegated` close.
+        for key, family in (("201.4", "stop"), ("205.4", "cancel")):
+            passes = three_passes()
+            for summary in passes:
+                summary["per_row"][key] = {"compared": 99, "matched": 0, "delegated": 0}
+            self.assertFalse(by(evaluate(passes), family, "E3").passed, key)
             for index, summary in enumerate(passes):
-                loaded.append({**summary, "_path": f"{tmp}/p{index}.json"})
-            run = lambda: verdict.evaluate(  # noqa: E731
-                loaded, e7_dump(), ["cancel"], Path(tmp), checklists=records(passes), expect_sha=SHA
-            )
-            self.assertTrue(by(run(), "cancel", "E3").passed)
-            for summary in loaded:
-                summary["per_row"]["206.1"]["matched"] = 0
-            self.assertFalse(by(run(), "cancel", "E3").passed)
+                summary["per_row"][key]["delegated"] = 2 if index < 2 else 1
+            self.assertTrue(by(evaluate(passes), family, "E3").passed, key)
+            # The replay credits it the same way.
+            passes = three_passes()
+            for summary in passes:
+                summary["per_row"][key] = {"compared": 0, "matched": 0, "delegated": 0}
+            dump = e7_dump(per_row={key: row_entry(delegated=5)})
+            self.assertTrue(by(evaluate(passes, dump), family, "E3").passed, key)
+        # An ordinary row's `delegated` count is not credit.
+        passes = three_passes()
+        key = natively_required("start")[0]
+        for summary in passes:
+            summary["per_row"][key].update(matched=0, delegated=50)
+        self.assertFalse(by(evaluate(passes), "start", "E3").passed)
+
+    def test_an_absent_matched_or_delegated_counter_fails_closed(self):
+        key = "205.4"  # delegated: both counters are read
+        for field in ("matched", "delegated"):
+            passes = three_passes()
+            del passes[0]["per_row"][key][field]
+            result = by(evaluate(passes), "cancel", "E3")
+            self.assertFalse(result.passed, field)
+            self.assertIn("fails closed", result.detail)
+        # The E7 dump too: a bare count or an entry without `matched` is from an older build.
+        passes = three_passes()
+        ordinary = natively_required("start")[0]
+        for summary in passes:
+            summary["per_row"][ordinary]["matched"] = 0
+        for entry in (5, {"compared": 5}):
+            result = by(evaluate(passes, e7_dump(per_row={ordinary: entry})), "start", "E3")
+            self.assertFalse(result.passed, entry)
+            self.assertIn("the E7 dump", result.detail)
+
+    def test_the_manifests_mirror_the_rust_delegated_rows(self):
+        text = (ROOT / "app/src-tauri/src/dictation_shadow/replay.rs").read_text()
+        match = re.search(r"DELEGATED_ROWS: &\[\(u16, u16\)\] = &\[(.*?)\];", text, re.S)
+        self.assertIsNotNone(match, "replay::DELEGATED_ROWS")
+        rust = {f"{site}.{row}" for site, row in re.findall(r"\((\d+),\s*(\d+)\)", match.group(1))}
+        self.assertEqual(rust, delegated_rows())
+        self.assertTrue(rust)
+        for family in verdict.FAMILIES:
+            data = manifest(family)
+            waived = {entry["row"] for entry in data["not_natively_reachable"]}
+            for entry in data.get("delegated", []):
+                self.assertNotIn(entry["row"], waived)
+                self.assertIn(entry["row"], {row["row"] for row in data["rows"]})
+
+    def test_a_delegated_entry_needs_a_reason_and_must_not_be_waived(self):
+        data = copy.deepcopy(manifest("cancel"))
+        with tempfile.TemporaryDirectory() as tmp:
             data["delegated"][0]["why"] = ""
             (Path(tmp) / "cancel.json").write_text(json.dumps(data))
             with self.assertRaises(ValueError):
@@ -345,7 +400,7 @@ class E3Tests(unittest.TestCase):
             del entry["matched"]
         result = by(evaluate(passes), "start", "E3")
         self.assertFalse(result.passed)
-        self.assertIn("before S2", result.detail)
+        self.assertIn("fails closed", result.detail)
 
 
 class LossAndPanicTests(unittest.TestCase):

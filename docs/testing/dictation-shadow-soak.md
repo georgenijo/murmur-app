@@ -311,22 +311,24 @@ from earlier candidates (the moved-aside `before-*` files) are not passed to it.
 | --- | --- | --- |
 | **E1** | global `mismatched_root` and the family's rows with `mismatched > 0` (and the events file is empty) | `0`. `followup` is a cascade of an earlier root, not a separate failure. |
 | **E2** | one `session` block per summary: distinct `(pid, started_unix_ms)`, `armed` true, one `build_profile`, `git_sha` (40 hex) equal to `--expect-sha`; each summary claimed by exactly one complete checklist record whose `date` is its first session's local day | at least 3 completed checklists on at least 2 different days, one build, the candidate |
-| **E3** | `per_row["<site>.<row>"].matched` for every C3 row of the family, summed over the summaries and the E7 dump | each row `>= 5`, or waived in the manifest with a named test (a test that drives the decision and asserts the row), or driven by a runbook step above (R101.5, R209.5: five **native** closes of their own, no replay credit). A `delegated` row (compared at another row) is credited by that row's closes |
+| **E3** | `per_row["<site>.<row>"].matched` for every C3 row of the family, summed over the summaries and the E7 dump; a delegated row (R201.4, R205.4: the manifest `delegated` list, equal to the replay's `DELEGATED_ROWS`) is credited `matched + delegated`. A summary or dump entry without `matched` (or without `delegated` on a delegated row) fails closed | each row `>= 5`, or waived in the manifest with a named test (a test that drives the decision and asserts the row), or driven by a runbook step above (R101.5, R209.5: five **native** closes of their own, no replay credit). A delegated row decides a reply another site returns, so it closes as the announced no-reply close and has no `matched` of its own: its `delegated` closes are its hits |
 | **E4** | `dropped + lost_open + loss_unattributed + sum(lost_by_site[family sites])` | `0` |
 | **E5** | the same sum over `compared` plus the sum, overall | `<= 0.001` |
 | **E6** | `shadow_panic` and `witness_overflow` | both `0` |
 | **E7** | the E7 dump: `golden_repeat >= 100`, `git_sha` equal to `--expect-sha`, `dirty` false (the file is written only after the E7 and E8 assertions pass) | present, at least 100, the candidate, clean |
 | **E8** | the manifest's `pds` for the family all `> 0` in the dump's `pd_witness` | all witnessed |
-| **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, a summary that is not `final`, and a conservation imbalance: `conservation.total.balanced` must be `true` (`total.entries == headers + no_decision + unwound`; the books are kept over all family sites together, only `headers` is per site, `non_family` is keyed by `file:line` and informational, and `unclassified` must be `0`). `named_no_reply` is an expected close kind (every effect ran, only the command's reply never came), counted and never taint | all `0`, balanced, every summary `final`. Repeat a tainted run. |
+| **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, a summary that is not `final`, and a conservation imbalance: `conservation.total.balanced` must be `true` (`total.entries == headers + no_decision + unwound`; the books are kept over all family sites together, only `headers` is per site, `non_family` is keyed by `file:line` and informational, and a non-zero `conservation.unclassified` site count is taint). `named_no_reply` is an expected close kind (every effect ran, only the command's reply never came), counted and never taint. `unclassified_err_replies` is reported in the E9 line, informational and never taint by itself | all `0`, balanced, every summary `final`. Repeat a tainted run. |
 
 The books and the global counters are not per family, so a taint in one summary taints E9
 for every family.
 
 **What the native pass does not check.** The reply comparison reads the reply `state`
-only. The live `Err` class (the error text discriminant of a failed command) is not
-captured natively yet, so a native pass says nothing about it; the goldens and the unit
-tests that drive the `Err` outcomes (R302.2) are where it is checked. Do not read a clean
-native pass as proof of the error class.
+only. The live `Err` class (the error text discriminant of a failed command) is
+classified against a closed set; an error with dynamic text (Smart Auto, the shell) matches
+no member and is counted as `unclassified_err_replies`. That count is informational: it is
+printed, never taint, and it does not prove the class either way. The goldens and the unit
+tests that drive the `Err` outcomes (R302.2) are where the class is checked. Do not read a
+clean native pass as proof of the error class.
 
 `E3` reads `matched`, not `compared`: a row that compared but never matched is a
 mismatch, not a hit.
@@ -383,7 +385,8 @@ MURMUR_GOLDEN_REPEAT=100 cargo nextest run --lib --features dictation-shadow \
 # E8 and the per-row dump the verdict script reads (E3 adds these hits for the rows a
 # replay may credit; E7 reads golden_repeat, git_sha and dirty; E8 reads pd_witness).
 # The file is written when the test returns, only if it passed: a failed run leaves none,
-# and an old file names the commit it ran on. The dump is numeric.
+# and an old file names the commit it ran on. The dump is numeric: per row `matched`,
+# `delegated`, `compared` (information only) and `e3_credit`.
 MURMUR_GOLDEN_REPEAT=100 MURMUR_E7_PER_ROW_OUT="$SOAK/e7-per-row.json" \
   cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --test-threads=1
 

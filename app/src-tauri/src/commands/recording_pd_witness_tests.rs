@@ -1193,11 +1193,30 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
                 return;
             }
             let totals = crate::dictation_shadow::replay::totals();
-            let per_row: serde_json::Map<String, serde_json::Value> = totals
-                .per_row
+            // Per row: `compared` (the header count, for information), `matched` (flights that
+            // ran to their end and matched) and `delegated` (a delegated row's verified
+            // no-reply closes). E3 reads `matched`, plus `delegated` for the rows of
+            // `replay::DELEGATED_ROWS`, which is `Totals::e3_credit`; never `compared`.
+            let credit = totals.e3_credit();
+            let mut keys: std::collections::BTreeSet<(u16, u16)> =
+                totals.per_row.keys().copied().collect();
+            keys.extend(totals.row_matched.keys().copied());
+            keys.extend(totals.row_delegated.keys().copied());
+            let count = |map: &std::collections::BTreeMap<(u16, u16), u64>, key: &(u16, u16)| {
+                map.get(key).copied().unwrap_or(0)
+            };
+            let per_row: serde_json::Map<String, serde_json::Value> = keys
                 .iter()
-                .map(|((site, row), compared)| {
-                    (format!("{site}.{row}"), serde_json::json!(compared))
+                .map(|key| {
+                    (
+                        format!("{}.{}", key.0, key.1),
+                        serde_json::json!({
+                            "compared": count(&totals.per_row, key),
+                            "matched": count(&totals.row_matched, key),
+                            "delegated": count(&totals.row_delegated, key),
+                            "e3_credit": count(&credit, key),
+                        }),
+                    )
                 })
                 .collect();
             let pd_witness: serde_json::Map<String, serde_json::Value> = totals
