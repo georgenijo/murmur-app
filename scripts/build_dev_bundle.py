@@ -192,12 +192,56 @@ def target_dir(env: Mapping[str, str]) -> Path:
     return path if path.is_absolute() else TAURI_ROOT / path
 
 
-def bundle_path(product_name: str, *, debug: bool, env: Mapping[str, str]) -> Path:
-    profile = "debug" if debug else "release"
-    return target_dir(env) / profile / "bundle" / "macos" / f"{product_name}.app"
+_PROFILE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_FEATURE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
 
 
-def helper_build_command(*, debug: bool) -> list[str]:
+def profile_dir(*, debug: bool, profile: str | None) -> str:
+    """The directory cargo writes a profile's output to: ``dev`` builds go to ``debug``,
+    every other profile to a directory of its own name."""
+    if profile is None:
+        return "debug" if debug else "release"
+    return "debug" if profile == "dev" else profile
+
+
+def bundle_path(
+    product_name: str,
+    *,
+    debug: bool,
+    env: Mapping[str, str],
+    profile: str | None = None,
+) -> Path:
+    return (
+        target_dir(env)
+        / profile_dir(debug=debug, profile=profile)
+        / "bundle"
+        / "macos"
+        / f"{product_name}.app"
+    )
+
+
+def check_profile_and_features(
+    profile: str | None, features: str | None, *, debug: bool
+) -> list[str]:
+    """Validate ``--profile`` and ``--features``; return the feature list."""
+    if profile is not None:
+        if debug:
+            raise DevSigningError("--profile and --debug both choose the profile; use one")
+        if not _PROFILE_NAME.match(profile):
+            raise DevSigningError(f"--profile {profile!r} is not a cargo profile name")
+    names = [name.strip() for name in (features or "").split(",") if name.strip()]
+    for name in names:
+        if not _FEATURE_NAME.match(name):
+            raise DevSigningError(f"--features names {name!r}, which is not a cargo feature")
+    return names
+
+
+def helper_build_command(*, debug: bool, profile: str | None = None) -> list[str]:
+    # A custom profile inherits `release`, and the helpers have only the two builds.
+    if profile == "dev":
+        debug = True
+    elif profile is not None:
+        debug = False
     command = [sys.executable, str(ROOT / "scripts" / "build_capture_helpers.py")]
     if not debug:
         command.append("--release")
@@ -214,12 +258,22 @@ def helper_build_env(env: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if key != "CARGO_TARGET_DIR"}
 
 
-def tauri_build_command(config: Path, *, debug: bool) -> list[str]:
+def tauri_build_command(
+    config: Path,
+    *,
+    debug: bool,
+    profile: str | None = None,
+    features: Sequence[str] = (),
+) -> list[str]:
     # --no-sign also ignores APPLE_SIGNING_IDENTITY in the environment, so a
     # stray release variable can never sign this bundle through Tauri.
     command = ["npx", "tauri", "build", "--no-sign", "--bundles", "app", "--config", str(config)]
     if debug:
         command.append("--debug")
+    if profile is not None:
+        command.extend(["--profile", profile])
+    if features:
+        command.extend(["--features", ",".join(features)])
     return command
 
 
@@ -331,6 +385,14 @@ def main(
     )
     parser.add_argument("--debug", action="store_true", help="build the debug profile")
     parser.add_argument(
+        "--profile",
+        help="build a named cargo profile (for example shadow-soak); the bundle path follows it",
+    )
+    parser.add_argument(
+        "--features",
+        help="comma-separated cargo features to build with (for example dictation-shadow)",
+    )
+    parser.add_argument(
         "--skip-helpers",
         action="store_true",
         help="reuse the helper binaries already in app/src-tauri/binaries",
@@ -351,6 +413,7 @@ def main(
     try:
         config = args.config.resolve()
         _identifier, product_name = bundle_settings(config)
+        features = check_profile_and_features(args.profile, args.features, debug=args.debug)
         if platform != "darwin":
             raise DevSigningError("dev bundles can only be built and signed on macOS")
         selection = select_identity(
@@ -371,16 +434,20 @@ def main(
     # Show the selection before the build output when stdout is a pipe or file.
     sys.stdout.flush()
 
-    app = bundle_path(product_name, debug=args.debug, env=env)
+    app = bundle_path(product_name, debug=args.debug, env=env, profile=args.profile)
     if not args.sign_only:
         if not args.skip_helpers:
             run(
-                helper_build_command(debug=args.debug),
+                helper_build_command(debug=args.debug, profile=args.profile),
                 cwd=ROOT,
                 env=helper_build_env(env),
                 check=True,
             )
-        run(tauri_build_command(config, debug=args.debug), cwd=APP_DIR, check=True)
+        run(
+            tauri_build_command(config, debug=args.debug, profile=args.profile, features=features),
+            cwd=APP_DIR,
+            check=True,
+        )
     if not app.is_dir():
         print(f"error: bundle not found at {app}", file=sys.stderr)
         return 1
@@ -394,7 +461,7 @@ def main(
         name: team_identifier(signature_text(run, ["-dvv", str(macos / name)]))
         for name in (main_name, *BUNDLED_EXECUTABLES)
     }
-    for warning in team_warnings(selection, teams, debug=args.debug):
+    for warning in team_warnings(selection, teams, debug=args.debug or args.profile == "dev"):
         print(warning, file=sys.stderr)
     requirement = designated_requirement(signature_text(run, ["-d", "-r-", str(app)]))
     print(f"team id: {teams[main_name] or 'none'}")

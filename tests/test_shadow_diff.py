@@ -60,6 +60,15 @@ def repo(base_text: str, branch_text: str) -> Path:
     return root
 
 
+# A gated insertion that makes a branch a shadow change (C2): the rules under test apply only
+# to a PR that adds or removes lines under a `dictation-shadow` gate.
+SHADOW_MARK = '#[cfg(feature = "dictation-shadow")]\nfn shadow_marker_for_tests() {}\n'
+
+
+def shadow_repo(base_text: str, branch_text: str) -> Path:
+    return repo(base_text, SHADOW_MARK + branch_text)
+
+
 def run(root: Path) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -75,20 +84,20 @@ class ShadowDiffTests(unittest.TestCase):
         self.assertIn(f"2\t0\t{LIVE}", out)
 
     def test_a_removed_line_fails(self):
-        root = repo("a\nb\nc\n", "a\nc\n")
+        root = shadow_repo("a\nb\nc\n", "a\nc\n")
         code, _, err = run(root)
         self.assertEqual(code, 1)
         self.assertIn(LIVE, err)
         self.assertIn("removes 1 lines", err)
 
     def test_a_modified_line_fails(self):
-        root = repo("a\nb\n", "a\nb2\n")
+        root = shadow_repo("a\nb\n", "a\nb2\n")
         code, _, err = run(root)
         self.assertEqual(code, 1)
         self.assertIn("removes 1 lines", err)
 
     def test_a_moved_statement_fails(self):
-        root = repo("a\nb\nc\n", "b\na\nc\n")
+        root = shadow_repo("a\nb\nc\n", "b\na\nc\n")
         code, _, err = run(root)
         self.assertEqual(code, 1, err)
 
@@ -140,7 +149,7 @@ class ShadowDiffTests(unittest.TestCase):
 
     def test_a_deletion_in_a_file_the_old_list_did_not_name_fails(self):
         path = "app/src-tauri/src/commands/recording_host.rs"
-        root = repo("a\nb\nc\n", "a\nb\nc\nd\n")
+        root = shadow_repo("a\nb\nc\n", "a\nb\nc\nd\n")
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text("fn a() {}\nfn b() {}\nfn c() {}\n")
         git(root, "add", ".")
@@ -148,7 +157,7 @@ class ShadowDiffTests(unittest.TestCase):
         git(root, "checkout", "-q", "main")
         git(root, "merge", "-q", "--ff-only", "branch")
         git(root, "checkout", "-q", "-b", "simulated")
-        (root / path).write_text("fn a() {}\nfn c() {}\n")
+        (root / path).write_text(SHADOW_MARK + "fn a() {}\nfn c() {}\n")
         git(root, "commit", "-am", "delete a line of the host")
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -160,7 +169,7 @@ class ShadowDiffTests(unittest.TestCase):
     def test_a_renamed_file_is_a_deletion_plus_an_addition(self):
         old = "app/src-tauri/src/commands/recording_host.rs"
         new = "app/src-tauri/src/commands/recording_host_moved.rs"
-        root = repo("a\n", "a\nb\n")
+        root = shadow_repo("a\n", "a\nb\n")
         (root / old).parent.mkdir(parents=True, exist_ok=True)
         (root / old).write_text("fn a() {}\nfn b() {}\n")
         git(root, "add", ".")
@@ -169,10 +178,11 @@ class ShadowDiffTests(unittest.TestCase):
         git(root, "merge", "-q", "--ff-only", "branch")
         git(root, "checkout", "-q", "-b", "renamed")
         git(root, "mv", old, new)
-        git(root, "commit", "-m", "rename the host")
+        (root / new).write_text((root / new).read_text() + SHADOW_MARK)
+        git(root, "commit", "-am", "rename the host")
         stats = numstat(root, "main")
         self.assertEqual(stats[old], (0, 2), "the old path is a deletion")
-        self.assertEqual(stats[new], (2, 0), "the new path is an addition")
+        self.assertEqual(stats[new], (4, 0), "the new path is an addition")
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = main(root, "main")
@@ -224,7 +234,7 @@ class ShadowDiffTests(unittest.TestCase):
 
     def test_an_always_false_gate_on_an_existing_statement_fails(self):
         for gate in ["#[cfg(any())]", "#[cfg(not(all()))]", "#[cfg(all(any()))]"]:
-            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            root = shadow_repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate}: {err}")
             self.assertIn("is not the one permitted gate", err)
@@ -246,7 +256,7 @@ class ShadowDiffTests(unittest.TestCase):
             '#[cfg_attr(feature = "dictation-shadow", inline)]',
             '#[cfg_attr(test, allow(dead_code))]',
         ]:
-            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            root = shadow_repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate}: {err}")
             self.assertIn("is not the one permitted gate", err, gate)
@@ -259,7 +269,7 @@ class ShadowDiffTests(unittest.TestCase):
             f'#[cfg(any(not({feature}), target_os = "linux"))]',
             f"#[cfg_attr({feature}, cfg(any()))]",
         ]:
-            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            root = shadow_repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate}: {err}")
         # Even on an allowlisted twin, only the exact attribute is accepted: the raw string,
@@ -271,7 +281,7 @@ class ShadowDiffTests(unittest.TestCase):
             f"#[cfg_attr({feature}, cfg(any()))]",
         ]:
             with allowed({LIVE: [{"first": "b();", "form": "closed", "why": "twin"}]}):
-                code, _, err = run(repo("a();\nb();\n", f"a();\n{gate}\nb();\n{twin}\nb();\n"))
+                code, _, err = run(shadow_repo("a();\nb();\n", f"a();\n{gate}\nb();\n{twin}\nb();\n"))
             self.assertEqual(code, 1, f"{gate}: {err}")
             self.assertIn("is not the one permitted gate", err, gate)
 
@@ -355,7 +365,7 @@ class ShadowDiffTests(unittest.TestCase):
         handlers = [e for e in SHADOW_TWINS["app/src-tauri/src/lib.rs"] if e["form"] == "handler"]
         self.assertEqual(len(handlers), 4)
         for entry in SHADOW_TWINS["app/src-tauri/src/commands/recording.rs"]:
-            self.assertIn(entry["form"], ("closed", "frozen"))
+            self.assertIn(entry["form"], ("closed", "frozen", "frozen_fn"))
         self.assertTrue(twin_table_problems({"app/other.rs": []}))
         self.assertTrue(twin_table_problems({LIVE: [{"first": "a", "form": "closed", "why": " "}]}))
         self.assertTrue(twin_table_problems({LIVE: [{"first": "a", "form": "loose", "why": "x"}]}))
@@ -448,13 +458,13 @@ class ShadowDiffTests(unittest.TestCase):
             "    counter.fetch_max(id, Ordering::SeqCst);\n"
             "    }\n    after();\n}\n"
         )
-        code, _, err = run(repo(base, wrapped))
+        code, _, err = run(shadow_repo(base, wrapped))
         self.assertEqual(code, 1, err)
         self.assertIn("a gated region encloses text the base already had", err)
         # Any gate shape, and a gated `if` around it, are the same.
         for gate in ["#[cfg(test)]", "#[cfg(any())]", "#[cfg(not(test))]"]:
             branch = wrapped.replace('#[cfg(feature = "dictation-shadow")]', gate)
-            code, _, err = run(repo(base, branch))
+            code, _, err = run(shadow_repo(base, branch))
             self.assertEqual(code, 1, f"{gate}: {err}")
         # A new gated statement beside the original, even one that repeats its text, is fine.
         beside = (
@@ -463,18 +473,18 @@ class ShadowDiffTests(unittest.TestCase):
             "    counter.fetch_max(id, Ordering::SeqCst);\n"
             "    counter.fetch_max(id, Ordering::SeqCst);\n    after();\n}\n"
         )
-        code, _, err = run(repo(base, beside))
+        code, _, err = run(shadow_repo(base, beside))
         self.assertEqual(code, 0, err)
         # A gated list element and a gated match arm take only themselves out.
         code, _, err = run(
-            repo(
+            shadow_repo(
                 "fn f() {\n    list![\n        a,\n        b,\n    ];\n}\n",
                 'fn f() {\n    list![\n        a,\n        #[cfg(feature = "dictation-shadow")]\n        w,\n        b,\n    ];\n}\n',
             )
         )
         self.assertEqual(code, 0, err)
         code, _, err = run(
-            repo(
+            shadow_repo(
                 "fn f() {\n    match x {\n        A => 1,\n        B => { 2 }\n    }\n}\n",
                 'fn f() {\n    match x {\n        A => 1,\n        #[cfg(feature = "dictation-shadow")]\n        W => { 9 }\n        B => { 2 }\n    }\n}\n',
             )
@@ -566,19 +576,19 @@ class ShadowDiffTests(unittest.TestCase):
         import scripts.check_shadow_diff as module
 
         with mock.patch.dict(module.SHADOW_ATTR_ALLOW, {LIVE: [entry]}, clear=True):
-            code, _, err = run(repo(item, f"#[track_caller]\n{item}"))
+            code, _, err = run(shadow_repo(item, f"#[track_caller]\n{item}"))
             self.assertEqual(code, 0, err)
             for other in ["#[inline]", "#[must_use]", "#[track_caller] #[inline]"]:
-                code, _, err = run(repo(item, f"{other}\n{item}"))
+                code, _, err = run(shadow_repo(item, f"{other}\n{item}"))
                 self.assertEqual(code, 1, f"{other}: {err}")
             # The same attribute twice, or on a statement that is not named.
-            code, _, err = run(repo(item, f"#[track_caller]\n#[track_caller]\n{item}"))
+            code, _, err = run(shadow_repo(item, f"#[track_caller]\n#[track_caller]\n{item}"))
             self.assertEqual(code, 1, err)
-            code, _, err = run(repo("fn other(&self);\n", "#[track_caller]\nfn other(&self);\n"))
+            code, _, err = run(shadow_repo("fn other(&self);\n", "#[track_caller]\nfn other(&self);\n"))
             self.assertEqual(code, 1, err)
 
     def test_adding_cfg_test_to_an_existing_production_file_does_not_exempt_it(self):
-        root = repo("fn a() {}\nfn b() {}\n", "#![cfg(test)]\nfn a() {}\n")
+        root = shadow_repo("fn a() {}\nfn b() {}\n", "#![cfg(test)]\nfn a() {}\n")
         code, _, err = run(root)
         self.assertEqual(code, 1, err)
         self.assertIn("removes", err)
@@ -590,21 +600,21 @@ class ShadowDiffTests(unittest.TestCase):
             "#[cfg(not(all()))]// explain",
             "#[cfg(\n    any()\n)]",
         ]:
-            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            root = shadow_repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate!r}: {err}")
             self.assertIn("is not the one permitted gate", err)
 
     def test_a_gate_that_holds_only_in_a_test_build_disables_the_existing_statement(self):
         for gate in ["#[cfg(test)]", "#[cfg(all(test, unix))]"]:
-            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            root = shadow_repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate}: {err}")
 
     def test_a_string_with_slashes_is_not_a_comment(self):
         # The `//` inside the string must not swallow the rest of the attribute: the gate is
         # seen, and it is not the permitted one.
-        root = repo(
+        root = shadow_repo(
             "a\nb\n",
             'a\n#[cfg(feature = "x//y")]\nnew();\n#[cfg(not(feature = "x//y"))]\nb\n',
         )
@@ -614,7 +624,7 @@ class ShadowDiffTests(unittest.TestCase):
 
     def test_a_file_level_gate_added_to_a_production_file_fails_by_itself(self):
         for gate in ["#![cfg(test)]", "#![cfg(feature = \"dictation-shadow\")]", "#![cfg(any())]"]:
-            root = repo("fn a() {}\nfn b() {}\n", f"{gate}\nfn a() {{}}\nfn b() {{}}\n")
+            root = shadow_repo("fn a() {}\nfn b() {}\n", f"{gate}\nfn a() {{}}\nfn b() {{}}\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate}: {err}")
             self.assertIn("gates the whole of a file the base already had", err)

@@ -36,8 +36,20 @@ CI_BUILD_JOBS = (
 )
 CI_RUST_TEST_STEPS = (
     "Run tests",
+    "Run dictation shadow tests",
+    "Run golden dictation scenarios 100 times with the dictation shadow",
     "Run capture worker unit tests",
     "Run deterministic dictation evaluation",
+)
+# What the dictation-shadow test step must select: the shadow's own tests, its build policy
+# tests, E8, the site-order check, and the read and allocation pins.
+SHADOW_TEST_SELECTIONS = (
+    "dictation_shadow::",
+    "dictation_shadow_policy_tests::",
+    "every_family_pd_is_witnessed",
+    "headers_leave_d",
+    "pd_witness_tests::under_d::",
+    "the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -247,6 +259,31 @@ def validate_ci(ci: str) -> int:
         in lint_step
     )
     assert "cargo clippy" not in capture_build
+    # The shadow feature is off in every other step: its own lint, build and tests are
+    # pinned here (D-S2c-15 C1), so a PR cannot drop the only job that compiles it.
+    shadow_lint = " ".join(
+        named_step_block(rust_lint, "Lint Rust with the dictation shadow", 6).split()
+    )
+    assert (
+        "run: cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow"
+        " -- -D warnings" in shadow_lint
+    ), "clippy must also lint the dictation-shadow feature build"
+    shadow_tests = " ".join(named_step_block(rust_macos, "Run dictation shadow tests", 6).split())
+    assert "cargo nextest run --lib --features dictation-shadow" in shadow_tests
+    for selection in SHADOW_TEST_SELECTIONS:
+        assert (
+            f"test(/{selection}/)" in shadow_tests
+        ), f"the dictation-shadow test step must select {selection}"
+    shadow_goldens = " ".join(
+        named_step_block(
+            rust_macos, "Run golden dictation scenarios 100 times with the dictation shadow", 6
+        ).split()
+    )
+    assert 'MURMUR_GOLDEN_REPEAT: "100"' in shadow_goldens
+    assert (
+        "cargo nextest run --lib --features dictation-shadow"
+        " -E 'kind(lib) & test(/golden_tests::golden_/)'" in shadow_goldens
+    ), "the goldens must run 100 times with the dictation-shadow feature"
     for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
         cache = named_step_block(job, "Cache Rust dependencies", 6)
         assert (

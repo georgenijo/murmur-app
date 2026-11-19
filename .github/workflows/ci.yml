@@ -118,6 +118,8 @@ jobs:
             tests/test_hunt_sites.py \
             tests/test_shadow_sites.py \
             tests/test_shadow_diff.py \
+            tests/test_shadow_diff_scoped.py \
+            tests/test_shadow_soak_verdict.py \
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
             tests/test_release_start.py \
@@ -243,6 +245,12 @@ jobs:
         # --all-targets ensures `tests/` and `examples/` are type-checked too. Clippy performs the
         # full compile check, so there is no separate `cargo check` pass.
         run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Lint Rust with the dictation shadow
+        # The shadow's capture sites, executor twins and tests exist only with the
+        # feature, so the default lint above never sees them (D-S2c-15 C1). The
+        # dev profile unwinds, so the feature builds here.
+        run: cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings
 
   rust-macos:
     needs: changes
@@ -382,6 +390,35 @@ jobs:
           cd app/src-tauri &&
           cargo nextest run --lib --features internal-benchmark
           -E 'test(/dictation_admission::/) | test(/corpus::/)'
+
+      - name: Run dictation shadow tests
+        if: needs.changes.outputs.verified != 'true'
+        # The shadow feature is off in every other step, so nothing else compiles or
+        # runs the shadow. This step builds the app's lib once with
+        # --features dictation-shadow (the feature graph differs, so the prebuild
+        # cannot be reused, as with internal-benchmark above) and runs: the shadow's
+        # own tests (dictation_shadow::), the build policy tests, E8
+        # (every_family_pd_is_witnessed), the site-order check (headers_leave_d),
+        # and the read and allocation pins (pd_witness_tests::under_d::, plus the
+        # process_audio refusal pin). Do not pass --config-file.
+        timeout-minutes: 25
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest run --lib --features dictation-shadow
+          -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/every_family_pd_is_witnessed/) | test(/headers_leave_d/) | test(/pd_witness_tests::under_d::/) | test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/)'
+
+      - name: Run golden dictation scenarios 100 times with the dictation shadow
+        if: needs.changes.outputs.verified != 'true'
+        # E7: every golden scenario through the real shell and the real comparator
+        # in synchronous mode, 100 runs in one process, 0 mismatches. Compiled by
+        # the step above.
+        timeout-minutes: 10
+        env:
+          MURMUR_GOLDEN_REPEAT: "100"
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest run --lib --features dictation-shadow
+          -E 'kind(lib) & test(/golden_tests::golden_/)'
 
       - name: Run capture worker unit tests
         if: needs.changes.outputs.verified != 'true'

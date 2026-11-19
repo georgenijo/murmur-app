@@ -338,6 +338,60 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
+    def test_ci_builds_lints_and_tests_the_dictation_shadow_feature(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        validate_ci(workflow)
+        for old, new in (
+            # The feature lint dropped, or lost its feature.
+            ("      - name: Lint Rust with the dictation shadow\n", "      - name: Unrelated lint\n"),
+            ("cargo clippy --all-targets --features dictation-shadow", "cargo clippy --all-targets"),
+            # The feature test step dropped, or built without the feature.
+            ("      - name: Run dictation shadow tests\n", "      - name: Unrelated\n"),
+            (
+                "          cargo nextest run --lib --features dictation-shadow\n"
+                "          -E 'test(/dictation_shadow::/)",
+                "          cargo nextest run --lib\n          -E 'test(/dictation_shadow::/)",
+            ),
+            # The goldens no longer repeated, or run without the feature.
+            ('          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --lib --features dictation-shadow\n",
+             '          MURMUR_GOLDEN_REPEAT: "1"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --lib --features dictation-shadow\n"),
+            ("      - name: Run golden dictation scenarios 100 times with the dictation shadow\n",
+             "      - name: Unrelated goldens\n"),
+        ):
+            with self.subTest(rewrite=old.strip()[:60]):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_the_dictation_shadow_test_step_selects_every_required_group(self) -> None:
+        from scripts.validate_workflow_policy import SHADOW_TEST_SELECTIONS
+
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for selection in SHADOW_TEST_SELECTIONS:
+            with self.subTest(selection=selection):
+                mutated = workflow.replace(f" | test(/{selection}/)", "", 1).replace(
+                    f"-E 'test(/{selection}/) | ", "-E '", 1
+                )
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_the_dictation_shadow_steps_skip_on_a_verified_push(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for name in (
+            "Run dictation shadow tests",
+            "Run golden dictation scenarios 100 times with the dictation shadow",
+        ):
+            with self.subTest(step=name):
+                old = f"      - name: {name}\n        if: needs.changes.outputs.verified != 'true'\n"
+                mutated = workflow.replace(old, f"      - name: {name}\n", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_dependency_audits_are_present_and_advisory(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old in (

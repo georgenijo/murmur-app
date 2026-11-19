@@ -210,6 +210,58 @@ class SignatureParsingTests(unittest.TestCase):
         )
 
 
+class ProfileAndFeatureTests(unittest.TestCase):
+    """S5: the bundle path follows the profile, and the build takes the shadow's features."""
+
+    def test_the_bundle_path_follows_the_profile(self) -> None:
+        self.assertEqual(
+            dev.bundle_path("X", debug=False, env={"CARGO_TARGET_DIR": "/t"}, profile="shadow-soak"),
+            Path("/t/shadow-soak/bundle/macos/X.app"),
+        )
+        self.assertEqual(
+            dev.bundle_path("X", debug=False, env={"CARGO_TARGET_DIR": "/t"}, profile="dev"),
+            Path("/t/debug/bundle/macos/X.app"),
+        )
+        self.assertEqual(
+            dev.bundle_path("X", debug=False, env={"CARGO_TARGET_DIR": "/t"}, profile="release"),
+            Path("/t/release/bundle/macos/X.app"),
+        )
+        self.assertEqual(
+            dev.bundle_path("X", debug=True, env={"CARGO_TARGET_DIR": "/t"}),
+            Path("/t/debug/bundle/macos/X.app"),
+        )
+
+    def test_the_tauri_build_gets_the_profile_and_the_features(self) -> None:
+        command = dev.tauri_build_command(
+            Path("/c.json"), debug=False, profile="shadow-soak", features=["dictation-shadow"]
+        )
+        self.assertEqual(command[command.index("--profile") + 1], "shadow-soak")
+        self.assertEqual(command[command.index("--features") + 1], "dictation-shadow")
+        self.assertIn("--no-sign", command)
+        plain = dev.tauri_build_command(Path("/c.json"), debug=False)
+        self.assertNotIn("--profile", plain)
+        self.assertNotIn("--features", plain)
+        both = dev.tauri_build_command(Path("/c.json"), debug=False, features=["a", "b"])
+        self.assertEqual(both[both.index("--features") + 1], "a,b")
+
+    def test_a_custom_profile_builds_release_helpers_and_dev_builds_debug_ones(self) -> None:
+        self.assertIn("--release", dev.helper_build_command(debug=False, profile="shadow-soak"))
+        self.assertNotIn("--release", dev.helper_build_command(debug=False, profile="dev"))
+
+    def test_bad_profiles_and_features_are_refused(self) -> None:
+        self.assertEqual(dev.check_profile_and_features("shadow-soak", "dictation-shadow", debug=False), ["dictation-shadow"])
+        self.assertEqual(dev.check_profile_and_features(None, None, debug=False), [])
+        for profile, features, debug in [
+            ("shadow-soak", None, True),
+            ("bad profile", None, False),
+            ("--evil", None, False),
+            (None, "ok,--evil", False),
+            (None, "a b", False),
+        ]:
+            with self.assertRaises(dev.DevSigningError, msg=f"{profile} {features}"):
+                dev.check_profile_and_features(profile, features, debug=debug)
+
+
 class FakeRunner:
     def __init__(self, *, keychain: str | None, team: str | None) -> None:
         self.keychain = keychain
@@ -350,6 +402,40 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("only be built and signed on macOS", stderr.getvalue())
         self.assertEqual(runner.commands, [])
+
+    def test_the_refactor_test_shadow_soak_bundle_is_built_signed_and_reported(self) -> None:
+        soak = Path(self.temp.name) / "shadow-soak/bundle/macos/Murmur Refactor Test.app"
+        (soak / "Contents/MacOS").mkdir(parents=True)
+        with (soak / "Contents/Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleExecutable": "murmur"}, handle)
+        runner = FakeRunner(keychain=FIND_IDENTITY, team="P2U3P8B923")
+        env = {**self.env, dev.IDENTITY_ENV: DEVELOPMENT}
+        code, out, err = self.run_main(
+            runner,
+            "--config",
+            str(ROOT / "app/src-tauri/tauri.refactor-test.conf.json"),
+            "--profile",
+            "shadow-soak",
+            "--features",
+            "dictation-shadow",
+            env=env,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"DEV_APP={soak}", out)
+        build = next(c for c in runner.commands if c[:3] == ["npx", "tauri", "build"])
+        self.assertEqual(build[build.index("--profile") + 1], "shadow-soak")
+        self.assertEqual(build[build.index("--features") + 1], "dictation-shadow")
+        helpers = next(c for c in runner.commands if c[1].endswith("build_capture_helpers.py"))
+        self.assertIn("--release", helpers)
+        finalize = next(c for c in runner.commands if c[1].endswith("finalize_macos_bundle.py"))
+        self.assertEqual(finalize[finalize.index("--app") + 1], str(soak))
+
+    def test_profile_with_debug_stops_before_building(self) -> None:
+        runner = FakeRunner(keychain=FIND_IDENTITY, team=None)
+        code, _, err = self.run_main(runner, "--debug", "--profile", "shadow-soak")
+        self.assertEqual(code, 2)
+        self.assertIn("--profile and --debug", err)
+        self.assertFalse(any(c[:3] == ["npx", "tauri", "build"] for c in runner.commands))
 
 
 if __name__ == "__main__":
