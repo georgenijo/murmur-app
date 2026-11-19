@@ -235,8 +235,13 @@ class ProfileAndFeatureTests(unittest.TestCase):
         command = dev.tauri_build_command(
             Path("/c.json"), debug=False, profile="shadow-soak", features=["dictation-shadow"]
         )
-        self.assertEqual(command[command.index("--profile") + 1], "shadow-soak")
+        # Tauri's own options first, the Cargo profile forwarded after `--` (the CLI has no
+        # `--profile` of its own: it fails with `unexpected argument`).
         self.assertEqual(command[command.index("--features") + 1], "dictation-shadow")
+        self.assertEqual(command[-3:], ["--", "--profile", "shadow-soak"])
+        self.assertEqual(command.count("--"), 1)
+        self.assertLess(command.index("--features"), command.index("--"))
+        self.assertLess(command.index("--no-sign"), command.index("--"))
         self.assertIn("--no-sign", command)
         plain = dev.tauri_build_command(Path("/c.json"), debug=False)
         self.assertNotIn("--profile", plain)
@@ -423,7 +428,7 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn(f"DEV_APP={soak}", out)
         build = next(c for c in runner.commands if c[:3] == ["npx", "tauri", "build"])
-        self.assertEqual(build[build.index("--profile") + 1], "shadow-soak")
+        self.assertEqual(build[-3:], ["--", "--profile", "shadow-soak"])
         self.assertEqual(build[build.index("--features") + 1], "dictation-shadow")
         helpers = next(c for c in runner.commands if c[1].endswith("build_capture_helpers.py"))
         self.assertIn("--release", helpers)

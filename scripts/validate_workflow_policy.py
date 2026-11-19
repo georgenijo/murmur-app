@@ -34,6 +34,27 @@ CI_BUILD_JOBS = (
     "rust-lint",
     "rust-macos",
 )
+# The condition each build job runs under: the change filters that select it. A weaker or
+# narrower one (say `github` alone) would skip the job on a Rust-only PR, and `ci-pass`
+# accepts a skipped job unless its filter selected it.
+CI_JOB_CONDITIONS = {
+    "typecheck": "needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'",
+    "ui-tests": "needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'",
+    "rust-lint": "needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'",
+    "rust-macos": "needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'",
+}
+CI_SELECTED_JOB_CHECKS = (
+    (
+        ("rust", "github"),
+        ("rust-lint", "rust-macos"),
+        "Rust",
+    ),
+    (
+        ("frontend", "github"),
+        ("typecheck", "ui-tests"),
+        "frontend",
+    ),
+)
 CI_RUST_TEST_STEPS = (
     "Run tests",
     "Run dictation shadow tests",
@@ -53,6 +74,9 @@ SHADOW_TEST_SELECTIONS = (
     # The module E8 lives in: its controls (e8_rejects_a_fixture_the_compiled_harness_skips)
     # and any added later run with it, not by name.
     "pd_witness_tests::",
+    # The ready-handoff module, with the feature-only skip-reason test. A term that matches
+    # nothing is harmless in the union (nextest fails only on an empty selection).
+    "ready_handoff_tests::",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -252,12 +276,33 @@ def validate_ci(ci: str) -> int:
     assert "needs:" not in policy, "policy must start without waiting"
     for job in CI_BUILD_JOBS:
         assert scalar(job_block(ci, job), "needs") == "changes"
+        assert scalar(job_block(ci, job), "if") == CI_JOB_CONDITIONS[job], (
+            f"{job} must run when its change filters select it"
+        )
     assert scalar(dependency_audit, "if") == CI_GUARD
     assert scalar(ci_pass, "needs") == f"[changes, policy, {', '.join(CI_BUILD_JOBS)}]"
     assert scalar(ci_pass, "if") == CI_PASS_GUARD
     ci_pass_step = named_step_block(ci_pass, "Check CI result", 6)
     for job in ("changes", "policy", *CI_BUILD_JOBS):
         assert f"${{{{ needs.{job}.result }}}}" in ci_pass_step, job
+    # A job its filters select must have succeeded: `ci-pass` accepts a skipped job only when
+    # no filter selected it.
+    for outputs, jobs, label in CI_SELECTED_JOB_CHECKS:
+        condition = " || \\\n             ".join(
+            f'[ "${{{{ needs.changes.outputs.{name} }}}}" = "true" ]' for name in outputs
+        )
+        results = " \\\n              ".join(f'"${{{{ needs.{job}.result }}}}"' for job in jobs)
+        selected = (
+            f"          if {condition}; then\n"
+            f"            for result in \\\n              {results}; do\n"
+            '              if [ "$result" != "success" ]; then\n'
+            f'                echo "a selected {label} job did not succeed: $result"\n'
+            "                exit 1\n"
+            "              fi\n"
+            "            done\n"
+            "          fi\n"
+        )
+        assert selected in ci_pass_step, f"ci-pass must require success from {jobs} when {outputs} select them"
     rust_filter = re.search(
         r"^            rust:\n(?P<paths>(?:^              - .+\n)+)",
         changes,

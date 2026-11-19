@@ -861,6 +861,61 @@ def is_shadow_change(
     return reasons
 
 
+def shadow_module_changes(stats: dict[str, tuple[int, int]], root: Path, base: str) -> list[str]:
+    """A change to a feature-only module (`SHADOW_ONLY`) is itself a shadow change: the PR is
+    classified as one, so an ungated live edit beside it (an `instrument_invoke_handler`
+    `return false`, say) is held to insertion only and feature scoping. The module's own lines
+    stay exempt from insertion only (it is not in `guarded`); tests of it do not count."""
+    reasons = []
+    for path in sorted(stats):
+        if not is_production_path(path) or not is_shadow_only(path):
+            continue
+        if is_test_file(path, show(root, base, path) or show(root, "HEAD", path)):
+            continue
+        reasons.append(f"{path} (feature-only module changed)")
+    return reasons
+
+
+def retired_pin_problems(
+    root: Path,
+    old_table: dict[str, list[dict]] | None,
+    table: dict[str, list[dict]] | None = None,
+) -> list[str]:
+    """A pinned copy leaves the table only with the copy itself (a complete retirement).
+
+    Every `frozen_fn` entry the base table had and this one lacks names a copy
+    (`*_observed`): that function and every call site of it must be gone from the tree.
+    Otherwise the protection was dropped while the live copy stays in use, and the armed and
+    disarmed paths can drift apart unchecked."""
+    table = SHADOW_TWINS if table is None else table
+    if not old_table:
+        return []
+    kept = {(path, e["first"]) for path, entries in table.items() for e in entries if e.get("form") == "frozen_fn"}
+    found = []
+    for path, entries in old_table.items():
+        for entry in entries:
+            if entry.get("form") != "frozen_fn" or (path, entry["first"]) in kept:
+                continue
+            match = re.search(r"\bfn\s+(\w+)", entry["first"])
+            if match is None:
+                continue
+            name = match.group(1)
+            result = subprocess.run(
+                ["git", "grep", "-nw", "-e", name, "HEAD", "--", f"{TAURI}/*.rs"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            if result.stdout.strip():
+                first = result.stdout.splitlines()[0].split(":", 1)[1]
+                found.append(
+                    f"{path}: the pin of `{name}` was removed from SHADOW_TWINS, but the copy or a "
+                    f"call site remains (`{first[:120]}`): a pin goes only with its copy and every "
+                    "call site (a complete retirement)"
+                )
+    return found
+
+
 def first_line_of(text_lines: list[str], line: int) -> str:
     return text_lines[line - 1].strip() if 0 < line <= len(text_lines) else ""
 
@@ -1283,7 +1338,8 @@ def main(root: Path = ROOT, base: str = "origin/main") -> int:
     # Only a PR that adds or removes shadow lines is a shadow change, and only it is held to
     # insertion only, with every inserted statement behind the feature (C2 i). Any other PR
     # may edit and delete live code, with its originals and twins kept consistent above.
-    reasons = is_shadow_change(root, base, guarded, old_table)
+    reasons = is_shadow_change(root, base, guarded, old_table) + shadow_module_changes(stats, root, base)
+    problems.extend(retired_pin_problems(root, old_table))
     if reasons:
         problems.extend(violations(stats, guarded))
         for path in guarded:

@@ -70,6 +70,17 @@ TAINT_COUNTERS = (
     "core_divergences",
 )
 
+# The shutdown record of a final summary (E9). The drain at a clean exit reports whether the
+# transport went quiet (`shutdown_quiesced`) and counts what it dropped after it closed. Each
+# is required, and fails closed: a missing field is a build before it was written, `false` is
+# a push still in flight at the deadline, and any non-zero count is a decision or header the
+# comparator never saw.
+SHUTDOWN_QUIESCED = "shutdown_quiesced"
+SHUTDOWN_REQUIRED_COUNTS = ("dropped_after_shutdown",)
+# Counters a later build may add: a non-zero value is taint when present. They are not
+# required until #1173 names them (`rejected_after_close`; `published_attempts` is not a drop).
+SHUTDOWN_OPTIONAL_COUNTS = ("rejected_after_close",)
+
 CRITERIA = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 
 
@@ -291,15 +302,15 @@ def evaluate_family(
 
     def credit(entry: dict | None, key: str) -> int | None:
         """E3 credit of one per-row entry: `matched`, plus `delegated` for a delegated row (its
-        reply is another site's, so it has no `matched` of its own). `None` when the counter is
-        absent: the evidence is from a build before it was written and fails closed."""
+        reply is another site's, so it has no `matched` of its own). `None` when a counter is
+        absent or not a non-negative integer: the evidence is from a build before it was written and fails closed."""
         if entry is None:
             return 0
         if not isinstance(entry, dict):
             return None
         fields = ("matched", "delegated") if key in delegated else ("matched",)
         values = [entry.get(field) for field in fields]
-        if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in values):
             return None
         return sum(values)
 
@@ -429,6 +440,19 @@ def evaluate_family(
         # its counters stop at the last periodic write, so the pass is tainted.
         if summary.get("final") is not True:
             taint.append(f"{name}: not a final summary (`final` is {summary.get('final')!r}: a crash or a kill)")
+        # The shutdown: quiesced, and nothing dropped or rejected after the transport closed.
+        if summary.get(SHUTDOWN_QUIESCED) is not True:
+            taint.append(f"{name}:{SHUTDOWN_QUIESCED}={summary.get(SHUTDOWN_QUIESCED)!r} (absent or not true: the transport did not go quiet)")
+        for counter in (*SHUTDOWN_REQUIRED_COUNTS, *SHUTDOWN_OPTIONAL_COUNTS):
+            if counter not in summary:
+                if counter in SHUTDOWN_REQUIRED_COUNTS:
+                    taint.append(f"{name}: no `{counter}` (a build before the shutdown record)")
+                continue
+            value = summary[counter]
+            if not isinstance(value, int) or isinstance(value, bool):
+                taint.append(f"{name}:{counter}={value!r} is not a count")
+            elif value > 0:
+                taint.append(f"{name}:{counter}={value}")
         # The books are kept over all family sites together (`conservation.total`); only the
         # headers are per site, and `non_family` (keyed by file:line) is informational.
         total = (summary.get("conservation") or {}).get("total")

@@ -74,6 +74,8 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
         "incomplete_closes": {},
         "core_divergences": 0,
         "final": True,
+        "shutdown_quiesced": True,
+        "dropped_after_shutdown": 0,
         "named_no_reply": 2,
         "unclassified_err_replies": 3,
         # The shape PR #1173 writes: per-site objects hold only `headers`; the four books and
@@ -356,6 +358,20 @@ class E3Tests(unittest.TestCase):
             self.assertFalse(result.passed, entry)
             self.assertIn("the E7 dump", result.detail)
 
+    def test_a_bare_integer_replay_row_cannot_stand_in_for_matched(self):
+        # Sol's plant (round 2, blocker 1): the old dump format keyed each row to its
+        # `compared` count. `"101.15": 5` with no native match must FAIL, not pass as 5 closes.
+        passes = three_passes()
+        for summary in passes:
+            summary["per_row"]["101.15"]["matched"] = 0
+        self.assertFalse(by(evaluate(passes, e7_dump(per_row={"101.15": 5})), "start", "E3").passed)
+        result = by(evaluate(passes, e7_dump(per_row={"101.15": 5})), "start", "E3")
+        self.assertIn("the E7 dump", result.detail)
+        # Only an explicit non-negative integer `matched` counts, and it must reach the bar.
+        for entry in ({"compared": 5}, {"matched": "5"}, {"matched": True}, {"matched": -5}, {"matched": 5.0}, [5]):
+            self.assertFalse(by(evaluate(passes, e7_dump(per_row={"101.15": entry})), "start", "E3").passed, entry)
+        self.assertTrue(by(evaluate(passes, e7_dump(per_row={"101.15": row_entry(matched=5)})), "start", "E3").passed)
+
     def test_the_manifests_mirror_the_rust_delegated_rows(self):
         text = (ROOT / "app/src-tauri/src/dictation_shadow/replay.rs").read_text()
         match = re.search(r"DELEGATED_ROWS: &\[\(u16, u16\)\] = &\[(.*?)\];", text, re.S)
@@ -552,6 +568,39 @@ class E9Tests(unittest.TestCase):
         del passes[1]["final"]
         self.assertFalse(by(evaluate(passes), "start", "E9").passed)
 
+    def test_a_missing_shutdown_field_fails_closed(self):
+        # Sol's #1173 re-check: E9 passed with `shutdown_quiesced` false and drops non-zero.
+        for field in ("shutdown_quiesced", "dropped_after_shutdown"):
+            passes = three_passes()
+            del passes[1][field]
+            result = by(evaluate(passes), "start", "E9")
+            self.assertFalse(result.passed, field)
+            self.assertIn(field, result.detail)
+
+    def test_a_shutdown_that_did_not_quiesce_is_taint(self):
+        for value in (False, None, "true", 1):
+            passes = three_passes()
+            passes[1]["shutdown_quiesced"] = value
+            result = by(evaluate(passes), "start", "E9")
+            self.assertFalse(result.passed, repr(value))
+            self.assertIn("shutdown_quiesced", result.detail)
+
+    def test_a_drop_or_rejection_after_the_shutdown_is_taint(self):
+        for field in ("dropped_after_shutdown", "rejected_after_close"):
+            for value in (1, 7):
+                passes = three_passes()
+                passes[1][field] = value
+                result = by(evaluate(passes), "start", "E9")
+                self.assertFalse(result.passed, f"{field}={value}")
+                self.assertIn(f"{field}={value}", result.detail)
+            passes = three_passes()
+            passes[1][field] = "0"
+            self.assertFalse(by(evaluate(passes), "start", "E9").passed, field)
+        # Zero is clean, and `rejected_after_close` is not required until it exists.
+        passes = three_passes()
+        passes[1]["rejected_after_close"] = 0
+        self.assertTrue(by(evaluate(passes), "start", "E9").passed)
+
     def test_the_named_no_reply_close_is_expected_not_taint(self):
         passes = three_passes()
         passes[0]["named_no_reply"] = 40
@@ -619,13 +668,83 @@ class ManifestTests(unittest.TestCase):
                 return text[match.start() : index + 1]
         raise AssertionError(name)
 
+    @staticmethod
+    def strip_comments(text: str) -> str:
+        """Rust source without `//` and `/* */` comments. Strings and char literals are kept
+        whole, so a `//` inside one is not a comment. (Raw strings do not occur in the cited
+        tests.)"""
+        out: list[str] = []
+        i, n = 0, len(text)
+        while i < n:
+            two = text[i : i + 2]
+            if two == "//":
+                while i < n and text[i] != "\n":
+                    i += 1
+            elif two == "/*":
+                depth = 1
+                i += 2
+                while i < n and depth:
+                    pair = text[i : i + 2]
+                    if pair == "/*":
+                        depth, i = depth + 1, i + 2
+                    elif pair == "*/":
+                        depth, i = depth - 1, i + 2
+                    else:
+                        i += 1
+                out.append(" ")
+            elif text[i] == '"':
+                j = i + 1
+                while j < n and text[j] != '"':
+                    j += 2 if text[j] == "\\" else 1
+                out.append(text[i : j + 1])
+                i = j + 1
+            elif text[i] == "'" and re.match(r"'(\\.|[^'\\])'", text[i:]):
+                end = text.index("'", i + 2 if text[i + 1] == "\\" else i + 1) + 1
+                out.append(text[i:end])
+                i = end
+            else:
+                out.append(text[i])
+                i += 1
+        return "".join(out)
+
+    DECIDES = re.compile(r"\b(decide\w*|d_\d+\w*|start|tail|stop|expect_\w+|assert_pure_refusal)\(")
+    NOT_A_DECISION = re.compile(r"ordinal|C3_ROWS|Split::|allowlist")
+
+    @classmethod
+    def waiver_problem(cls, body: str, shown: str, row_id: str, name: str) -> str | None:
+        """Why a cited unit test does not execute the row's assertion (None when it does).
+        Comments are dropped first, so a case commented out of the table, or a row named only
+        in a comment, does not count. The row id must be a string in code, inside parentheses
+        (a row-asserting call or macro, a decision call's argument, or a case tuple of the table
+        the loop asserts over), and the test must call a decision. It is not an execution
+        tracer: it rules out a row that survives only in a comment or outside any call."""
+        code = cls.strip_comments(body)
+        literal = f'"{shown}"'
+        depth = 0
+        inside = False
+        # Walk the code outside of string literals tracking the paren depth at each match.
+        for match in re.finditer(r'"(?:[^"\\]|\\.)*"|[()]', code):
+            token = match.group()
+            if token == "(":
+                depth += 1
+            elif token == ")":
+                depth -= 1
+            elif token == literal and depth > 0:
+                inside = True
+        if not inside and not (row_id.lower().replace(".", "_") in name and literal in code):
+            return f"{row_id}: {name} never names the row in code (a comment does not count)"
+        if not cls.DECIDES.search(code):
+            return f"{row_id}: {name} calls no decision"
+        if cls.NOT_A_DECISION.search(code):
+            return f"{row_id}: {name} is a registry or conversion test"
+        return None
+
     def test_a_cited_unit_test_drives_the_decision_and_asserts_the_row(self):
-        # Sol round 1, finding 7: a waiver that cites a row-number conversion test or an
-        # allowlist test says nothing about the decision. The cited test names the row's id as
-        # a string and calls a decision (or the family's helper that does), and is not a
-        # registry, ordinal or split-signature test.
-        decides = re.compile(r"\b(decide\w*|d_\d+\w*|start|tail|stop|expect_\w+|assert_pure_refusal)\(")
-        not_a_decision = re.compile(r"ordinal|C3_ROWS|Split::|allowlist")
+        # Sol round 1, finding 7, and round 2, minor 6: a waiver that cites a row-number
+        # conversion test or an allowlist test says nothing about the decision, and a row named
+        # only in a comment (a case commented out) is not asserted. The cited test names the
+        # row's id as a string in code and calls and asserts a decision, and is not a registry,
+        # ordinal or split-signature test.
         bad = []
         for family in verdict.FAMILIES:
             for entry in manifest(family)["not_natively_reachable"]:
@@ -635,13 +754,35 @@ class ManifestTests(unittest.TestCase):
                 # A status-blind alias (R202.2 is R202.1, R203.10 is R203.9) is never produced as a
                 # decision row; its test asserts the aliased row and names the alias.
                 shown = entry.get("alias_of", entry["id"])
-                if f'"{shown}"' not in body or entry["id"] not in body and entry["id"].lower().replace(".", "_") not in entry["name"]:
-                    bad.append(f"{entry['id']}: {entry['name']} never names the row")
-                elif not decides.search(body):
-                    bad.append(f"{entry['id']}: {entry['name']} calls no decision")
-                elif not_a_decision.search(body):
-                    bad.append(f"{entry['id']}: {entry['name']} is a registry or conversion test")
+                problem = self.waiver_problem(body, shown, entry["id"], entry["name"])
+                if problem:
+                    bad.append(problem)
         self.assertEqual(bad, [])
+
+    def cited_body(self, family: str, row_id: str) -> tuple[str, dict]:
+        entry = next(e for e in manifest(family)["not_natively_reachable"] if e["id"] == row_id)
+        return self.function_body((ROOT / entry["file"]).read_text(), entry["name"]), entry
+
+    def test_a_case_commented_out_of_the_cited_test_loses_the_waiver(self):
+        # Sol's plant: the `Recovering` case of R203.2r commented out. The row string stays in
+        # the comment, and the decision call for the other cases still runs.
+        body, entry = self.cited_body("stop", "R203.2r")
+        self.assertIsNone(self.waiver_problem(body, entry["id"], entry["id"], entry["name"]))
+        line = next(l for l in body.splitlines() if '"R203.2r"' in l and not l.lstrip().startswith("//"))
+        planted = body.replace(line, "        // " + line.strip())
+        self.assertNotEqual(body, planted)
+        self.assertIn("never names the row in code", self.waiver_problem(planted, entry["id"], entry["id"], entry["name"]))
+        block = body.replace(line, "        /* " + line.strip() + " */")
+        self.assertIn("never names the row in code", self.waiver_problem(block, entry["id"], entry["id"], entry["name"]))
+
+    def test_a_row_named_only_outside_a_call_or_case_is_not_asserted(self):
+        body, entry = self.cited_body("stop", "R203.2r")
+        loose = 'fn x() {\n    let unused = "R203.2r";\n    let d = d_203(S, RID, E);\n    assert_eq!(d.reply, None);\n}\n'
+        self.assertIn("never names the row", self.waiver_problem(loose, entry["id"], entry["id"], "x"))
+        stripped = self.strip_comments('let u = "a // not a comment"; // gone\n/* gone /* nested */ */ let v = 1;')
+        self.assertIn('"a // not a comment"', stripped)
+        self.assertNotIn("gone", stripped)
+        self.assertIn("let v = 1;", stripped)
 
     def test_a_cited_golden_is_a_scenario_or_a_pd_witness_test(self):
         for family in verdict.FAMILIES:

@@ -1184,8 +1184,11 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     // S6 (D-S2c-15): hand the replay's counts to `scripts/shadow_soak_verdict.py`. The file is
     // written when this test function *returns*, after the E7 divergence checks (a diverging
     // sub-run fails earlier) and after the E8 assertion below: a failed test leaves no file, and
-    // a file from an older run cannot be mistaken for this one, because it names the revision
-    // it ran on. Numbers keyed by row id and PD number, and a revision hash; no content.
+    // a file from an older run cannot be mistaken for this one: the path must be new (an
+    // existing file is refused, never overwritten), and the revision it names is the one this
+    // test binary was *built* from (`build.rs`'s `MURMUR_GIT_SHA`), not whatever the source
+    // checkout's HEAD is when the test runs. Numbers keyed by row id and PD number, and a
+    // revision hash; no content.
     struct E7Dump(std::ffi::OsString);
     impl Drop for E7Dump {
         fn drop(&mut self) {
@@ -1237,19 +1240,29 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
                     .filter(|output| output.status.success())
                     .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             };
+            // The revision compiled into this binary. A checkout whose HEAD is not that revision
+            // (a binary built earlier, run after a checkout) is not a clean run of it.
+            let built = option_env!("MURMUR_GIT_SHA").unwrap_or("unknown");
+            let head = git(&["rev-parse", "HEAD"]);
             let dump = serde_json::json!({
-                "git_sha": git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string()),
-                "dirty": git(&["status", "--porcelain", "--untracked-files=no"])
-                    .map_or(true, |status| !status.is_empty()),
+                "git_sha": built,
+                "dirty": head.as_deref() != Some(built)
+                    || git(&["status", "--porcelain", "--untracked-files=no"])
+                        .is_none_or(|status| !status.is_empty()),
                 "golden_repeat": repeat,
                 "per_row": per_row,
                 "pd_witness": pd_witness,
             });
-            std::fs::write(
-                &self.0,
-                serde_json::to_vec_pretty(&dump).expect("E7 dump JSON"),
-            )
-            .expect("write MURMUR_E7_PER_ROW_OUT");
+            use std::io::Write as _;
+            // `create_new`: a path that already exists is a reused one, and a failed rerun
+            // would leave the earlier run's dump in place for the verdict to accept.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&self.0)
+                .expect("MURMUR_E7_PER_ROW_OUT must be a new path: use a fresh file for each run");
+            file.write_all(&serde_json::to_vec_pretty(&dump).expect("E7 dump JSON"))
+                .expect("write MURMUR_E7_PER_ROW_OUT");
         }
     }
     let _e7_dump = std::env::var_os("MURMUR_E7_PER_ROW_OUT").map(E7Dump);

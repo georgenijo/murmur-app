@@ -403,12 +403,15 @@ jobs:
         # process_audio refusal pin). The whole module E8 lives in is selected
         # (pd_witness_tests::), so a control added next to E8, such as
         # e8_rejects_a_fixture_the_compiled_harness_skips, runs without a filter edit.
+        # The ready-handoff module (ready_handoff_tests::) holds the feature-only skip-reason
+        # test. It exists once the branch that adds it is merged; an unmatched term in this
+        # union is harmless (nextest fails only when the whole selection is empty).
         # Do not pass --config-file.
         timeout-minutes: 25
         run: >-
           cd app/src-tauri &&
           cargo nextest run --lib --features dictation-shadow
-          -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/every_family_pd_is_witnessed/) | test(/headers_leave_d/) | test(/pd_witness_tests::under_d::/) | test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/) | test(/pd_witness_tests::/)'
+          -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/every_family_pd_is_witnessed/) | test(/headers_leave_d/) | test(/pd_witness_tests::under_d::/) | test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/)'
 
       - name: Run golden dictation scenarios 100 times with the dictation shadow
         if: needs.changes.outputs.verified != 'true'
@@ -496,6 +499,31 @@ jobs:
               exit 1
             fi
           done
+
+          # A job the change filters select must have succeeded: a skipped job is
+          # accepted only when its filter did not select it.
+          if [ "${{ needs.changes.outputs.rust }}" = "true" ] || \
+             [ "${{ needs.changes.outputs.github }}" = "true" ]; then
+            for result in \
+              "${{ needs.rust-lint.result }}" \
+              "${{ needs.rust-macos.result }}"; do
+              if [ "$result" != "success" ]; then
+                echo "a selected Rust job did not succeed: $result"
+                exit 1
+              fi
+            done
+          fi
+          if [ "${{ needs.changes.outputs.frontend }}" = "true" ] || \
+             [ "${{ needs.changes.outputs.github }}" = "true" ]; then
+            for result in \
+              "${{ needs.typecheck.result }}" \
+              "${{ needs.ui-tests.result }}"; do
+              if [ "$result" != "success" ]; then
+                echo "a selected frontend job did not succeed: $result"
+                exit 1
+              fi
+            done
+          fi
 
           if [ "${{ needs.changes.outputs.verified }}" = "true" ]; then
             echo "CI passed: this tree already passed ci-pass on its PR head; tests skipped"

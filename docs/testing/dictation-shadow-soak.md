@@ -226,18 +226,24 @@ start, or one that happens before the recording starts, does not exercise it.
 1. Audio MIDI Setup (`open -a "Audio MIDI Setup"`) → **+** → *Create Aggregate Device*;
    tick BlackHole 2ch only, name it `Soak Aggregate`. It now exists as a second input
    (`SwitchAudioSource -a -t input` lists it).
-2. Make the capture warm: dictate once with BlackHole 2ch as the default input and let it
-   finish, then start the next recording within a few seconds (hold-to-talk or toggle). Check
-   `app.log` for `audio.capture_ready` with `warm=true` for that recording. A recording whose
-   ready line says `warm=false` does not count; do not switch during it.
+2. Enable **Warm microphone standby** in Refactor Test (Settings → Recording). It is **off by
+   default** in a fresh Refactor Test profile, and without it no capture is ever warm, so
+   R209.5 cannot be driven. Note the setting's previous value and restore it when you have
+   finished (step 5). Then make the capture warm: dictate once with BlackHole 2ch as the
+   default input and let it finish, then start the next recording within the standby window
+   (hold-to-talk or toggle). Check `app.log` for `audio.capture_ready` with `warm=true` and
+   the message `standby PCM available at press` for **that recording**. A recording whose
+   ready line says `warm=false`, or that has no such line, does not count; do not switch
+   during it.
 3. While that warm recording runs, switch the default input:
    `SwitchAudioSource -t input -s "Soak Aggregate"` (or System Settings → Sound → Input).
    Expect the recording to end in the `DeviceChanged` recovery.
 4. Let the app finish recovering (it must reach Idle: see the `Recovering` note below), switch
    back with `SwitchAudioSource -t input -s "$PREV_INPUT"`, and repeat from step 2 five or
    more times.
-5. Afterwards remove the aggregate in Audio MIDI Setup (select it, **-**) and check the input
-   is as it was: `SwitchAudioSource -t input -c` prints `$PREV_INPUT`.
+5. Afterwards remove the aggregate in Audio MIDI Setup (select it, **-**), restore **Warm
+   microphone standby** to the value you noted in step 2, and check the input is as it was:
+   `SwitchAudioSource -t input -c` prints `$PREV_INPUT`.
 
 The verdict needs five **native** `matched` closes of R209.5 for this step. The replay's hits
 do not stand in for it: the step is listed in the lifecycle manifest's `runbook_driven`, and
@@ -297,7 +303,7 @@ The candidate commit (`$SHA`, 40 hex) binds the evidence: every session's `sessi
 and the E7 dump's `git_sha` must equal it, and the dump must come from a clean checkout.
 
 ```bash
-python3 scripts/shadow_soak_verdict.py --expect-sha "$SHA" --e7 "$SOAK/e7-per-row.json" \
+python3 scripts/shadow_soak_verdict.py --expect-sha "$SHA" --e7 "$E7_OUT" \
   --checklist "$SOAK/checklist-pass1.json" --checklist "$SOAK/checklist-pass2.json" \
   --checklist "$SOAK/checklist-pass3.json" "$SOAK"/session-*-summary.json
 python3 scripts/shadow_soak_verdict.py --family start --expect-sha "$SHA" ... # one family
@@ -317,7 +323,7 @@ from earlier candidates (the moved-aside `before-*` files) are not passed to it.
 | **E6** | `shadow_panic` and `witness_overflow` | both `0` |
 | **E7** | the E7 dump: `golden_repeat >= 100`, `git_sha` equal to `--expect-sha`, `dirty` false (the file is written only after the E7 and E8 assertions pass) | present, at least 100, the candidate, clean |
 | **E8** | the manifest's `pds` for the family all `> 0` in the dump's `pd_witness` | all witnessed |
-| **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, a summary that is not `final`, and a conservation imbalance: `conservation.total.balanced` must be `true` (`total.entries == headers + no_decision + unwound`; the books are kept over all family sites together, only `headers` is per site, `non_family` is keyed by `file:line` and informational, and a non-zero `conservation.unclassified` site count is taint). `named_no_reply` is an expected close kind (every effect ran, only the command's reply never came), counted and never taint. `unclassified_err_replies` is reported in the E9 line, informational and never taint by itself | all `0`, balanced, every summary `final`. Repeat a tainted run. |
+| **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, a summary that is not `final`, and a conservation imbalance: `conservation.total.balanced` must be `true` (`total.entries == headers + no_decision + unwound`; the books are kept over all family sites together, only `headers` is per site, `non_family` is keyed by `file:line` and informational, and a non-zero `conservation.unclassified` site count is taint). `shutdown_quiesced` must be `true` and `dropped_after_shutdown` (and `rejected_after_close`, once the build writes it) must be `0`: a missing shutdown field, a transport that did not go quiet, or anything dropped or rejected after the close is taint. `named_no_reply` is an expected close kind (every effect ran, only the command's reply never came), counted and never taint. `unclassified_err_replies` is reported in the E9 line, informational and never taint by itself | all `0`, balanced, every summary `final`. Repeat a tainted run. |
 
 The books and the global counters are not per family, so a taint in one summary taints E9
 for every family.
@@ -384,18 +390,24 @@ MURMUR_GOLDEN_REPEAT=100 cargo nextest run --lib --features dictation-shadow \
 
 # E8 and the per-row dump the verdict script reads (E3 adds these hits for the rows a
 # replay may credit; E7 reads golden_repeat, git_sha and dirty; E8 reads pd_witness).
-# The file is written when the test returns, only if it passed: a failed run leaves none,
-# and an old file names the commit it ran on. The dump is numeric: per row `matched`,
-# `delegated`, `compared` (information only) and `e3_credit`.
-MURMUR_GOLDEN_REPEAT=100 MURMUR_E7_PER_ROW_OUT="$SOAK/e7-per-row.json" \
-  cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --test-threads=1
+# Use a **new path for every run**: the test refuses a path that already exists, so a
+# failed rerun can never leave an earlier run's dump behind for the verdict. The test writes
+# it only if it passed, and the file takes its final name only after the runner exits 0.
+# The dump names the revision this test binary was built from (`build.rs`'s
+# `MURMUR_GIT_SHA`), and is `dirty` when the checkout's HEAD is not that revision. It is
+# numeric: per row `matched`, `delegated`, `compared` (information only) and `e3_credit`.
+E7_OUT="$SOAK/e7-per-row-$(date +%Y%m%dT%H%M%S).json"
+MURMUR_GOLDEN_REPEAT=100 MURMUR_E7_PER_ROW_OUT="$E7_OUT.pending" \
+  cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --test-threads=1 \
+  && mv "$E7_OUT.pending" "$E7_OUT"
+echo "pass this file to the verdict: --e7 $E7_OUT"
 
 # Site order (C8.7): headers leave D, and precede the blocking effects.
 cargo test --lib --features dictation-shadow headers_leave_d -- --test-threads=1
 
 # The rest of the shadow tests, as CI runs them.
 cargo nextest run --lib --features dictation-shadow \
-  -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/pd_witness_tests::/)'
+  -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/)'
 ```
 
 CI also runs clippy with the feature (`cargo clippy --all-targets --features

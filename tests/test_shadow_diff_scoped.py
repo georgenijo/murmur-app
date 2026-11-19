@@ -88,6 +88,37 @@ class ScopedCheckTests(unittest.TestCase):
             self.assertEqual(code, 1, f"{inserted!r}: {err}")
             self.assertIn("not behind the dictation-shadow feature", err)
 
+    SHADOW_MODULE = "app/src-tauri/src/commands/recording/shadow_commands.rs"
+
+    def with_shadow_module_edit(self, root):
+        """Also edit a feature-only module, with no gated line anywhere else (Sol round 2, 4)."""
+        git(root, "checkout", "-q", "main")
+        module = root / self.SHADOW_MODULE
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text("fn witnessed() {}\n")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "module on main")
+        git(root, "checkout", "-q", "edit")
+        git(root, "merge", "-q", "main", "-m", "merge main")
+        module.write_text("fn witnessed() {}\nfn another() {}\n")
+        git(root, "commit", "-am", "edit the feature-only module")
+        return root
+
+    def test_an_edit_in_a_feature_only_module_makes_the_pr_a_shadow_change(self):
+        # Sol's plant: the module edit beside an ungated `return false` in the instrumentation.
+        root = self.with_shadow_module_edit(self.watch_repo(self.watch_text(inserted="    return false;\n")))
+        code, out, err = run(root)
+        self.assertIn("shadow change: yes", out)
+        self.assertIn("feature-only module changed", out)
+        self.assertEqual(code, 1, err)
+        self.assertIn("not behind the dictation-shadow feature", err)
+
+    def test_a_feature_only_module_edit_alone_stays_exempt_from_insertion_only(self):
+        root = self.with_shadow_module_edit(self.watch_repo(self.watch_text()))
+        code, out, err = run(root)
+        self.assertIn("shadow change: yes", out)
+        self.assertEqual(code, 0, err)
+
     def test_removing_any_other_line_of_the_watch_file_fails_in_a_shadow_pr(self):
         root = self.watch_repo(self.watch_text(removed_live=True) + SHADOW_MARK)
         code, _, err = run(root)
@@ -489,6 +520,26 @@ class HandlerAndBaseTests(unittest.TestCase):
             code, out, err = run(self.retirement_repo(base, self.BASE))
         self.assertEqual(code, 1, err)
         self.assertIn("shadow change: yes", out)
+
+
+    def test_removing_a_pin_while_the_copy_and_its_callers_remain_fails(self):
+        # Sol's plant: the pin goes, the observed copy and its call site stay, and the original
+        # changes (its refusal reply differs from the copy's).
+        branch = self.BASE.replace("x > 1\n}\n#", "x > 2\n}\n#", 1)
+        with allowed({}):
+            code, _, err = run(self.retirement_repo(self.BASE, branch))
+        self.assertEqual(code, 1, err)
+        self.assertIn("was removed from SHADOW_TWINS", err)
+        self.assertIn("orig_observed", err)
+
+    def test_removing_a_pin_with_the_copy_but_a_call_site_left_fails(self):
+        branch = self.BASE.replace(
+            '#[cfg(feature = "dictation-shadow")]\nfn orig_observed(x: u64) -> (bool, u64) {\n    (x > 1, x)\n}\n', ""
+        )
+        with allowed({}):
+            code, _, err = run(self.retirement_repo(self.BASE, branch))
+        self.assertEqual(code, 1, err)
+        self.assertIn("call site remains", err)
 
 
 class PinnedHelperTests(unittest.TestCase):

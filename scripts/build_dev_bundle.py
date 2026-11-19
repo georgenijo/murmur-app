@@ -270,10 +270,12 @@ def tauri_build_command(
     command = ["npx", "tauri", "build", "--no-sign", "--bundles", "app", "--config", str(config)]
     if debug:
         command.append("--debug")
-    if profile is not None:
-        command.extend(["--profile", profile])
     if features:
         command.extend(["--features", ",".join(features)])
+    # Tauri CLI 2.9.6 has no `--profile` option of its own (`unexpected argument`): its options
+    # come first, and the Cargo profile is forwarded after `--`.
+    if profile is not None:
+        command.extend(["--", "--profile", profile])
     return command
 
 

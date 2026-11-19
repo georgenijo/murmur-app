@@ -485,10 +485,9 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_ci_pass_requires_ui_tests_result(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            '            "${{ needs.ui-tests.result }}" \\\n',
-            "",
-            1,
+        # Every mention goes: the success-required block names it too.
+        mutated = "".join(
+            line for line in workflow.splitlines(keepends=True) if "needs.ui-tests.result" not in line
         )
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
@@ -498,10 +497,10 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for job in ("policy", "ui-tests", "rust-lint"):
             with self.subTest(job=job):
-                result = f'            "${{{{ needs.{job}.result }}}}"'
-                start = workflow.index(result)
-                end = workflow.index("\n", start) + 1
-                mutated = workflow[:start] + workflow[end:]
+                result = f"needs.{job}.result"
+                mutated = "".join(
+                    line for line in workflow.splitlines(keepends=True) if result not in line
+                )
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
                 needs = "needs: [changes, policy, typecheck, ui-tests, rust-lint, rust-macos]"
@@ -509,6 +508,45 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 self.assertNotEqual(workflow, dropped)
                 with self.assertRaises(AssertionError):
                     validate_ci(dropped)
+
+    def test_build_jobs_run_under_the_filters_that_select_them(self) -> None:
+        # Sol round 2, finding 5: a Rust job that runs only on workflow changes skips on a
+        # Rust-only PR, and `ci-pass` accepts a skipped job.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        rust = "    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'\n"
+        self.assertEqual(workflow.count(rust), 2)
+        for replacement in (
+            "    if: needs.changes.outputs.github == 'true'\n",
+            "    if: needs.changes.outputs.rust == 'true'\n",
+            "    if: always()\n",
+            "",
+        ):
+            for index in range(2):
+                with self.subTest(replacement=replacement, job=index):
+                    start = -1
+                    for _ in range(index + 1):
+                        start = workflow.index(rust, start + 1)
+                    mutated = workflow[:start] + replacement + workflow[start + len(rust):]
+                    with self.assertRaises(AssertionError):
+                        validate_ci(mutated)
+        frontend = "    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'\n"
+        mutated = workflow.replace(frontend, "    if: needs.changes.outputs.github == 'true'\n", 1)
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_ci_pass_requires_success_from_a_job_its_filters_selected(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            ('                echo "a selected Rust job did not succeed: $result"\n                exit 1\n', '                echo "skipped"\n'),
+            ('              if [ "$result" != "success" ]; then\n                echo "a selected frontend', '              if [ "$result" = "failure" ]; then\n                echo "a selected frontend'),
+            ('             [ "${{ needs.changes.outputs.github }}" = "true" ]; then\n            for result in \\\n              "${{ needs.rust-lint.result }}"', '             [ "${{ needs.changes.outputs.nope }}" = "true" ]; then\n            for result in \\\n              "${{ needs.rust-lint.result }}"'),
+        ):
+            with self.subTest(old=old[:40]):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
 
     def test_ci_changes_job_stays_filter_only(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
