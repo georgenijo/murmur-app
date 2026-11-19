@@ -230,14 +230,43 @@ impl FieldAdapter {
     /// Nothing is added under D beyond what [`Self::project_lifecycle_view`] did: the
     /// same two atomic loads and the same single view.
     pub(crate) fn lifecycle_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            |persisted, live, _| super::probe::lifecycle_entry(persisted, live),
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
+    /// The one body of the cut-over views (see [`Self::lifecycle_view`]). `record` and
+    /// `caller` are the family's probe and the entry's call site in a test build.
+    fn persisted_view(
+        app: &AppState,
+        dictation: &mut DictationState,
+        #[cfg(test)] record: fn(
+            (
+                murmur_dictation_core::status::Status,
+                murmur_dictation_core::ids::RecordingId,
+            ),
+            (
+                murmur_dictation_core::status::Status,
+                murmur_dictation_core::ids::RecordingId,
+            ),
+            &'static std::panic::Location<'static>,
+        ),
+        #[cfg(test)] caller: &'static std::panic::Location<'static>,
+    ) -> DictationCore {
         #[cfg(test)]
         super::probe::view();
         let live_status = core_status(dictation.status);
         let live_id = RecordingId(app.recording_id.load(Ordering::SeqCst));
         #[cfg(test)]
-        super::probe::lifecycle_entry(
+        record(
             (dictation.core.status(), dictation.core.current_id()),
             (live_status, live_id),
+            caller,
         );
         if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
             CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
