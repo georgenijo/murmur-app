@@ -11,6 +11,7 @@ from scripts.validate_workflow_policy import (
     tag_action,
     validate_ci,
     validate_dev_signing_isolation,
+    validate_nextest_config,
     validate_promotion_policy,
     validate_release_build,
     validate_release_rehearsal,
@@ -271,6 +272,37 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
+
+    def test_every_nextest_run_has_a_per_test_kill_budget(self) -> None:
+        config = (ROOT / "app/src-tauri/.config/nextest.toml").read_text()
+        validate_nextest_config(config)
+        for old, new in (
+            # No default timeout at all.
+            ('slow-timeout = { period = "30s", terminate-after = 4 }\n', ""),
+            # A timeout that only warns (no terminate-after).
+            ('slow-timeout = { period = "30s", terminate-after = 4 }', 'slow-timeout = { period = "30s" }'),
+            # A budget over 120 s.
+            ("terminate-after = 4", "terminate-after = 5"),
+            # The profile renamed away from the one nextest runs by default.
+            ("[profile.default]", "[profile.ci]"),
+            # An override that only warns.
+            ('slow-timeout = { period = "20s", terminate-after = 3 }', 'slow-timeout = { period = "20s" }'),
+        ):
+            with self.subTest(rewrite=new):
+                mutated = config.replace(old, new, 1)
+                self.assertNotEqual(config, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_nextest_config(mutated)
+
+    def test_a_nextest_config_file_argument_cannot_replace_the_timeout(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        old = "          -E 'kind(lib) & test(/golden_tests::golden_/)'\n"
+        mutated = workflow.replace(
+            old, "          --config-file ../../.github/other.toml\n" + old, 1
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
 
     def test_ci_clippy_and_tests_cannot_drop_workspace(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

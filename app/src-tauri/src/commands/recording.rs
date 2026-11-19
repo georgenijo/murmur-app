@@ -6037,31 +6037,24 @@ pub(crate) fn handle_audio_lifecycle(
         app_handle,
         recording_id,
         event,
-        |app_handle, recording_id, auto_stop_owner| {
-            // `RS` (R215.2): the registered `AutoStop` op moves into the spawned
-            // stop, which consumes it at admission. A task that never runs, is
-            // cancelled or panics drops it, and `Drop` retires the op.
-            tauri::async_runtime::spawn(async move {
-                // D-S2-3: an internal entry checks re-entrancy before its
-                // managed-state lookup (a refusal drops `auto_stop_owner`, which
-                // retires the op).
-                if refuse_reentrant_stop().is_err() {
-                    return;
-                }
-                let state = app_handle.state::<State>();
-                let host = TauriHost::new(app_handle.clone(), state.performance.clone());
-                if dispatch_auto_stop(&host, state.inner(), recording_id, auto_stop_owner)
-                    .await
-                    .is_err()
-                {
-                    tracing::error!(
-                        target: "pipeline",
-                        recording_id,
-                        "interrupted recording transcription failed"
-                    );
-                }
-            });
-        },
+        // `RS` (R215.2): the registered `AutoStop` op moves into the stop task,
+        // which consumes it at admission. Production supplies only the host and
+        // the scheduler; the golden harness supplies its own through the same
+        // [`auto_stop_dispatch`].
+        auto_stop_dispatch(
+            |app_handle, state| TauriHost::new(app_handle.clone(), state.performance.clone()),
+            |recording_id, _owner, stop| {
+                tauri::async_runtime::spawn(async move {
+                    if let Some(Err(_)) = stop.await {
+                        tracing::error!(
+                            target: "pipeline",
+                            recording_id,
+                            "interrupted recording transcription failed"
+                        );
+                    }
+                });
+            },
+        ),
         |app_handle, recording_id, register| {
             spawn_vad_stream(app_handle.clone(), recording_id);
             spawn_dictation_partial_ticker(app_handle, recording_id, register);
@@ -7384,6 +7377,49 @@ async fn dispatch_auto_stop(
         Some(auto_stop_owner),
     )
     .await
+}
+
+/// The task [`auto_stop_dispatch`] hands its scheduler. `None`: the stop was
+/// refused as re-entrant before it began (nothing to report).
+type AutoStopTask = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<Result<serde_json::Value, String>>> + Send>,
+>;
+
+/// R215.2 `RS`: what the lifecycle bridge does with the `AutoStop` owner it
+/// registered for an interrupted capture. It builds the stop task around the
+/// owner and passes `(recording id, the owner's token, the task)` to `schedule`,
+/// which runs it. Production's `schedule` spawns the task; the golden harness's
+/// keeps it for the test to poll. Both supply `make_host` (the
+/// host the stop runs against) and `schedule`, and nothing else: the owner never
+/// leaves this function except inside the task, so a scheduler cannot drop it. A
+/// task that never runs, is cancelled or panics drops the owner, and `Drop`
+/// retires the op.
+fn auto_stop_dispatch<R, H>(
+    make_host: impl FnOnce(&tauri::AppHandle<R>, &State) -> H + Send + 'static,
+    schedule: impl FnOnce(u64, murmur_dictation_core::decision::Continuation, AutoStopTask),
+) -> impl FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard)
+where
+    R: tauri::Runtime,
+    H: DictationHost,
+{
+    move |app_handle, recording_id, auto_stop_owner| {
+        let token = auto_stop_owner.token();
+        schedule(
+            recording_id,
+            token,
+            Box::pin(async move {
+                // D-S2-3: an internal entry checks re-entrancy before its
+                // managed-state lookup (a refusal drops `auto_stop_owner`, which
+                // retires the op).
+                if refuse_reentrant_stop().is_err() {
+                    return None;
+                }
+                let state = app_handle.state::<State>();
+                let host = make_host(&app_handle, state.inner());
+                Some(dispatch_auto_stop(&host, state.inner(), recording_id, auto_stop_owner).await)
+            }),
+        );
+    }
 }
 
 /// [`stop_native_recording_for`] for the self-dispatched stop of an interrupted

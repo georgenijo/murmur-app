@@ -131,7 +131,9 @@ pub(super) fn complete_joining<T>(future: &mut Fut<T>) -> T {
 // scenario (G3: no scenario waits on a clock), it only turns a hang into a failure.
 #[path = "recording_helper_wait.rs"]
 mod helper_wait;
-pub(super) use helper_wait::{await_arrival, helper_failed, join_bounded};
+pub(super) use helper_wait::{
+    await_arrival, await_release, helper_failed, join_bounded, spin_bounded,
+};
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -230,9 +232,10 @@ pub(super) struct Knobs {
     pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
     /// The `smart-destination-selected` emit fails.
     pub(super) smart_destination_emit_error: bool,
-    /// The bridge keeps the registered `AutoStop` owner it schedules instead of
-    /// dropping it, for [`World::owned_auto_stop`] to carry into the stop (R215.2
-    /// `RS`; the lifecycle bridge's production closure moves it into the stop).
+    /// The scheduler keeps the stop task [`auto_stop_dispatch`] built around the
+    /// registered `AutoStop` owner, for [`World::owned_auto_stop`] to hand to the
+    /// test (R215.2 `RS`; production's scheduler spawns the same task). Off, it
+    /// drops the task, and so the owner, as an unrun spawn would.
     pub(super) carry_auto_stop_owner: bool,
     /// A stop whose reply never comes from the supervisor: the receive timed out or
     /// the channel closed. Production returns it whatever the owner is, so it is
@@ -336,6 +339,8 @@ struct Seen {
 // --------------------------------------------------------------- world
 
 pub(super) struct World {
+    /// This world's own `Arc`, for an entry that needs a host from `&self`.
+    me: std::sync::Weak<World>,
     app: MockHandle,
     log: StdMutex<Vec<String>>,
     seen: StdMutex<Seen>,
@@ -344,8 +349,15 @@ pub(super) struct World {
     knobs: StdMutex<Knobs>,
     supervisor: StdMutex<Supervisor>,
     auto_stops: StdMutex<Vec<u64>>,
-    /// `AutoStop` owners the bridge handed over while `carry_auto_stop_owner` is set.
-    auto_stop_owners: StdMutex<Vec<(u64, crate::core_history::ContinuationGuard)>>,
+    /// Stop tasks (each holding its `AutoStop` owner) the bridge scheduled while
+    /// `carry_auto_stop_owner` is set.
+    auto_stop_tasks: StdMutex<
+        Vec<(
+            u64,
+            murmur_dictation_core::decision::Continuation,
+            AutoStopTask,
+        )>,
+    >,
     delivery: StdMutex<Option<Delivery>>,
     /// Smart Auto resolves the start asked its host for.
     smart_auto_resolves: std::sync::atomic::AtomicUsize,
@@ -374,7 +386,8 @@ fn locked<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl World {
     fn new(app: MockHandle) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
+            me: me.clone(),
             app,
             log: StdMutex::new(Vec::new()),
             seen: StdMutex::new(Seen::default()),
@@ -383,7 +396,7 @@ impl World {
             knobs: StdMutex::new(Knobs::default()),
             supervisor: StdMutex::new(Supervisor::default()),
             auto_stops: StdMutex::new(Vec::new()),
-            auto_stop_owners: StdMutex::new(Vec::new()),
+            auto_stop_tasks: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
             smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
             side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
@@ -786,21 +799,20 @@ impl World {
         murmur_dictation_core::decision::Continuation,
         Fut<Result<serde_json::Value, String>>,
     ) {
-        let owner = {
-            let mut owners = locked(&self.auto_stop_owners);
-            let at = owners
+        let (token, task) = {
+            let mut tasks = locked(&self.auto_stop_tasks);
+            let at = tasks
                 .iter()
-                .position(|(id, _)| *id == recording_id)
-                .expect("the bridge handed over an AutoStop owner for this recording");
-            owners.remove(at).1
+                .position(|(id, _, _)| *id == recording_id)
+                .expect("the bridge scheduled an auto-stop task for this recording");
+            let (_, token, task) = tasks.remove(at);
+            (token, task)
         };
-        let token = owner.token();
-        let world = Arc::clone(self);
+        // The task is the one production spawns, built by the same
+        // `auto_stop_dispatch`; this only unwraps its re-entrancy refusal.
         let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
-            let host = Host(Arc::clone(&world));
-            let state = world.state();
-            // Production's spawned task runs the same function.
-            dispatch_auto_stop(&host, state.inner(), recording_id, owner).await
+            task.await
+                .expect("the auto-stop was not refused as re-entrant")
         });
         (token, stop)
     }
@@ -911,27 +923,37 @@ impl World {
     /// A supervisor notification, delivered through the production bridge on
     /// the caller's thread, as `ProductionLifecycleSink::notify` does.
     pub(super) fn notify(&self, recording_id: u64, event: AudioLifecycleEvent) {
+        let this = self
+            .me
+            .upgrade()
+            .expect("the world is alive while it notifies");
         self.push(format!(
             "supervisor.notify {recording_id} {}",
             event_name(&event)
         ));
         let ends_the_attempt = matches!(event, AudioLifecycleEvent::Idle);
+        let world = this;
         let deliver = move || {
+            let host_world = Arc::clone(&world);
             handle_audio_lifecycle_events(
-                self.app.clone(),
+                world.app.clone(),
                 recording_id,
                 event,
-                |_, recording_id, owner| {
-                    self.push(format!("bridge.auto_stop_scheduled {recording_id}"));
-                    locked(&self.auto_stops).push(recording_id);
-                    // Production moves the registered `AutoStop` owner into the spawned
-                    // stop. Unless a scenario carries it, it drops here, retired, as
-                    // the closure returns.
-                    let carry = self.knobs().carry_auto_stop_owner;
-                    if carry {
-                        locked(&self.auto_stop_owners).push((recording_id, owner));
-                    }
-                },
+                // Production's `auto_stop_dispatch`, with this world's host and a
+                // scheduler that keeps the task instead of spawning it.
+                auto_stop_dispatch(
+                    move |_, _| Host(host_world),
+                    |recording_id, token, stop| {
+                        world.push(format!("bridge.auto_stop_scheduled {recording_id}"));
+                        locked(&world.auto_stops).push(recording_id);
+                        // Unless a scenario carries it, the task drops here, and its
+                        // `AutoStop` owner is retired, as an unrun spawn's would be.
+                        let carry = world.knobs().carry_auto_stop_owner;
+                        if carry {
+                            locked(&world.auto_stop_tasks).push((recording_id, token, stop));
+                        }
+                    },
+                ),
                 |app, recording_id, register| {
                     // The two spawns `handle_audio_lifecycle` makes for a `Ready`.
                     // The ticker's own preconditions are production's: a recorded
@@ -947,7 +969,7 @@ impl World {
                         return;
                     }
                     let registered = register();
-                    self.push(format!("SD ticker {recording_id} registered={registered}"));
+                    world.push(format!("SD ticker {recording_id} registered={registered}"));
                 },
             );
         };
@@ -959,12 +981,20 @@ impl World {
             // thread, joined at once so the causal order is the one the golden
             // traces record, and the production re-entrancy check stays
             // unrelaxed (the same thread's nested entry is still refused).
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(deliver)
-                    .join()
-                    .expect("the supervisor's delivery thread panicked");
-            });
+            //
+            // The delivery takes D. A cancel (or any entry) that is still holding D
+            // here would block on the join below for ever, so that is a failure
+            // named here, not a hang.
+            assert!(
+                !matches!(
+                    self.state().app_state.dictation.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ),
+                "the dictation lock is held while the supervisor notification is delivered: \
+                 the delivery takes it, so the join below would never return"
+            );
+            let delivery = std::thread::spawn(deliver);
+            join_bounded(delivery, "the supervisor's delivery thread");
         } else {
             deliver();
         }
@@ -1152,7 +1182,7 @@ impl World {
                     "delivery {recording_id}: holds the ownership fence D"
                 ));
                 let _ = entered.send(());
-                let _ = release_rx.recv();
+                await_release(&release_rx);
                 world.push(format!(
                     "delivery {recording_id}: operation done, D released next"
                 ));
@@ -1168,13 +1198,23 @@ impl World {
         true
     }
 
+    /// Let a parked delivery return and release D, without waiting for anything.
+    fn release_delivery(&self) {
+        if let Some(delivery) = locked(&self.delivery).take() {
+            let _ = delivery.release.send(());
+        }
+    }
+
     /// Let the parked delivery operation return and release D, then wait for
     /// `cancel` (blocked on D) to finish. Nothing is logged between the release
     /// and the joins: the two threads' lines are ordered by D alone.
-    pub(super) fn finish_delivery(&self, cancel: ConcurrentCancel) -> Result<(), String> {
+    pub(super) fn finish_delivery(&self, mut cancel: ConcurrentCancel) -> Result<(), String> {
         let delivery = locked(&self.delivery).take().expect("a parked delivery");
         let _ = delivery.release.send(());
-        let reply = join_bounded(cancel.thread, "the concurrent cancel");
+        let reply = join_bounded(
+            cancel.thread.take().expect("a live cancel"),
+            "the concurrent cancel",
+        );
         let delivered = join_bounded(delivery.thread, "the parked delivery");
         self.push(format!(
             "delivery returned {}",
@@ -1188,11 +1228,12 @@ impl World {
     pub(super) fn cancel_on_thread(self: &Arc<Self>) -> ConcurrentCancel {
         let world = Arc::clone(self);
         ConcurrentCancel {
-            thread: std::thread::spawn(move || {
+            world: Arc::clone(&world),
+            thread: Some(std::thread::spawn(move || {
                 let _runtime = runtime().enter();
                 let mut cancel = world.cancel(None);
                 complete_joining(&mut cancel)
-            }),
+            })),
         }
     }
 
@@ -1219,7 +1260,7 @@ impl World {
                     let _ = parked.send(());
                     // A scenario that panics first drops `release`: the cancel then
                     // runs on instead of hanging the test.
-                    let _ = release_rx.recv();
+                    await_release(&release_rx);
                 }
             });
             let mut cancel = world.cancel(None);
@@ -1265,28 +1306,44 @@ impl ParkedCancel {
 
 /// A cancel running on its own thread.
 pub(super) struct ConcurrentCancel {
-    thread: std::thread::JoinHandle<Result<(), String>>,
+    /// `None` once joined.
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+    world: Arc<World>,
+}
+
+impl Drop for ConcurrentCancel {
+    /// A scenario that fails while this cancel is blocked on D unwinds through the
+    /// locals it declared before the cancel, and some of their drops take D. The
+    /// delivery that holds D is released first, here, as soon as the cancel drops.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.world.release_delivery();
+        }
+    }
 }
 
 impl ConcurrentCancel {
+    fn live(&self) -> &std::thread::JoinHandle<Result<(), String>> {
+        self.thread.as_ref().expect("a live cancel")
+    }
+
     /// Wait until the cancel holds the recording transition and so is at (or a
     /// statement from) its `D` lock: the transition is released only at the
     /// end of the command, so a held transition with an unfinished command is
     /// a cancel that has not got past D. No clock: this spins on the lock
     /// state, and gives up if the command finished.
     pub(super) fn wait_until_blocked_on_d(&self, world: &World) {
-        while !self.thread.is_finished()
-            && world
-                .state()
-                .app_state
-                .recording_transition
-                .try_lock()
-                .is_ok()
-        {
-            std::thread::yield_now();
-        }
+        spin_bounded("the concurrent cancel", || {
+            !self.live().is_finished()
+                && world
+                    .state()
+                    .app_state
+                    .recording_transition
+                    .try_lock()
+                    .is_ok()
+        });
         assert!(
-            !self.thread.is_finished(),
+            !self.live().is_finished(),
             "the cancel finished while a delivery held the ownership fence"
         );
     }
@@ -1954,6 +2011,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build mock Tauri app");
     let world = World::new(app.handle().clone());
+    let _release_on_unwind = ReleaseOnUnwind(Arc::clone(&world));
     world.listen_to_the_bridge();
     // The first sample is the starting state, not a change.
     {
@@ -1968,6 +2026,21 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     reset_process_globals();
     drop(app);
     lines
+}
+
+/// A parked delivery holds D inside a thread that owns an `Arc<World>`, and the world
+/// owns that delivery's release sender, so a scenario that panics (or a bounded wait
+/// that gives up) would leave the delivery, and a cancel blocked on D behind it,
+/// parked for ever. This releases it while the scenario unwinds. It joins nothing:
+/// a panic in a drop during unwinding would abort the process.
+struct ReleaseOnUnwind(Arc<World>);
+
+impl Drop for ReleaseOnUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.release_delivery();
+        }
+    }
 }
 
 /// A scenario's golden text: a header naming the scenario and the preserved

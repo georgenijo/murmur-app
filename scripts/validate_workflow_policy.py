@@ -14,6 +14,7 @@ RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 RELEASE_START_WORKFLOW = ROOT / ".github/workflows/release-start.yml"
 OTA_CANARY_WORKFLOW = ROOT / ".github/workflows/ota-canary.yml"
 CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
+NEXTEST_CONFIG = ROOT / "app/src-tauri/.config/nextest.toml"
 
 CI_GUARD = (
     '"${{ github.event_name != \'push\' || '
@@ -258,6 +259,14 @@ def validate_ci(ci: str) -> int:
     nextest_install = named_step_block(rust_macos, "Install cargo-nextest", 6)
     assert "uses: taiki-e/install-action@v2" in nextest_install
     assert re.search(r"tool: cargo-nextest@[0-9]+\.[0-9]+\.[0-9]+\n", nextest_install)
+    # A `--config-file` argument replaces the workspace's `.config/nextest.toml`, and
+    # with it the per-test kill budget that keeps a hung test from holding the job.
+    ci_commands = "\n".join(
+        line for line in ci.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert (
+        "--config-file" not in ci_commands
+    ), "a nextest --config-file replaces the per-test timeout in .config/nextest.toml"
     macos_lib_tests = named_step_block(rust_macos, "Run tests", 6)
     # nextest runs each test in its own process, so shared process state stays
     # isolated exactly as `cargo test -- --test-threads=1` guaranteed.
@@ -324,6 +333,25 @@ def validate_ci(ci: str) -> int:
     for event_name, message, expected in cases:
         assert should_run_ci(event_name, message) is expected
     return len(cases)
+
+
+def validate_nextest_config(config: str) -> None:
+    """Every nextest run must kill a test that runs for ever (30 s x 4 = 120 s)."""
+    default = re.search(r"^\[profile\.default\]\n((?:(?!\[).*\n?)*)", config, re.MULTILINE)
+    assert default, "nextest.toml needs a [profile.default] table"
+    match = re.search(
+        r"^slow-timeout\s*=\s*\{\s*period\s*=\s*\"(\d+)s\"\s*,\s*terminate-after\s*=\s*(\d+)\s*\}",
+        default.group(1),
+        re.MULTILINE,
+    )
+    assert match, "[profile.default] needs a slow-timeout with a terminate-after"
+    period, terminate_after = int(match.group(1)), int(match.group(2))
+    assert period * terminate_after <= 120, (
+        f"the default per-test kill budget is {period * terminate_after} s; keep it at 120 s or"
+        " less and give a slower test a named override"
+    )
+    for override in re.findall(r"^slow-timeout\s*=\s*\{.*$", config, re.MULTILINE):
+        assert "terminate-after" in override, f"an override without a kill budget: {override}"
 
 
 def validate_release_build(workflow: str) -> int:
@@ -653,6 +681,7 @@ def main() -> None:
     cargo_toml = CARGO_TOML.read_text()
 
     ci_cases = validate_ci(ci)
+    validate_nextest_config(NEXTEST_CONFIG.read_text())
     release_build_cases = validate_release_build(release_build)
     rehearsal_jobs = validate_release_rehearsal(release_rehearsal)
     validate_release_profile(cargo_toml)

@@ -389,7 +389,7 @@ impl ParkedStop {
         let (release, release_rx) = std::sync::mpsc::channel::<()>();
         world.on("supervisor.stop", move || {
             let _ = entered.send(());
-            let _ = release_rx.recv();
+            await_release(&release_rx);
         });
         let thread_world = Arc::clone(world);
         let thread = std::thread::spawn(move || {
@@ -995,7 +995,7 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
     let (release, release_rx) = std::sync::mpsc::channel::<()>();
     world.on("supervisor.start", move || {
         let _ = entered.send(());
-        let _ = release_rx.recv();
+        await_release(&release_rx);
     });
     let thread_world = Arc::clone(world);
     let start = std::thread::spawn(move || {
@@ -1252,4 +1252,46 @@ fn pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree() {
         "PD-23: R207.3's Superseded for a live recording, then a cancel of the processing recording completes Cancelled (R207.3, R205.5)",
         pd23_a_cancel_of_a_processing_recording_completes_cancelled,
     ));
+}
+
+// ------------------------------------- a failing scenario never leaves a helper parked
+
+static UNWOUND_WORLD: std::sync::Mutex<Option<Arc<World>>> = std::sync::Mutex::new(None);
+
+/// The pipeline's delivery holds D on its own thread and a cancel is blocked behind it
+/// when the scenario fails. The delivery's release sender lives in the world, and the
+/// delivery thread owns the world, so without an explicit release both would stay
+/// parked for ever. `run_sub_run` releases the delivery while it unwinds: D comes free.
+#[test]
+fn a_delivery_parked_in_a_failing_scenario_is_released_on_unwind() {
+    let outcome = std::panic::catch_unwind(|| {
+        run_sub_run(&SubRun {
+            title: "unwind",
+            setup: Setup::idle(),
+            body: |world| {
+                recording(world);
+                {
+                    let mut knobs = world.knobs();
+                    knobs.stop_result = Ok(16_000);
+                    knobs.hold_delivery = true;
+                }
+                world.close_gate("pipeline");
+                let mut stop = world.stop(None);
+                assert!(poll_once(&mut stop).is_pending());
+                let cancel = world.cancel_on_thread();
+                cancel.wait_until_blocked_on_d(world);
+                *UNWOUND_WORLD.lock().expect("slot") = Some(Arc::clone(world));
+                panic!("the scenario fails with a delivery parked and a cancel blocked on D");
+            },
+        })
+    });
+    assert!(outcome.is_err(), "the scenario's own panic propagates");
+    let world = UNWOUND_WORLD
+        .lock()
+        .expect("slot")
+        .take()
+        .expect("the scenario reached its failure");
+    spin_bounded("the parked delivery's release", || {
+        world.state().app_state.dictation.try_lock().is_err()
+    });
 }

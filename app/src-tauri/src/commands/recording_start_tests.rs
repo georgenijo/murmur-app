@@ -642,7 +642,7 @@ fn a_flight_that_suspends_with_queued_work_carries_it_and_drains_after_t() {
                 let (release, held) = std::sync::mpsc::channel::<()>();
                 w.on("supervisor.start", move || {
                     // A panicking test drops `release`, which ends the wait.
-                    let _ = held.recv();
+                    await_release(&held);
                 });
                 let mut start = w.start();
                 assert!(

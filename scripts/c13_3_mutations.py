@@ -4,10 +4,14 @@
 Each row in `scripts/c13_3_mutations/*.json` is one source edit that reverts a
 historical fix, or mutates the named C3 row, `admit` check or executor effect, plus
 the cargo commands that must then fail. Every command of a row runs. A command is
-CAUGHT only when cargo reported a failed test that the command names (one of its
-filter arguments, or any test when it has none), PASSED when tests ran and none
-failed, and INVALID otherwise: a compile error, a cargo infrastructure failure
-(no test result at all), zero tests run, or a failure in tests the row does not name.
+CAUGHT only when all of these hold: cargo exited with libtest's failure status (101),
+every test binary it started printed a completed `test result` summary and ended
+normally, and a test the command names (one of its filter arguments, or any test when
+it has none) failed in a binary whose summary completed. It is PASSED when tests ran,
+none failed and cargo exited 0, and INVALID otherwise: a compile error, a cargo
+infrastructure failure (no test binary started), a binary that never finished its
+summary or exited abnormally (a signal, an unexpected status), zero tests run, a
+failure in tests the row does not name, or cargo failing to launch at all.
 A row is INVALID if any command is INVALID, else CAUGHT if any command is CAUGHT,
 else SURVIVED.
 
@@ -187,6 +191,15 @@ FAILED_TEST = re.compile(r"^test (\S+) \.\.\. FAILED$", re.MULTILINE)
 TEST_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed;", re.MULTILINE)
 
 
+# Flags whose next argument is their value, not a test-name filter.
+VALUE_FLAGS = frozenset(
+    {
+        "-p", "--package", "--test", "--bin", "--features", "-F", "--target",
+        "--manifest-path", "--profile", "-j", "--jobs", "--test-threads", "--skip",
+    }
+)
+
+
 def command_filters(cmd: list[str]) -> list[str]:
     """The test-name filters of a `cargo test` command: its positional arguments."""
     filters = []
@@ -194,28 +207,61 @@ def command_filters(cmd: list[str]) -> list[str]:
     for arg in cmd[2:]:  # after `cargo test`
         if skip_value:
             skip_value = False
-        elif arg in ("-p", "--package"):
+        elif arg in VALUE_FLAGS:
             skip_value = True
         elif not arg.startswith("-"):
             filters.append(arg)
     return filters
 
 
+# Cargo prints one of these per test binary it starts; the binary's output follows.
+BINARY_START = re.compile(r"^\s+(?:Running|Doctest|Doc-tests)\b", re.MULTILINE)
+# Printed when a test binary exits non-zero: libtest's failure exit is 101, anything
+# else (a signal, a different status) is an abnormal end.
+BINARY_EXIT = re.compile(
+    r"process didn't exit successfully: .*?\((?:exit status: (\d+)|signal: (\d+)[^)]*)\)"
+)
+LIBTEST_FAILURE_STATUS = 101
+
+
+def split_binaries(output: str) -> list[str]:
+    """The output of each test binary cargo started, in order (empty: none started)."""
+    starts = [match.start() for match in BINARY_START.finditer(output)]
+    return [output[start:end] for start, end in zip(starts, starts[1:] + [len(output)])]
+
+
 def classify_command(cmd: list[str], returncode: int, output: str) -> str:
-    """CAUGHT, PASSED or INVALID for one command's result (see the module docstring)."""
+    """CAUGHT, PASSED or INVALID for one command's result (see the module docstring).
+
+    CAUGHT needs all of: cargo exited with libtest's failure status, every test binary
+    that started printed a completed summary and ended normally, and a test the command
+    names failed in a binary whose summary completed.
+    """
     if BUILD_ERROR.search(output):
         return "INVALID"
-    results = [(int(passed), int(failed)) for passed, failed in TEST_RESULT.findall(output)]
-    if not results:
-        return "INVALID"  # cargo never ran a test binary: infrastructure, not a verdict
-    ran = sum(passed + failed for passed, failed in results)
+    binaries = split_binaries(output)
+    if not binaries:
+        return "INVALID"  # cargo never started a test binary: infrastructure, not a verdict
+    ran = 0
+    failed_tests: list[str] = []
+    for binary in binaries:
+        summary = TEST_RESULT.search(binary)
+        if summary is None:
+            return "INVALID"  # the binary never finished: a crash, a kill, a hang
+        ran += int(summary.group(1)) + int(summary.group(2))
+        for exit_ in BINARY_EXIT.finditer(binary):
+            status, signal = exit_.groups()
+            if signal is not None or int(status) != LIBTEST_FAILURE_STATUS:
+                return "INVALID"  # an abnormal exit, whatever else it printed
+            if int(summary.group(2)) == 0:
+                return "INVALID"  # exit 101 with no failed test: the summary is not the story
+        failed_tests += FAILED_TEST.findall(binary)
     if ran == 0:
         return "INVALID"  # the filters matched nothing
-    failed_tests = FAILED_TEST.findall(output)
     if returncode == 0:
         return "INVALID" if failed_tests else "PASSED"
-    if not failed_tests:
-        return "INVALID"  # a non-zero exit with no failed test (a crash, a kill, a timeout)
+    if returncode != LIBTEST_FAILURE_STATUS or not failed_tests:
+        return "INVALID"  # cargo's own failure, or a failure that left no failed test
     filters = command_filters(cmd)
     if filters and not any(name_part in test for test in failed_tests for name_part in filters):
         return "INVALID"  # something failed, but not a test this row names
@@ -250,10 +296,22 @@ def run_row(row: dict, root: Path, check_only: bool, dry_run: bool) -> str:
             path.write_text(path.read_text().replace(old, new))
         verdicts = []
         for cmd in row["cmds"]:
-            result = subprocess.run(
-                cmd, cwd=root / CARGO_DIR, env=env, capture_output=True, text=True
-            )
-            output = result.stdout + result.stderr
+            try:
+                # One stream, so each test binary's output stays with its own header.
+                result = subprocess.run(
+                    cmd,
+                    cwd=root / CARGO_DIR,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except OSError as error:
+                # cargo is missing or cannot start: no verdict, and the row goes on.
+                verdicts.append("INVALID")
+                print(f"  $ {' '.join(cmd)} -> could not start: {error}: INVALID")
+                continue
+            output = result.stdout
             verdict = classify_command(cmd, result.returncode, output)
             verdicts.append(verdict)
             print(f"  $ {' '.join(cmd)} -> exit {result.returncode}: {verdict}")

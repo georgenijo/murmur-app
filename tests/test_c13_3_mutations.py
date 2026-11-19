@@ -116,13 +116,14 @@ class RowFileTests(unittest.TestCase):
 CMD = ["cargo", "test", "--lib", "--", "--test-threads=1", "bug216_stop_queued", "golden_s01"]
 CORE_CMD = ["cargo", "test", "-p", "murmur-dictation-core"]
 FAILING = (
+    "     Running unittests src/lib.rs (target/debug/deps/ui_lib-0123456789abcdef)\n"
     "running 2 tests\n"
     "test commands::recording::bug_replay_tests::bug216_stop_queued_behind_start ... FAILED\n"
     "test commands::recording::golden_tests::golden_s01_stop_during_start ... ok\n"
     "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2188 filtered out; finished in 0.02s\n"
     "error: test failed, to rerun pass `--lib`\n"
 )
-PASSING = "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2188 filtered out; finished in 0.01s\n"
+PASSING = "     Running unittests src/lib.rs (target/debug/deps/ui_lib-0123456789abcdef)\nrunning 2 tests\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2188 filtered out; finished in 0.01s\n"
 
 
 class VerdictTests(unittest.TestCase):
@@ -137,6 +138,7 @@ class VerdictTests(unittest.TestCase):
     def test_a_cargo_infrastructure_failure_is_invalid_not_caught(self):
         for output in (
             "error: failed to download `serde v1.0.0`\n\nCaused by:\n  network failure\n",
+            "    Updating crates.io index\nerror: failed to get `tauri` as a dependency\n",
             "error: failed to get `tauri` as a dependency of package `ui`\n",
             "",
             "error: linker `cc` not found\n",
@@ -148,7 +150,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(mutations.classify_command(CMD, 101, output), "INVALID")
 
     def test_zero_tests_run_is_invalid_whatever_the_exit_status(self):
-        none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2190 filtered out\n"
+        none = "     Running unittests src/lib.rs (x)\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2190 filtered out\n"
         self.assertEqual(mutations.classify_command(CMD, 0, none), "INVALID")
         self.assertEqual(mutations.classify_command(CMD, 101, none), "INVALID")
 
@@ -159,6 +161,51 @@ class VerdictTests(unittest.TestCase):
     def test_a_crash_with_no_failed_test_is_invalid(self):
         crashed = PASSING + "error: test failed, to rerun pass `--lib`\n\nCaused by:\n  process didn't exit successfully (signal: 9, SIGKILL)\n"
         self.assertEqual(mutations.classify_command(CMD, 101, crashed), "INVALID")
+
+    def test_an_abnormal_exit_after_a_matching_failure_is_invalid(self):
+        """Sol's case 1: the first binary passes, the second prints a matching FAILED line
+        and then exits abnormally before its summary. The first binary's summary must not
+        stand in for the second's."""
+        for ending in (
+            "Caused by:\n  process didn't exit successfully: `/x/ui_lib-1` (signal: 11, SIGSEGV: invalid memory reference)\n",
+            "Caused by:\n  process didn't exit successfully: `/x/ui_lib-1` (exit status: 3)\n",
+            "",
+        ):
+            output = (
+                PASSING
+                + "     Running tests/c13_3_bug_replays.rs (target/debug/deps/c13_3_bug_replays-abc)\n"
+                + "running 2 tests\n"
+                + "test bug216_stop_queued_behind_start ... FAILED\n"
+                + "error: test failed, to rerun pass `--test c13_3_bug_replays`\n\n"
+                + ending
+            )
+            self.assertEqual(mutations.classify_command(CMD, 101, output), "INVALID", ending)
+            self.assertEqual(mutations.classify_command(CMD, 3, output), "INVALID", ending)
+
+    def test_an_abnormal_exit_after_a_completed_failing_summary_is_invalid(self):
+        output = FAILING + "\nCaused by:\n  process didn't exit successfully: `/x/ui_lib-1` (exit status: 3)\n"
+        self.assertEqual(mutations.classify_command(CMD, 3, output), "INVALID")
+        killed = FAILING + "\nCaused by:\n  process didn't exit successfully: `/x/ui_lib-1` (signal: 9, SIGKILL: kill)\n"
+        self.assertEqual(mutations.classify_command(CMD, 101, killed), "INVALID")
+
+    def test_libtests_own_failure_status_is_not_abnormal(self):
+        # cargo prints no `Caused by` for an ordinary libtest failure (exit status 101).
+        self.assertEqual(mutations.classify_command(CMD, 101, FAILING), "CAUGHT")
+
+    def test_a_failure_in_a_later_completed_binary_counts_when_the_earlier_one_passed(self):
+        output = (
+            PASSING
+            + "     Running tests/c13_3_bug_replays.rs (target/debug/deps/c13_3_bug_replays-abc)\n"
+            + "running 1 test\n"
+            + "test bug216_stop_queued_behind_start ... FAILED\n"
+            + "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n"
+            + "error: test failed, to rerun pass `--test c13_3_bug_replays`\n"
+        )
+        self.assertEqual(mutations.classify_command(CMD, 101, output), "CAUGHT")
+
+    def test_a_nonzero_exit_that_is_not_libtests_is_invalid_even_with_a_failure(self):
+        self.assertEqual(mutations.classify_command(CMD, 1, FAILING), "INVALID")
+        self.assertEqual(mutations.classify_command(CMD, 0, FAILING), "INVALID")
 
     def test_a_command_without_filters_accepts_any_failed_test(self):
         self.assertEqual(mutations.command_filters(CORE_CMD), [])
@@ -222,6 +269,25 @@ class RunRowTests(unittest.TestCase):
     def test_an_infrastructure_failure_in_a_later_command_still_invalidates_the_row(self):
         verdict, _ = self.run_with([(101, FAILING), (101, "error: failed to download `x`\n")])
         self.assertEqual(verdict, "INVALID")
+
+    def test_a_missing_cargo_is_invalid_and_the_remaining_commands_still_run(self):
+        """Sol's case 3: `subprocess.run` raising FileNotFoundError must neither abort
+        the runner nor skip the row's other commands, and the edit is still undone."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, self.source.read_text()))
+            if len(calls) == 1:
+                raise FileNotFoundError(2, "No such file or directory: 'cargo'")
+            return mutations.subprocess.CompletedProcess(cmd, 101, FAILING, None)
+
+        with mock.patch.object(mutations.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            mutations, "git_dirty", return_value=False
+        ), contextlib.redirect_stdout(io.StringIO()):
+            verdict = mutations.run_row(self.row, self.root, False, False)
+        self.assertEqual(verdict, "INVALID")
+        self.assertEqual(len(calls), 2, "the second command still ran")
+        self.assertEqual(self.source.read_text(), "fn a() { let keep = 1; }\n")
 
     def test_main_exits_nonzero_for_an_invalid_row(self):
         with mock.patch.object(mutations, "run_row", return_value="INVALID"), contextlib.redirect_stdout(

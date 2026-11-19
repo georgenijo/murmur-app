@@ -1802,3 +1802,53 @@ fn an_auto_stop_that_never_runs_retires_its_owner_when_dropped() {
         },
     });
 }
+
+/// The golden harness supplies its own host and scheduler to `auto_stop_dispatch`, so
+/// the two places a production-only change could hide are the host constructor and the
+/// scheduler in `handle_audio_lifecycle`. This pins that body: the bridge's auto-stop
+/// goes through `auto_stop_dispatch`, and the scheduler only spawns the task it was
+/// handed and logs a failed result. A spawn that dropped the task (and with it the
+/// `AutoStop` owner) and called an ordinary stop entry would not pass.
+#[test]
+fn the_production_spawn_runs_the_shared_auto_stop_task_and_nothing_else() {
+    let source = include_str!("recording.rs");
+    let start = source
+        .find("pub(crate) fn handle_audio_lifecycle(")
+        .expect("the production bridge");
+    let body = &source[start..];
+    let body = &body[..body.find("\n}\n").expect("the end of the bridge")];
+    let code: String = body
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in [
+        "auto_stop_dispatch(",
+        "TauriHost::new(app_handle.clone(), state.performance.clone())",
+        "tauri::async_runtime::spawn(async move {",
+        "if let Some(Err(_)) = stop.await {",
+    ] {
+        assert!(
+            code.contains(needle),
+            "the production bridge lost `{needle}`"
+        );
+    }
+    for forbidden in [
+        "stop_native_recording",
+        "dispatch_auto_stop",
+        "drop(stop",
+        "ContinuationGuard",
+        "refuse_reentrant_stop",
+    ] {
+        assert!(
+            !code.contains(forbidden),
+            "the production bridge must hand the auto-stop task to the scheduler untouched, not use `{forbidden}`"
+        );
+    }
+    // The task is built once, in `auto_stop_dispatch`, around the owner it is given.
+    assert_eq!(
+        source.matches("fn auto_stop_dispatch<").count(),
+        1,
+        "one constructor for the auto-stop task"
+    );
+}

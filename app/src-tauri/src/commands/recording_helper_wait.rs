@@ -8,7 +8,7 @@
 
 /// How long a helper thread may take to reach its barrier or to finish. A scenario
 /// that exceeds it fails, instead of blocking until CI kills the process.
-const HELPER_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+const HELPER_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Wait for a helper thread to signal that it reached its barrier. A helper that
 /// finishes first (its panic, or a return that skipped the barrier) or a wait past
@@ -55,16 +55,45 @@ pub(crate) fn helper_failed<T>(thread: std::thread::JoinHandle<T>, what: &str) -
 /// panic is re-raised here.
 pub(crate) fn join_bounded<T>(thread: std::thread::JoinHandle<T>, what: &str) -> T {
     let deadline = std::time::Instant::now() + HELPER_BOUND;
+    let mut spins = 0_u32;
     while !thread.is_finished() {
         assert!(
             std::time::Instant::now() < deadline,
             "{what}: the helper did not finish within {HELPER_BOUND:?}"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        // A helper that is about to finish is joined without a sleep's latency.
+        if spins < 2_000 {
+            spins += 1;
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
     match thread.join() {
         Ok(value) => value,
         Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Park a helper thread until the scenario releases it (a message, or the scenario
+/// dropping the sender), for at most [`HELPER_BOUND`]. A helper that holds a lock for
+/// the scenario (the delivery fence D, a parked cancel's T) is thereby never parked for
+/// ever when the scenario fails before it releases the helper: past the bound it runs
+/// on and lets the lock go.
+pub(crate) fn await_release(release: &std::sync::mpsc::Receiver<()>) {
+    let _ = release.recv_timeout(HELPER_BOUND);
+}
+
+/// Spin while `keep_waiting` holds, failing the scenario after [`HELPER_BOUND`]. For a
+/// wait on a lock state that a regression in lock order would never reach.
+pub(crate) fn spin_bounded(what: &str, mut keep_waiting: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + HELPER_BOUND;
+    while keep_waiting() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: the lock state was not reached within {HELPER_BOUND:?}"
+        );
+        std::thread::yield_now();
     }
 }
 
