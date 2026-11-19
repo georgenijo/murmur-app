@@ -67,6 +67,7 @@ impl Drop for Probes {
 fn serialized() -> Probes {
     let stop = super::stop_cutover_tests::serialized();
     probe::take_cancel_entries();
+    crate::commands::settings_store::test_data_dir::take_returned();
     probe::record_cancel_entries(true);
     Probes { _stop: stop }
 }
@@ -299,6 +300,7 @@ fn run_case(case: &Case, plant: bool) -> Run {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     probe::take_cancel_entries();
+    crate::commands::settings_store::test_data_dir::take_returned();
     COMMAND_PROJECTIONS.store(u64::MAX, AtomicOrdering::SeqCst);
     let divergences = core_divergences();
     let trace = run_sub_run(&SubRun {
@@ -307,12 +309,24 @@ fn run_case(case: &Case, plant: bool) -> Run {
         body: case.body,
     });
     PLANT.with(|slot| *slot.borrow_mut() = false);
+    assert_no_data_dir(case.name);
     Run {
         entries: cancel_labelled(probe::take_cancel_entries()),
         projections: COMMAND_PROJECTIONS.load(AtomicOrdering::SeqCst),
         divergences: core_divergences() - divergences,
         trace,
     }
+}
+
+/// The cancel fixtures read no store and no data directory (the harness's pipeline, ticker and
+/// VAD are stand-ins): `data_dir` returned nothing since the last drain, sandboxed or real. A
+/// fixture that needed one would take `vad_stream::StoreOverride` and a sandbox first.
+fn assert_no_data_dir(name: &str) {
+    assert_eq!(
+        crate::commands::settings_store::test_data_dir::take_returned(),
+        Vec::<std::path::PathBuf>::new(),
+        "{name}: a cancel fixture resolved the data directory"
+    );
 }
 
 fn names(run: &Run) -> Vec<&str> {
@@ -697,6 +711,7 @@ fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>, Vec<Stri
     OUTSTANDING_IN_CC.store(usize::MAX, AtomicOrdering::SeqCst);
     OUTSTANDING_AT_TERM.store(usize::MAX, AtomicOrdering::SeqCst);
     probe::take_cancel_entries();
+    crate::commands::settings_store::test_data_dir::take_returned();
     COMMAND_PROJECTIONS.store(u64::MAX, AtomicOrdering::SeqCst);
     let trace = run_sub_run(&SubRun {
         title: delegation.name,
@@ -704,6 +719,7 @@ fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>, Vec<Stri
         body: delegated_body,
     });
     DELEGATION.with(|slot| *slot.borrow_mut() = None);
+    assert_no_data_dir(delegation.name);
     let cancel = names_of(cancel_labelled(probe::take_cancel_entries()));
     let stop = names_of(super::stop_cutover_tests::labelled(
         probe::take_stop_entries(),
