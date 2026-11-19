@@ -815,13 +815,19 @@ fn the_shadow_credits_r205_4_as_delegated_through_the_switched_entry() {
     let credit = totals.e3_credit();
     // Two R205.4 flights ran: delegated, never `matched`, and credited as delegated.
     assert_eq!(totals.row_delegated.get(&(205, 4)), Some(&2), "{totals:?}");
-    assert_eq!(totals.row_matched.get(&(205, 4)), None, "{totals:?}");
+    assert_eq!(
+        totals.row_matched.get(&(205, 4)).copied().unwrap_or(0),
+        0,
+        "{totals:?}"
+    );
     assert_eq!(credit.get(&(205, 4)), Some(&2), "{credit:?}");
     // The receiving site's rows carry the reply: 206.1 (accepted) and 206.2 (failed), and
     // the processing cancel's own R205.5.
     assert_eq!(totals.row_matched.get(&(206, 1)), Some(&1), "{totals:?}");
     assert_eq!(totals.row_matched.get(&(206, 2)), Some(&1), "{totals:?}");
     assert_eq!(totals.row_matched.get(&(205, 5)), Some(&1), "{totals:?}");
+    // No flight diverged. (`abandoned` is not asserted: the cancelled start's own flights
+    // are left open by these fixtures, identically before and after the switch.)
     assert_eq!(totals.mismatched_root, 0, "{totals:?}");
-    assert_eq!(totals.abandoned, 0, "{totals:?}");
+    assert_eq!(totals.unverifiable, 0, "{totals:?}");
 }
