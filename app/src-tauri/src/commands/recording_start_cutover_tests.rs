@@ -351,6 +351,10 @@ enum Plant {
     /// Right before the request's own D section (the `start.request` barrier, D free): the
     /// request's entry is the first read, with no trace line between.
     Now,
+    /// The next time production reaches a `barrier_hook` point (D is free there), right before
+    /// the D section whose entry reads the plant: no trace line is pushed between the two,
+    /// which a plant at a port could not promise (the port's own lines follow its hook).
+    AtBarrier(&'static str),
     /// The next time a port reaches the label (D is free at every label used).
     AtPort(&'static str),
 }
@@ -409,6 +413,16 @@ fn arm(world: &Arc<World>) -> Option<crate::barrier_hook::Installed> {
             let mut done = false;
             Some(crate::barrier_hook::install(move |reached| {
                 if reached == "start.request" && !done {
+                    done = true;
+                    planted_now(&planted);
+                }
+            }))
+        }
+        Plant::AtBarrier(point) => {
+            let planted = Arc::clone(world);
+            let mut done = false;
+            Some(crate::barrier_hook::install(move |reached| {
+                if reached == point && !done {
                     done = true;
                     planted_now(&planted);
                 }
@@ -629,7 +643,7 @@ fn cases() -> Vec<Case> {
             body: ready_after_the_context,
             entries: &[E101, E402, E103],
             queries: &[Q401],
-            plant: Some((Plant::AtPort("supervisor.start"), 1)),
+            plant: Some((Plant::AtBarrier("start.capture"), 1)),
         },
         Case {
             name: "R101.15 + R103.1 + R104.2, planted at the context install (103)",
@@ -677,7 +691,7 @@ fn cases() -> Vec<Case> {
             body: capture_failure,
             entries: &[E101, E102],
             queries: &[],
-            plant: Some((Plant::AtPort("supervisor.start"), 1)),
+            plant: Some((Plant::AtBarrier("start.failure"), 1)),
         },
         Case {
             name: "R103.2 recovering at the context install",

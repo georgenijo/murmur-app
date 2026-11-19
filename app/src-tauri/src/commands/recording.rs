@@ -8031,6 +8031,9 @@ async fn start_native_recording_inner(
                 None,
                 rid,
             );
+            // Test builds: D is free here, right before the capture-failure section (site 102).
+            #[cfg(test)]
+            crate::barrier_hook::at("start.failure");
             let mut dictation = state.app_state.dictation.lock_or_recover();
             let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
             #[cfg(feature = "dictation-shadow")]
@@ -8144,6 +8147,9 @@ async fn start_after_capture(
     // destination. The emit's own ownership recheck is R103.0, below.
     let capture_is_current = {
         let _stretch = flight.stretch();
+        // Test builds: D is free here, right before query 402's short read.
+        #[cfg(test)]
+        crate::barrier_hook::at("start.capture");
         let mut held = state.app_state.dictation.lock_or_recover();
         FieldAdapter::start_view(&state.app_state, &mut held).q_capture_current(recording)
     };
