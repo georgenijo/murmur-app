@@ -135,15 +135,26 @@ impl WindowScorer for BusyAtStop {
     }
 }
 
-/// Scores slowly, so a push is still running when Stop takes the stream.
-struct Slow;
-impl WindowScorer for Slow {
+/// Blocks inside its first window until the test releases it, so a push is
+/// provably mid-chunk (holding the slot lock) when Stop takes the stream. No
+/// timing is involved: the test sequences the worker and Stop with channels.
+struct Gated {
+    entered: Option<std::sync::mpsc::Sender<()>>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+impl WindowScorer for Gated {
     fn score(
         &mut self,
         window: &[f32; WINDOW_SAMPLES],
         state: &mut [f32; STATE_LEN],
     ) -> Result<f32, ScoreError> {
-        std::thread::sleep(Duration::from_millis(2));
+        if let Some(entered) = self.entered.take() {
+            entered.send(()).unwrap();
+            // Failsafe only, so a regression fails instead of hanging CI.
+            self.release
+                .recv_timeout(Duration::from_secs(60))
+                .expect("test releases the first window");
+        }
         Fake.score(window, state)
     }
 }
@@ -335,30 +346,52 @@ fn a_recording_can_begin_only_once_so_two_workers_cannot_share_it() {
 
 #[test]
 fn stop_takes_the_stream_between_chunks_instead_of_waiting_for_the_backlog() {
-    let slot = std::sync::Arc::new(StreamSlot::<Slow>::default());
-    assert!(slot.begin_with(9, Slow));
-    // 16 chunks of about 16 windows at 2 ms each: about half a second of work.
+    use std::sync::atomic::Ordering;
+    let slot = std::sync::Arc::new(StreamSlot::<Gated>::default());
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    assert!(slot.begin_with(
+        9,
+        Gated {
+            entered: Some(entered_tx),
+            release: release_rx,
+        }
+    ));
     let backlog = vec![0.1_f32; PUSH_CHUNK_SAMPLES * 16];
     let worker = {
         let slot = slot.clone();
         std::thread::spawn(move || slot.push(9, 0, &backlog))
     };
-    std::thread::sleep(Duration::from_millis(60));
-    let started = std::time::Instant::now();
-    let handoff = slot.take(9).expect("stop takes the stream");
-    let waited = started.elapsed();
+    // The worker is now inside the first chunk, holding the slot lock.
+    entered_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("worker starts scoring");
+    let stopper = {
+        let slot = slot.clone();
+        std::thread::spawn(move || slot.take(9))
+    };
+    // Wait until Stop has asked the worker to let go. `take` sets this before
+    // it blocks on the lock the worker still holds.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while slot.taking_id.load(Ordering::Acquire) != 9 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stop never asked the worker to yield"
+        );
+        std::thread::yield_now();
+    }
+    // Let the first chunk finish. If stop waited for the whole backlog the
+    // worker would carry on through every chunk; instead it must yield at the
+    // next chunk boundary because the request is still pending (`take` clears
+    // it only after it holds the lock, which the worker releases per chunk).
+    release_tx.send(()).unwrap();
     assert!(!worker.join().unwrap(), "the worker lets go once stop asks");
-    let scored = handoff.vad.consumed();
-    assert!(
-        scored > 0 && scored < PUSH_CHUNK_SAMPLES * 16,
-        "scored {scored}"
-    );
+    let handoff = stopper.join().unwrap().expect("stop takes the stream");
     assert_eq!(
-        scored % PUSH_CHUNK_SAMPLES,
-        0,
-        "only whole chunks were scored"
+        handoff.vad.consumed(),
+        PUSH_CHUNK_SAMPLES,
+        "stop took the stream after exactly the chunk in flight, not the backlog"
     );
-    assert!(waited < Duration::from_millis(200), "waited {waited:?}");
 }
 
 #[test]
@@ -613,6 +646,11 @@ fn a_corrupt_installed_model_is_removed_by_the_first_recording_and_not_retried()
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(!path.exists(), "the worker deleted the corrupt file");
+    // The worker removes the file and only then records the failure, so wait
+    // for the status itself rather than racing the gap between the two.
+    while model_status().state != ModelState::Failed && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     // The next recording does not retry the bad file and does not download.
     assert!(!start(app.handle().clone(), 42, |_, _| false));
     assert_eq!(
