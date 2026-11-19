@@ -588,13 +588,14 @@ class LifecycleCutoverTests(unittest.TestCase):
     )
     MODULE_AFTER = "#[tauri::command]\npub async fn other_witnessed() {\n    other().await\n}\n"
 
-    def cutover_repo(self, module_after: str):
+    def cutover_repo(self, module_after: str, module_base: str | None = None):
+        module_base = self.MODULE_BASE if module_base is None else module_base
         root = repo(self.LIVE_BASE, self.LIVE_AFTER)
         git(root, "checkout", "-q", "main")
         for rel, text in (
             ("scripts/check_shadow_diff.py", self.SCRIPT),
             (self.LIB, self.LIB_BASE),
-            (self.MODULE, self.MODULE_BASE),
+            (self.MODULE, module_base),
         ):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text)
@@ -624,6 +625,74 @@ class LifecycleCutoverTests(unittest.TestCase):
             self.assertIn("shadow change: yes", out, after)
             self.assertIn("feature-only module changed", out)
             # The cutover's own deletions are held to insertion only again.
+            self.assertEqual(code, 1, err)
+
+    # A retained wrapper with a local import, and the module-level fallback it would resolve
+    # to without it (Sol round 4, finding 1: the deleted import flips the return value).
+    RETAINED = (
+        "fn check() -> bool {\n    true\n}\n\n"
+        "#[tauri::command]\npub async fn other_witnessed() -> bool {\n"
+        "    use crate::real::check;\n    check()\n}\n"
+    )
+
+    def test_deleting_a_local_import_of_a_retained_wrapper_is_a_shadow_change(self):
+        base = self.MODULE_BASE + self.RETAINED
+        after = self.MODULE_AFTER + self.RETAINED.replace("    use crate::real::check;\n", "")
+        # The same module without the retired wrapper but with the import intact passes ...
+        with allowed({}):
+            code, out, err = run(self.cutover_repo(self.MODULE_AFTER + self.RETAINED, base))
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+        # ... and the deleted import (the plant) is a shadow edit.
+        with allowed({}):
+            code, out, err = run(self.cutover_repo(after, base))
+        self.assertIn("shadow change: yes", out)
+        self.assertEqual(code, 1, err)
+
+    def test_a_module_level_import_goes_only_when_the_retired_wrappers_alone_used_it(self):
+        used_by_both = (
+            "use crate::commands::recording::process_audio;\nuse crate::util::shared;\n\n"
+            "#[tauri::command]\npub async fn process_audio_witnessed() {\n    shared(); process_audio().await\n}\n\n"
+            "#[tauri::command]\npub async fn other_witnessed() {\n    shared();\n}\n"
+        )
+        # Dropping `shared`'s import, which the retained wrapper still uses: a shadow edit.
+        after = (
+            "use crate::commands::recording::process_audio;\n\n"
+            "#[tauri::command]\npub async fn other_witnessed() {\n    shared();\n}\n"
+        ).replace("use crate::commands::recording::process_audio;\n\n", "")
+        with allowed({}):
+            code, out, err = run(self.cutover_repo(after, used_by_both))
+        self.assertIn("shadow change: yes", out)
+        self.assertEqual(code, 1, err)
+        # Dropping only the import the retired wrapper alone used: a clean retirement.
+        after = (
+            "use crate::util::shared;\n\n"
+            "#[tauri::command]\npub async fn other_witnessed() {\n    shared();\n}\n"
+        )
+        with allowed({}):
+            code, out, err = run(self.cutover_repo(after, used_by_both))
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+
+    def test_a_removed_brace_import_or_glob_is_checked_name_by_name(self):
+        base = (
+            "use crate::commands::{\n    helper,\n    process_audio,\n};\nuse super::*;\n\n"
+            "#[tauri::command]\npub async fn process_audio_witnessed() {\n    process_audio().await\n}\n\n"
+            "#[tauri::command]\npub async fn other_witnessed() {\n    helper();\n}\n"
+        )
+        tail = "\n#[tauri::command]\npub async fn other_witnessed() {\n    helper();\n}\n"
+        # The name only the retired wrapper used, on its own line of a brace import: fine.
+        clean = "use crate::commands::{\n    helper,\n};\nuse super::*;\n" + tail
+        with allowed({}):
+            code, out, err = run(self.cutover_repo(clean, base))
+        self.assertEqual(code, 0, err)
+        # The retained wrapper's name: a shadow edit. So is a removed glob.
+        retained = "use crate::commands::{\n    process_audio,\n};\nuse super::*;\n" + tail
+        no_glob = "use crate::commands::{\n    helper,\n};\n" + tail
+        for after in (retained, no_glob):
+            with allowed({}):
+                code, out, err = run(self.cutover_repo(after, base))
+            self.assertIn("shadow change: yes", out, after)
             self.assertEqual(code, 1, err)
 
     def test_removing_a_wrapper_that_is_still_registered_is_a_shadow_change(self):

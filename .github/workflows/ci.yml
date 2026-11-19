@@ -82,6 +82,22 @@ jobs:
               - '.cargo/**'
               - '.github/workflows/ci.yml'
 
+      # The filter must have run and produced every answer: a skipped or failed filter leaves
+      # its outputs empty, which the job outputs above would read as `false` (no Rust job).
+      - name: Require the change filter result
+        env:
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          GITHUB_CHANGED: ${{ steps.filter.outputs.github }}
+          RUST_CACHE: ${{ steps.filter.outputs.rust-cache }}
+        run: |
+          for value in "$FRONTEND" "$RUST" "$GITHUB_CHANGED" "$RUST_CACHE"; do
+            if [ "$value" != "true" ] && [ "$value" != "false" ]; then
+              echo "the change filter produced no answer: '$value'"
+              exit 1
+            fi
+          done
+
   policy:
     if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest

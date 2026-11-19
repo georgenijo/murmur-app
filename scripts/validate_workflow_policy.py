@@ -102,6 +102,20 @@ CI_CHANGES_OUTPUTS = {
     "rust": "${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}",
     "github": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}",
 }
+CI_FILTER_RESULT_STEP = """      - name: Require the change filter result
+        env:
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          GITHUB_CHANGED: ${{ steps.filter.outputs.github }}
+          RUST_CACHE: ${{ steps.filter.outputs.rust-cache }}
+        run: |
+          for value in "$FRONTEND" "$RUST" "$GITHUB_CHANGED" "$RUST_CACHE"; do
+            if [ "$value" != "true" ] && [ "$value" != "false" ]; then
+              echo "the change filter produced no answer: '$value'"
+              exit 1
+            fi
+          done
+"""
 CI_RUST_TEST_STEPS = (
     "Run tests",
     "Run dictation shadow tests",
@@ -305,7 +319,7 @@ def validate_ci(ci: str) -> int:
     )
     assert "if: github.event_name == 'push'" in verified
     assert "run: bash scripts/ci_verified_tree.sh" in verified
-    assert changes.count("run:") == 1, "changes must only filter paths"
+    assert changes.count("run:") == 2, "changes must only filter paths"
     assert (
         "verified: ${{ steps.verified.outputs.verified == 'true' }}" in changes
     )
@@ -352,7 +366,17 @@ def validate_ci(ci: str) -> int:
         assert selected in ci_pass_step, f"ci-pass must require success from {jobs} when {outputs} select them"
     # The filter step and what it selects, pinned exactly (a glob that matches nothing, or an
     # output that is always false, would let a Rust-only PR skip both Rust jobs).
-    assert "      - uses: dorny/paths-filter@v3\n        id: filter\n" in changes
+    assert "      - uses: dorny/paths-filter@v3\n        id: filter\n        with:\n" in changes
+    # The filter step runs on every event: no `if:` (a `github.event_name == 'push'` would skip
+    # it on a PR and leave every selector false), and no `continue-on-error`.
+    filter_start = changes.index("      - uses: dorny/paths-filter@v3\n")
+    filter_end = changes.find("\n      - ", filter_start + 1)
+    filter_step = changes[filter_start : filter_end if filter_end >= 0 else len(changes)]
+    assert not re.search(r"^        (if|continue-on-error):", filter_step, re.MULTILINE), (
+        "the paths-filter step must run unconditionally"
+    )
+    # And `changes` fails when the filter produced no answer: every output exactly true/false.
+    assert CI_FILTER_RESULT_STEP in changes, "changes must require the change filter result"
     for name, expected in CI_FILTER_PATHS.items():
         found = re.search(
             rf"^            {re.escape(name)}:\n(?P<paths>(?:^              (?:- |#).*\n)+)",

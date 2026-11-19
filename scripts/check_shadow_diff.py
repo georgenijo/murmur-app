@@ -909,12 +909,77 @@ def function_line_span(tokens: list[tuple[str, int]], lines: list[str], name: st
     return set()
 
 
+_USE_NOT_A_LEAF = {"use", "pub", "crate", "super", "as", "in"}
+
+
+def module_use_statements(tokens: list[tuple[str, int]], lines: list[str]) -> list[dict]:
+    """The module-level `use` statements of a text (brace depth 0): their line set (leading
+    attribute lines included) and the names they import, each with its line. A leaf is the
+    last segment of a path, or the alias after `as`. `names` is `None` for a statement with a
+    glob or a `self` leaf, whose imports cannot be named."""
+    statements = []
+    depth = 0
+    for k, (text, line) in enumerate(tokens):
+        if text == "{":
+            depth += 1
+        elif text == "}":
+            depth -= 1
+        if text != "use" or depth != 0:
+            continue
+        end = next((j for j in range(k, len(tokens)) if tokens[j][0] == ";"), None)
+        if end is None:
+            continue
+        names: list[tuple[str, int]] | None = []
+        for j in range(k + 1, end + 1):
+            word, at = tokens[j]
+            following = tokens[j + 1][0] if j + 1 < len(tokens) else ";"
+            if word in ("*", "self"):
+                names = None
+                break
+            if re.fullmatch(r"[A-Za-z_]\w*", word) and word not in _USE_NOT_A_LEAF and following in (",", "}", ";"):
+                names.append((word, at))
+        first = line
+        while first > 1 and lines[first - 2].strip().startswith("#["):
+            first -= 1
+        statements.append({"lines": set(range(first, tokens[end][1] + 1)), "names": names, "start": k, "end": end})
+    return statements
+
+
+def only_retired_wrappers_use(
+    tokens: list[tuple[str, int]], lines: list[str], uncovered: set[int], covered: set[int]
+) -> bool:
+    """Whether every removed line outside the retired wrappers is a blank line or part of a
+    module-level `use` whose removed names the base uses only inside those wrappers (checked
+    against the base text). A deleted import of anything a retained function uses, a local
+    `use` inside a function, a glob and any other line are not part of the retirement."""
+    statements = module_use_statements(tokens, lines)
+    for line in sorted(uncovered):
+        shown = lines[line - 1].strip() if 0 < line <= len(lines) else ""
+        if not shown:
+            continue
+        owner = next((st for st in statements if line in st["lines"]), None)
+        if owner is None or owner["names"] is None:
+            return False
+        removed_names = {name for name, at in owner["names"] if at in uncovered}
+        if not removed_names and not all(l in uncovered or not lines[l - 1].strip() for l in owner["lines"]):
+            # A line of the statement with no import on it (an opener or a closer) goes only
+            # with the whole statement.
+            return False
+        inside = set(range(owner["start"], owner["end"] + 1))
+        for name in removed_names:
+            for j, (word, at) in enumerate(tokens):
+                if word == name and j not in inside and at not in covered:
+                    return False
+    return True
+
+
 def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str]) -> bool:
     """A feature-only module's change that only takes out the wrappers of retired handler
-    entries: no line is added, every removed line is inside such a wrapper (or is a blank or
-    `use` line a removed wrapper leaves behind), and the wrapper's name is gone from the whole
-    tree (its handler entry and call sites went with it). Anything else in the module is a
-    shadow edit."""
+    entries: no line is added, every removed line is inside such a wrapper (its attributes,
+    signature and body) or is a blank line or a module-level `use` of names that only those
+    wrappers used (checked against the base), and the wrapper's name is gone from the whole
+    tree (its handler entry and call sites went with it). Anything else in the module, a
+    retained wrapper's local import included, is a shadow edit."""
     if not names or added_lines(root, base, path):
         return False
     removed = removed_lines(root, base, path)
@@ -932,10 +997,8 @@ def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str]) -> 
             removed_names.add(name)
     if not removed_names:
         return False
-    for line in removed - covered:
-        shown = lines[line - 1].strip() if 0 < line <= len(lines) else ""
-        if shown and not shown.startswith("use "):
-            return False
+    if not only_retired_wrappers_use(tokens, lines, removed - covered, covered):
+        return False
     for name in removed_names:
         result = subprocess.run(
             ["git", "grep", "-lw", "-e", name, "HEAD", "--", f"{TAURI}/*.rs"],

@@ -557,6 +557,56 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
+    def test_the_filter_step_cannot_be_skipped_and_its_result_is_required(self) -> None:
+        # Sol round 4, finding 2: `if: github.event_name == 'push'` on the paths-filter step
+        # skips it on a PR and leaves the Rust and GitHub selectors false.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        step = "      - uses: dorny/paths-filter@v3\n        id: filter\n        with:\n"
+        self.assertEqual(workflow.count(step), 1)
+        for replacement in (
+            "      - uses: dorny/paths-filter@v3\n        id: filter\n        if: github.event_name == 'push'\n        with:\n",
+            "      - uses: dorny/paths-filter@v3\n        id: filter\n        if: always()\n        with:\n",
+            "      - uses: dorny/paths-filter@v3\n        id: filter\n        continue-on-error: true\n        with:\n",
+        ):
+            with self.subTest(replacement=replacement.splitlines()[2].strip()):
+                mutated = workflow.replace(step, replacement, 1)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+        start = workflow.index("      - name: Require the change filter result\n")
+        end = workflow.index("  policy:\n")
+        for mutated in (
+            workflow[:start] + workflow[end:],
+            workflow.replace(
+                "      - name: Require the change filter result\n",
+                "      - name: Require the change filter result\n        if: github.event_name == 'push'\n",
+                1,
+            ),
+            workflow.replace('[ "$value" != "true" ] && [ "$value" != "false" ]', '[ "$value" = "maybe" ]', 1),
+            workflow.replace("              exit 1\n            fi\n          done\n\n  policy:", "              exit 0\n            fi\n          done\n\n  policy:", 1),
+            workflow.replace("RUST: ${{ steps.filter.outputs.rust }}", "RUST: true", 1),
+        ):
+            self.assertNotEqual(workflow, mutated)
+            with self.assertRaises(AssertionError):
+                validate_ci(mutated)
+
+    def test_the_filter_result_step_fails_on_a_missing_or_malformed_answer(self) -> None:
+        import subprocess
+
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        start = workflow.index("      - name: Require the change filter result\n")
+        block = workflow[start : workflow.index("  policy:\n")]
+        script = block.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        base = {"FRONTEND": "false", "RUST": "true", "GITHUB_CHANGED": "false", "RUST_CACHE": "false", "PATH": "/usr/bin:/bin"}
+        ok = subprocess.run(["bash", "-c", script], env=base, capture_output=True, text=True)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        for key in ("FRONTEND", "RUST", "GITHUB_CHANGED", "RUST_CACHE"):
+            for bad in ("", "True", "yes"):
+                with self.subTest(key=key, value=bad):
+                    result = subprocess.run(["bash", "-c", script], env={**base, key: bad}, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("no answer", result.stdout)
+
     def test_ci_pass_requires_success_from_a_job_its_filters_selected(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old, new in (
