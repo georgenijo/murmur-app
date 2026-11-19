@@ -335,23 +335,50 @@ def validate_ci(ci: str) -> int:
     return len(cases)
 
 
+def _kill_budget(slow_timeout: object, where: str) -> int:
+    """The seconds a `slow-timeout` setting lets a test run before nextest kills it."""
+    assert isinstance(slow_timeout, dict), (
+        f"{where}: slow-timeout must be a table with a period and a terminate-after,"
+        f" not {slow_timeout!r} (a bare duration only warns and never kills the test)"
+    )
+    period = slow_timeout.get("period")
+    match = re.fullmatch(r"(\d+)s", period) if isinstance(period, str) else None
+    assert match and int(match.group(1)) > 0, f"{where}: period must be a positive \"Ns\""
+    terminate_after = slow_timeout.get("terminate-after")
+    assert (
+        isinstance(terminate_after, int)
+        and not isinstance(terminate_after, bool)
+        and terminate_after > 0
+    ), f"{where}: terminate-after must be a positive integer (a timeout without one never kills)"
+    return int(match.group(1)) * terminate_after
+
+
 def validate_nextest_config(config: str) -> None:
-    """Every nextest run must kill a test that runs for ever (30 s x 4 = 120 s)."""
-    default = re.search(r"^\[profile\.default\]\n((?:(?!\[).*\n?)*)", config, re.MULTILINE)
-    assert default, "nextest.toml needs a [profile.default] table"
-    match = re.search(
-        r"^slow-timeout\s*=\s*\{\s*period\s*=\s*\"(\d+)s\"\s*,\s*terminate-after\s*=\s*(\d+)\s*\}",
-        default.group(1),
-        re.MULTILINE,
+    """Every nextest run must kill a test that runs for ever (30 s x 4 = 120 s).
+
+    The default profile needs a kill budget of at most 120 s, and every override (in any
+    profile) that sets `slow-timeout` needs a real one too: a warning-only override
+    would let a matching test run past the default.
+    """
+    import tomllib
+
+    parsed = tomllib.loads(config)
+    profiles = parsed.get("profile", {})
+    default = profiles.get("default")
+    assert default is not None, "nextest.toml needs a [profile.default] table"
+    assert "slow-timeout" in default, "[profile.default] needs a slow-timeout"
+    budget = _kill_budget(default["slow-timeout"], "[profile.default]")
+    assert budget <= 120, (
+        f"the default per-test kill budget is {budget} s; keep it at 120 s or less and"
+        " give a slower test a named override"
     )
-    assert match, "[profile.default] needs a slow-timeout with a terminate-after"
-    period, terminate_after = int(match.group(1)), int(match.group(2))
-    assert period * terminate_after <= 120, (
-        f"the default per-test kill budget is {period * terminate_after} s; keep it at 120 s or"
-        " less and give a slower test a named override"
-    )
-    for override in re.findall(r"^slow-timeout\s*=\s*\{.*$", config, re.MULTILINE):
-        assert "terminate-after" in override, f"an override without a kill budget: {override}"
+    for name, profile in profiles.items():
+        for index, override in enumerate(profile.get("overrides", [])):
+            if "slow-timeout" in override:
+                _kill_budget(
+                    override["slow-timeout"],
+                    f"[[profile.{name}.overrides]] #{index + 1} ({override.get('filter', '?')})",
+                )
 
 
 def validate_release_build(workflow: str) -> int:

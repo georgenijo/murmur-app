@@ -6044,15 +6044,7 @@ pub(crate) fn handle_audio_lifecycle(
         auto_stop_dispatch(
             |app_handle, state| TauriHost::new(app_handle.clone(), state.performance.clone()),
             |recording_id, _owner, stop| {
-                tauri::async_runtime::spawn(async move {
-                    if let Some(Err(_)) = stop.await {
-                        tracing::error!(
-                            target: "pipeline",
-                            recording_id,
-                            "interrupted recording transcription failed"
-                        );
-                    }
-                });
+                spawn_auto_stop(recording_id, stop);
             },
         ),
         |app_handle, recording_id, register| {
@@ -7384,6 +7376,21 @@ async fn dispatch_auto_stop(
 type AutoStopTask = std::pin::Pin<
     Box<dyn std::future::Future<Output = Option<Result<serde_json::Value, String>>> + Send>,
 >;
+
+/// Production's scheduler for the [`AutoStopTask`]: spawn it on the app runtime and
+/// log a failed stop. Named so a test can run the real scheduler on a task that
+/// records when it is polled.
+fn spawn_auto_stop(recording_id: u64, stop: AutoStopTask) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        if let Some(Err(_)) = stop.await {
+            tracing::error!(
+                target: "pipeline",
+                recording_id,
+                "interrupted recording transcription failed"
+            );
+        }
+    })
+}
 
 /// R215.2 `RS`: what the lifecycle bridge does with the `AutoStop` owner it
 /// registered for an interrupted capture. It builds the stop task around the

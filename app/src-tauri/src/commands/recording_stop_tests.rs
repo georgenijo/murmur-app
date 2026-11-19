@@ -1805,12 +1805,12 @@ fn an_auto_stop_that_never_runs_retires_its_owner_when_dropped() {
 
 /// The golden harness supplies its own host and scheduler to `auto_stop_dispatch`, so
 /// the two places a production-only change could hide are the host constructor and the
-/// scheduler in `handle_audio_lifecycle`. This pins that body: the bridge's auto-stop
-/// goes through `auto_stop_dispatch`, and the scheduler only spawns the task it was
-/// handed and logs a failed result. A spawn that dropped the task (and with it the
-/// `AutoStop` owner) and called an ordinary stop entry would not pass.
+/// scheduler. The scheduler is the named `spawn_auto_stop`, run for real by the test
+/// below; this pins `handle_audio_lifecycle` to it: the bridge's auto-stop goes through
+/// `auto_stop_dispatch`, and its scheduler hands the task it was given to
+/// `spawn_auto_stop` and does nothing else with it.
 #[test]
-fn the_production_spawn_runs_the_shared_auto_stop_task_and_nothing_else() {
+fn the_production_bridge_hands_the_auto_stop_task_to_spawn_auto_stop() {
     let source = include_str!("recording.rs");
     let start = source
         .find("pub(crate) fn handle_audio_lifecycle(")
@@ -1825,24 +1825,23 @@ fn the_production_spawn_runs_the_shared_auto_stop_task_and_nothing_else() {
     for needle in [
         "auto_stop_dispatch(",
         "TauriHost::new(app_handle.clone(), state.performance.clone())",
-        "tauri::async_runtime::spawn(async move {",
-        "if let Some(Err(_)) = stop.await {",
+        "|recording_id, _owner, stop| {\n                spawn_auto_stop(recording_id, stop);\n            },",
     ] {
-        assert!(
-            code.contains(needle),
-            "the production bridge lost `{needle}`"
-        );
+        assert!(code.contains(needle), "the production bridge lost `{needle}`");
     }
     for forbidden in [
         "stop_native_recording",
         "dispatch_auto_stop",
-        "drop(stop",
+        "drop(",
+        "let stop",
+        "async",
+        ".await",
         "ContinuationGuard",
         "refuse_reentrant_stop",
     ] {
         assert!(
             !code.contains(forbidden),
-            "the production bridge must hand the auto-stop task to the scheduler untouched, not use `{forbidden}`"
+            "the production bridge must hand the auto-stop task to `spawn_auto_stop` untouched, not use `{forbidden}`"
         );
     }
     // The task is built once, in `auto_stop_dispatch`, around the owner it is given.
@@ -1850,5 +1849,98 @@ fn the_production_spawn_runs_the_shared_auto_stop_task_and_nothing_else() {
         source.matches("fn auto_stop_dispatch<").count(),
         1,
         "one constructor for the auto-stop task"
+    );
+}
+
+/// Production's scheduler runs the task it is handed to completion. The task records
+/// when it is polled and when it finishes, and a drop guard records an end that was
+/// not a completion (a scheduler that discarded the task would drop it unpolled).
+#[test]
+fn the_production_scheduler_polls_the_auto_stop_task_to_completion() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    for reply in [
+        Some(Ok(serde_json::json!({}))),
+        Some(Err("failed".to_string())),
+        None,
+    ] {
+        let (polled, finished, dropped) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let task: AutoStopTask = {
+            let (polled, finished, guard) = (
+                Arc::clone(&polled),
+                Arc::clone(&finished),
+                Dropped(Arc::clone(&dropped)),
+            );
+            Box::pin(async move {
+                let _guard = guard;
+                polled.store(true, Ordering::SeqCst);
+                // Suspend once: the scheduler must keep polling, not just start it.
+                let mut yielded = false;
+                std::future::poll_fn(|cx| {
+                    if yielded {
+                        std::task::Poll::Ready(())
+                    } else {
+                        yielded = true;
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                finished.store(true, Ordering::SeqCst);
+                reply
+            })
+        };
+        tauri::async_runtime::block_on(spawn_auto_stop(1, task))
+            .expect("the scheduler's task joins");
+        assert!(polled.load(Ordering::SeqCst), "the task was polled");
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the task was polled to completion"
+        );
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the task ended and released what it held"
+        );
+    }
+}
+
+static UNCLAIMED_WORLD: std::sync::Mutex<Option<std::sync::Weak<World>>> =
+    std::sync::Mutex::new(None);
+
+/// The bridge queues the stop task, which holds the `AutoStop` owner, in the world; a
+/// scenario that panics before it fetches the task must not leave the world alive
+/// through the task. The task holds a weak handle to its world and upgrades it only
+/// when polled, so when the scenario unwinds the world, the task and the owner all drop.
+#[test]
+fn an_unclaimed_auto_stop_task_does_not_keep_the_world_alive_after_a_panic() {
+    let outcome = std::panic::catch_unwind(|| {
+        run_sub_run(&SubRun {
+            title: "unclaimed auto-stop",
+            setup: Setup::idle(),
+            body: |w| {
+                interrupted_with_a_carried_owner(w);
+                *UNCLAIMED_WORLD.lock().expect("slot") = Some(Arc::downgrade(w));
+                panic!("the scenario fails before it fetches the queued auto-stop task");
+            },
+        })
+    });
+    assert!(outcome.is_err(), "the scenario's own panic propagates");
+    let world = UNCLAIMED_WORLD
+        .lock()
+        .expect("slot")
+        .take()
+        .expect("the scenario reached its failure");
+    assert!(
+        world.upgrade().is_none(),
+        "the queued task kept the world (and its AutoStop owner) alive after the scenario unwound"
     );
 }

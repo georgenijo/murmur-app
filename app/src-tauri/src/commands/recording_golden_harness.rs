@@ -664,12 +664,10 @@ impl World {
             // on its own thread, joined at once so the causal order is the one the
             // traces record, exactly as `notify` does, and the production
             // re-entrancy check stays unrelaxed.
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(hook)
-                    .join()
-                    .expect("the hook's thread panicked");
-            });
+            //
+            // The join is bounded: a hook that blocks on a lock its caller holds (D
+            // held through a cancel's tail, say) fails here at the bound, not never.
+            join_bounded(std::thread::spawn(hook), "the independent hook");
         }
     }
 
@@ -934,7 +932,10 @@ impl World {
         let ends_the_attempt = matches!(event, AudioLifecycleEvent::Idle);
         let world = this;
         let deliver = move || {
-            let host_world = Arc::clone(&world);
+            // A weak handle: the queued task outlives a scenario that panics before
+            // it fetches the task, and an `Arc` here would keep the world, which owns
+            // the task, alive for ever (and the task's `AutoStop` owner with it).
+            let host_world = Arc::downgrade(&world);
             handle_audio_lifecycle_events(
                 world.app.clone(),
                 recording_id,
@@ -942,7 +943,13 @@ impl World {
                 // Production's `auto_stop_dispatch`, with this world's host and a
                 // scheduler that keeps the task instead of spawning it.
                 auto_stop_dispatch(
-                    move |_, _| Host(host_world),
+                    move |_, _| {
+                        Host(
+                            host_world
+                                .upgrade()
+                                .expect("the world is alive when its task is polled"),
+                        )
+                    },
                     |recording_id, token, stop| {
                         world.push(format!("bridge.auto_stop_scheduled {recording_id}"));
                         locked(&world.auto_stops).push(recording_id);

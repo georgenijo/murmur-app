@@ -287,12 +287,28 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             ("[profile.default]", "[profile.ci]"),
             # An override that only warns.
             ('slow-timeout = { period = "20s", terminate-after = 3 }', 'slow-timeout = { period = "20s" }'),
+            # An override that is a bare duration: it never kills (Sol round 3).
+            ('slow-timeout = { period = "20s", terminate-after = 3 }', 'slow-timeout = "1s"'),
+            ('slow-timeout = { period = "60s", terminate-after = 4 }', 'slow-timeout = "1s"'),
+            # A zero or non-integer kill count.
+            ("terminate-after = 3", "terminate-after = 0"),
+            ('terminate-after = 3', 'terminate-after = "3"'),
         ):
             with self.subTest(rewrite=new):
                 mutated = config.replace(old, new, 1)
                 self.assertNotEqual(config, mutated)
                 with self.assertRaises(AssertionError):
                     validate_nextest_config(mutated)
+
+    def test_an_extra_warning_only_override_is_rejected(self) -> None:
+        config = (ROOT / "app/src-tauri/.config/nextest.toml").read_text()
+        extra = '\n[[profile.default.overrides]]\nfilter = \'test(/golden_tests::golden_/)\'\nslow-timeout = "1s"\n'
+        with self.assertRaises(AssertionError):
+            validate_nextest_config(config + extra)
+        # An override that only sets other things is fine.
+        validate_nextest_config(
+            config + "\n[[profile.default.overrides]]\nfilter = 'test(/x/)'\nretries = 1\n"
+        )
 
     def test_a_nextest_config_file_argument_cannot_replace_the_timeout(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
