@@ -267,8 +267,8 @@ pub(crate) fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<P
     // Test builds: once a test has installed a sandbox, every resolution lands in it (a mock
     // app's own data directory is under the real user's `Application Support`) and is recorded.
     #[cfg(test)]
-    if let Some(dir) = test_data_dir::resolve() {
-        return Ok(dir);
+    if let Some(dir) = test_data_dir::sandbox() {
+        return Ok(test_data_dir::returned(dir));
     }
     let dir = app
         .path()
@@ -276,6 +276,8 @@ pub(crate) fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<P
         .map_err(|e| format!("Durable data directory unavailable: {e}"))?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
+    #[cfg(test)]
+    let dir = test_data_dir::returned(dir);
     Ok(dir)
 }
 
@@ -289,7 +291,7 @@ pub(crate) mod test_data_dir {
     use super::*;
 
     static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    static RESOLVED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    static RETURNED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
     /// The sandbox, created on first use and installed for the rest of the process.
     pub(crate) fn install() -> PathBuf {
@@ -304,15 +306,22 @@ pub(crate) mod test_data_dir {
             .clone()
     }
 
-    pub(super) fn resolve() -> Option<PathBuf> {
-        let dir = SANDBOX.get()?.clone();
-        RESOLVED.lock_or_recover().push(dir.clone());
-        Some(dir)
+    /// The installed sandbox, if any. Not a record: a record of this constant would hold
+    /// whatever `data_dir` did.
+    pub(super) fn sandbox() -> Option<PathBuf> {
+        SANDBOX.get().cloned()
     }
 
-    /// Every directory `data_dir` resolved since the last call.
-    pub(crate) fn take_resolved() -> Vec<PathBuf> {
-        std::mem::take(&mut *RESOLVED.lock_or_recover())
+    /// Record the path `data_dir` is about to return, on either exit (the sandbox or the
+    /// real directory), and hand it back unchanged.
+    pub(super) fn returned(dir: PathBuf) -> PathBuf {
+        RETURNED.lock_or_recover().push(dir.clone());
+        dir
+    }
+
+    /// Every path `data_dir` returned since the last call.
+    pub(crate) fn take_returned() -> Vec<PathBuf> {
+        std::mem::take(&mut *RETURNED.lock_or_recover())
     }
 }
 
