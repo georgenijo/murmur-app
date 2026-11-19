@@ -51,7 +51,6 @@ use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
 use murmur_dictation_core::ids::RecordingId;
 use murmur_dictation_core::status::Status;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex as StdMutex;
 
 /// A `(status, generation)` pair, as an entry read it of the persisted core or of live.
@@ -343,6 +342,9 @@ enum Plant {
     Now,
     /// The next time a port reaches the label (D is free at every label used).
     AtPort(&'static str),
+    /// The next time production reaches a `barrier_hook` point (D is free there): used where no
+    /// port label is reached between the entries (the import's destination row).
+    AtBarrier(&'static str),
 }
 
 thread_local! {
@@ -351,9 +353,6 @@ thread_local! {
 
 /// The `(planted, live)` pair the plant wrote, whichever thread ran it.
 static PLANTED: StdMutex<Option<(Pair, Pair)>> = StdMutex::new(None);
-
-/// `DictationCore::project` entries made while the command under test ran.
-static RUN_PROJECTIONS: AtomicU64 = AtomicU64::new(0);
 
 fn planted_now(world: &Arc<World>) {
     let pair = world.plant_core_divergence();
@@ -372,6 +371,8 @@ fn arm(world: &Arc<World>) {
             let planted = Arc::clone(&world);
             world.on(port, move || planted_now(&planted));
         }
+        // Installed by the body that owns the guard (see `import_with_destination`).
+        Plant::AtBarrier(_) => {}
     }
 }
 
@@ -409,14 +410,12 @@ fn enable_smart_destination(world: &Arc<World>) {
     dictation.save_transcript = false;
 }
 
-/// A start, announced by a marker line, with its `project()` entries counted.
+/// A start, announced by a marker line.
 fn start_command(world: &Arc<World>) {
     arm(world);
     world.note("start requested");
-    let before = probe::projections();
     let mut start = world.start();
     let reply = complete(&mut start);
-    RUN_PROJECTIONS.fetch_add(probe::projections() - before, AtomicOrdering::SeqCst);
     world.reply("start", &reply);
 }
 
@@ -480,10 +479,8 @@ fn app_disabled(world: &Arc<World>) {
 fn fixed_device_with_smart_auto(world: &Arc<World>) {
     arm(world);
     world.note("start requested");
-    let before = probe::projections();
     let mut start = world.start_smart_auto(Some("fixed-device".to_string()));
     let reply = complete(&mut start);
-    RUN_PROJECTIONS.fetch_add(probe::projections() - before, AtomicOrdering::SeqCst);
     world.reply("start", &reply);
 }
 
@@ -534,17 +531,8 @@ fn late_publish(world: &Arc<World>) {
     start_command(world);
 }
 
-/// The legacy import's destination capture check (402 in `process_audio_inner`).
-fn import(world: &Arc<World>) {
-    let host = ImportHost::new();
-    if let Plant::AtPort("import.capture") = PLAN.with(|plan| *plan.borrow()) {
-        let planted = Arc::clone(world);
-        *host
-            .at_capture
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Box::new(move || planted_now(&planted)));
-    }
+/// The import command, run to its reply on `host`.
+fn run_import(world: &Arc<World>, host: ImportHost) {
     let reply = {
         let mut run: Fut<Result<serde_json::Value, String>> = Box::pin({
             let world = Arc::clone(world);
@@ -558,6 +546,41 @@ fn import(world: &Arc<World>) {
     };
     world.reply("import", &reply);
     assert!(reply.is_ok(), "{reply:?}");
+}
+
+/// The legacy import's destination capture check (402 in `process_audio_inner`).
+fn import(world: &Arc<World>) {
+    let host = ImportHost::new();
+    if let Plant::AtPort("import.capture") = PLAN.with(|plan| *plan.borrow()) {
+        let planted = Arc::clone(world);
+        *host
+            .at_capture
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Box::new(move || planted_now(&planted)));
+    }
+    run_import(world, host);
+}
+
+/// The import with Smart Destination on: after the capture check (402) its own destination
+/// section (R301.6, a stop-family entry) runs. A plant made at the `process_audio.destination`
+/// barrier lands between the two, so the row reads it first.
+fn import_with_destination(world: &Arc<World>) {
+    enable_smart_destination(world);
+    let _plant = match PLAN.with(|plan| *plan.borrow()) {
+        Plant::AtBarrier(point) => {
+            let planted = Arc::clone(world);
+            let mut done = false;
+            Some(crate::barrier_hook::install(move |reached| {
+                if reached == point && !done {
+                    done = true;
+                    planted_now(&planted);
+                }
+            }))
+        }
+        _ => None,
+    };
+    run_import(world, ImportHost::new());
 }
 
 fn cases() -> Vec<Case> {
@@ -738,19 +761,25 @@ fn run_case(case: &Case, plant: Plant) -> Run {
     probe::take_start_entries();
     probe::take_start_queries();
     crate::commands::settings_store::test_data_dir::take_returned();
-    RUN_PROJECTIONS.store(0, AtomicOrdering::SeqCst);
+    // Every `DictationCore::project` entry made anywhere while the sub-run ran (its setup, its
+    // body, the ports' hooks and the bridge's detached work): a delta of the one process-wide
+    // counter, not a count a body keeps for itself, so a body that does not keep one (the
+    // import's) or a read outside the command's own window (the bridge's 404 in
+    // `release_ready()`) is inside it too.
+    let projections = probe::projections();
     let divergences = core_divergences();
     let trace = run_sub_run(&SubRun {
         title: case.name,
         setup: (case.setup)(),
         body: case.body,
     });
+    let projections = probe::projections() - projections;
     PLAN.with(|slot| *slot.borrow_mut() = Plant::Nowhere);
     assert_no_data_dir(case.name);
     Run {
         entries: entries_read(),
         queries: queries_read(),
-        projections: RUN_PROJECTIONS.load(AtomicOrdering::SeqCst),
+        projections,
         divergences: core_divergences() - divergences,
         trace,
     }
@@ -769,6 +798,18 @@ fn assert_no_data_dir(name: &str) {
 
 fn names(reads: &[(String, Pair, Pair)]) -> Vec<&str> {
     reads.iter().map(|(name, _, _)| name.as_str()).collect()
+}
+
+/// Every `.rs` file under `dir`.
+fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read the source directory") {
+        let path = entry.expect("directory entry").path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            out.push(path);
+        }
+    }
 }
 
 // ------------------------------------------------------------------------ the tests
@@ -798,7 +839,7 @@ fn no_start_entry_or_query_projects() {
         ("process_audio_inner", 1, 0),
         ("register_partial_ticker_locked", 0, 1),
         ("register_partial_ticker_locked_observed", 0, 1),
-        ("owns_delivery", 0, 1),
+        ("owns_delivery", 1, 0),
     ] {
         assert_eq!(
             lines_with(&source, &spans, function, "FieldAdapter::start_view(").len(),
@@ -811,21 +852,42 @@ fn no_start_entry_or_query_projects() {
             "`{function}` reads the persisted core once per query"
         );
     }
-    // The ports and the other production files hold no `project()` entry either.
-    for file in [
-        "src/commands/recording/start_ports.rs",
-        "src/commands/recording/ready_ports.rs",
-        "src/commands/recording/lifecycle_ports.rs",
-        "src/commands/recording/stop_ports.rs",
-        "src/commands/recording/cancel_ports.rs",
-        "src/commands/recording/process_audio_ports.rs",
-        "src/dictation_executor/executor.rs",
-    ] {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{file}"));
+    // Every production file under `src/` holds no `project()` entry either, found by walking
+    // the tree (the way `ratchet_tests` does), not by a list of the files known today. The
+    // adapter and the probe define and count the entry, test code names it to compare with it,
+    // and the shadow's comparison re-seeds its own core with the one allowed call (it projects
+    // the shadow's pre-state, not a family's entry), checked exactly below.
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    files.sort();
+    assert!(files.len() > 50, "the walk found the tree: {}", files.len());
+    for path in files {
+        let relative = path
+            .strip_prefix(&src)
+            .expect("under src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative == "dictation_executor/adapter.rs"
+            || relative == "dictation_executor/probe.rs"
+            || relative.ends_with("_tests.rs")
+            || relative.ends_with("_harness.rs")
+            || relative.contains("/tests/")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{relative}"));
+        if relative == "dictation_shadow/compare.rs" {
+            assert!(
+                !text.contains("project_lifecycle_view")
+                    && text.matches("DictationCore::project(").count() == 1,
+                "{relative}: the one projection of the shadow's own pre-state"
+            );
+            continue;
+        }
         assert!(
             !text.contains("project_lifecycle_view") && !text.contains("DictationCore::project("),
-            "{file} reaches the `project()` entry"
+            "{relative} reaches the `project()` entry"
         );
     }
 
@@ -955,87 +1017,250 @@ fn every_start_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
     }
 }
 
-/// Queries 401 (the ticker registration, 404's shape) and 403 (the delivery fence) answer from
-/// the **persisted** M1/M2: a core planted off live decides them, they count the divergence
-/// (they cannot re-sync, they hold only `&DictationState`) and they never project.
+/// The persisted core put off live, in M1 only, or in M1 and M2: live untouched.
+fn diverge(app_state: &AppState, status: Status, id_too: bool) -> (Pair, Pair) {
+    use crate::dictation_executor::FieldAdapter;
+    let mut dictation = app_state.dictation.lock_or_recover();
+    let live = (
+        crate::dictation_admission::core_status(dictation.status),
+        RecordingId(app_state.recording_id.load(Ordering::SeqCst)),
+    );
+    FieldAdapter::seed_core(app_state, &mut dictation);
+    dictation.core.set_status(status);
+    if id_too {
+        dictation.core.alloc_id();
+    }
+    ((dictation.core.status(), dictation.core.current_id()), live)
+}
+
+fn core_pair(app_state: &AppState) -> Pair {
+    let dictation = app_state.dictation.lock_or_recover();
+    (dictation.core.status(), dictation.core.current_id())
+}
+
+/// A state whose live fields say `status` for generation 5, and an equal core.
+fn live_state(status: DictationStatus) -> AppState {
+    use crate::dictation_executor::FieldAdapter;
+    let app_state = AppState::default();
+    app_state.recording_id.store(5, Ordering::SeqCst);
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
+    app_state
+}
+
+/// Query 403 (the delivery fence) holds a guard of its own, so it reads like an entry
+/// (`start_view`): a core planted off live is **counted once and re-synced**, and the fence
+/// decides on what live says, as it did before the cutover, never on the stale persisted pair
+/// (which would drop a transcript whose recording is still `Processing`). Queries 401/404 hold
+/// only `&DictationState`: they count, answer from the **live** M1/M2 and leave the re-sync to
+/// the next entry, which counts the same divergence again (twice in all, once per read, by
+/// design). Nothing here projects.
 #[test]
 fn the_queries_follow_the_persisted_core() {
-    use crate::dictation_executor::FieldAdapter;
     let _gate = serialized();
+    crate::commands::dictation_preview::reset_ownership_for_test();
     let projections = probe::projections();
 
-    // 403: live says `Processing` for id 5 (the old code answers true); the persisted core
-    // says `Recording` for id 6, which does not own the delivery.
-    let app_state = AppState::default();
-    app_state.recording_id.store(5, Ordering::SeqCst);
+    // 403 on an equal core: the plain answers, two entry-style reads, nothing counted.
+    let app_state = live_state(DictationStatus::Processing);
     {
+        let before = core_divergences();
         let mut dictation = app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Processing;
-        FieldAdapter::seed_core(&app_state, &mut dictation);
-        assert!(owns_delivery(&app_state, &dictation, 5), "equal core");
+        assert!(owns_delivery(&app_state, &mut dictation, 5), "equal core");
         assert!(
-            !owns_delivery(&app_state, &dictation, 6),
+            !owns_delivery(&app_state, &mut dictation, 6),
             "id 6 is not current"
         );
+        assert_eq!(core_divergences(), before, "an equal core is never counted");
     }
-    assert_eq!(queries_read().len(), 2);
-    {
-        let mut dictation = app_state.dictation.lock_or_recover();
-        dictation.core.set_status(Status::Recording);
-        let before = core_divergences();
-        let persisted = (dictation.core.status(), dictation.core.current_id());
-        assert!(
-            !owns_delivery(&app_state, &dictation, 5),
-            "decided on the persisted `Recording`, not on live `Processing`"
-        );
-        assert_eq!(core_divergences() - before, 1, "counted once");
-        let reads = queries_read();
-        assert_eq!(names(&reads), ["owns_delivery#0"]);
-        assert_eq!(reads[0].1, persisted, "read as planted");
-        assert_eq!(
-            reads[0].2,
-            (Status::Processing, RecordingId(5)),
-            "live as left"
-        );
-        // Not re-synced by a query: the next entry does it.
-        assert_eq!(dictation.core.status(), Status::Recording);
-    }
-    // The delivery fence goes through the same query: a divergent core refuses to run the
-    // operation that a current delivery owner would.
+    let reads = entries_read();
+    assert_eq!(names(&reads), ["owns_delivery#0"; 2]);
+    assert!(reads.iter().all(|(_, persisted, live)| persisted == live));
+    assert!(queries_read().is_empty(), "403 is not a read-only query");
+
+    // 403 on a stale persisted `Recording`: live says `Processing` for generation 5, which
+    // owns the delivery. The fence delivers, as before the cutover; it is counted once, and the
+    // core is re-synced.
+    let planted = diverge(&app_state, Status::Recording, false);
     assert_eq!(
-        with_current_delivery_owner(&app_state, 5, || 7),
-        None,
-        "the fence follows the persisted core"
+        planted,
+        (
+            (Status::Recording, RecordingId(5)),
+            (Status::Processing, RecordingId(5))
+        )
     );
     {
-        let mut dictation = app_state.dictation.lock_or_recover();
-        FieldAdapter::seed_core(&app_state, &mut dictation);
-    }
-    assert_eq!(with_current_delivery_owner(&app_state, 5, || 7), Some(7));
-    queries_read();
-
-    // 401: live says `Recording` for id 5 (the old code registers the ticker); the persisted
-    // core says `Processing`, which is not recording.
-    let app_state = AppState::default();
-    app_state.recording_id.store(5, Ordering::SeqCst);
-    {
-        let mut dictation = app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Recording;
-        FieldAdapter::seed_core(&app_state, &mut dictation);
-        dictation.core.set_status(Status::Processing);
         let before = core_divergences();
+        let mut dictation = app_state.dictation.lock_or_recover();
         assert!(
-            !register_partial_ticker_locked(&app_state, &dictation, 5),
-            "decided on the persisted `Processing`, not on live `Recording`"
+            owns_delivery(&app_state, &mut dictation, 5),
+            "decided on live `Processing`, not on the stale persisted `Recording`"
         );
         assert_eq!(core_divergences() - before, 1, "counted once");
-        let reads = queries_read();
-        assert_eq!(names(&reads), ["register_partial_ticker_locked#0"]);
-        assert_eq!(reads[0].1, (Status::Processing, RecordingId(5)));
-        assert_eq!(reads[0].2, (Status::Recording, RecordingId(5)));
+        assert_eq!(
+            (dictation.core.status(), dictation.core.current_id()),
+            planted.1,
+            "re-synced to live"
+        );
+    }
+    let reads = entries_read();
+    assert_eq!(names(&reads), ["owns_delivery#0"]);
+    assert_eq!(reads[0].1, planted.0, "read the persisted pair as planted");
+    assert_eq!(reads[0].2, planted.1, "read live as the fixture left it");
+
+    // ... and the other way round: live `Recording`, a stale persisted `Processing`. Live is
+    // not `Processing`, so the fence refuses, as before.
+    let app_state = live_state(DictationStatus::Recording);
+    let planted = diverge(&app_state, Status::Processing, false);
+    {
+        let before = core_divergences();
+        let mut dictation = app_state.dictation.lock_or_recover();
+        assert!(!owns_delivery(&app_state, &mut dictation, 5));
+        assert_eq!(core_divergences() - before, 1, "counted once");
+        assert_eq!(
+            (dictation.core.status(), dictation.core.current_id()),
+            planted.1
+        );
+    }
+    entries_read();
+
+    // A stale generation in the persisted core (M2) is the same.
+    let app_state = live_state(DictationStatus::Processing);
+    let planted = diverge(&app_state, Status::Processing, true);
+    assert_eq!(planted.0, (Status::Processing, RecordingId(6)));
+    {
+        let before = core_divergences();
+        let mut dictation = app_state.dictation.lock_or_recover();
+        assert!(owns_delivery(&app_state, &mut dictation, 5));
+        assert_eq!(core_divergences() - before, 1, "counted once");
+        assert_eq!(dictation.core.current_id(), RecordingId(5), "M2 re-synced");
+    }
+    entries_read();
+
+    // The delivery fences go through it: a stale core does not stop the operation a current
+    // delivery owner runs, and is counted once per fence.
+    let app_state = live_state(DictationStatus::Processing);
+    for timed in [None, Some(false), Some(true)] {
+        diverge(&app_state, Status::Recording, false);
+        let before = core_divergences();
+        let ran = match timed {
+            None => with_current_delivery_owner(&app_state, 5, || 7),
+            Some(preparing) => with_current_delivery_owner_timed(&app_state, 5, preparing, || 7),
+        };
+        assert_eq!(ran, Some(7), "the fence delivered ({timed:?})");
+        assert_eq!(core_divergences() - before, 1, "counted once ({timed:?})");
+        assert_eq!(names(&entries_read()), ["owns_delivery#0"]);
+        assert_eq!(core_pair(&app_state), (Status::Processing, RecordingId(5)));
     }
 
+    // 401/404: only a shared reference. Live `Recording` for generation 5 (the ticker is
+    // registered, as before the cutover), a stale persisted `Processing`: counted, answered
+    // from live, the stored core left alone.
+    let app_state = live_state(DictationStatus::Recording);
+    let planted = diverge(&app_state, Status::Processing, false);
+    let before = core_divergences();
+    {
+        let dictation = app_state.dictation.lock_or_recover();
+        assert!(
+            register_partial_ticker_locked(&app_state, &dictation, 5),
+            "decided on live `Recording`, not on the stale persisted `Processing`"
+        );
+    }
+    assert_eq!(core_divergences() - before, 1, "counted once");
+    let reads = queries_read();
+    assert_eq!(names(&reads), ["register_partial_ticker_locked#0"]);
+    assert_eq!(reads[0].1, planted.0);
+    assert_eq!(reads[0].2, planted.1);
+    assert_eq!(
+        core_pair(&app_state),
+        planted.0,
+        "a shared reference cannot re-sync: the stored core is left for the next entry"
+    );
+    // The double count: the next entry reads the same divergence, counts it again and re-syncs
+    // it. Once per read, by design.
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        let _ = owns_delivery(&app_state, &mut dictation, 5);
+    }
+    assert_eq!(
+        core_divergences() - before,
+        2,
+        "the query counted it, and the next entry counted it again"
+    );
+    assert_eq!(core_pair(&app_state), planted.1, "the entry re-synced");
+    entries_read();
+    // An equal core is counted by nobody.
+    {
+        let dictation = app_state.dictation.lock_or_recover();
+        let _ = register_partial_ticker_locked(&app_state, &dictation, 5);
+    }
+    assert_eq!(
+        core_divergences() - before,
+        2,
+        "an equal core is never counted"
+    );
+    queries_read();
+
+    // The stale generation (M2) answers from live too, and a refused ticker stays refused.
+    let app_state = live_state(DictationStatus::Recording);
+    diverge(&app_state, Status::Recording, true);
+    {
+        let dictation = app_state.dictation.lock_or_recover();
+        assert!(!register_partial_ticker_locked(&app_state, &dictation, 4));
+    }
+    queries_read();
+
     assert_eq!(probe::projections(), projections, "a query projected");
+    crate::commands::dictation_preview::reset_ownership_for_test();
+}
+
+/// The import's destination row (R301.6) is a stop-family entry: its own tests cannot plant at
+/// the capture any more, because the capture check (402, a start entry) reads and re-syncs that
+/// plant first. The plant moves here, to the point between the two (`process_audio.destination`),
+/// from start's own module: the row re-syncs it, counted once, and the run is the one an equal
+/// core gives. Which entry read it is shown by the counter and the reference trace, not by the
+/// stop family's probe.
+#[test]
+fn the_imports_destination_row_re_syncs_a_plant_made_after_the_capture_check() {
+    let _gate = serialized();
+    let case = Case {
+        name: "the import with Smart Destination, planted before its destination row (301.6)",
+        setup: idle,
+        body: import_with_destination,
+        entries: &[E402_IMPORT],
+        queries: &[],
+        plant: Some((Plant::AtBarrier("process_audio.destination"), 0)),
+    };
+    let reference = run_case(&case, Plant::Nowhere);
+    assert_eq!(names(&reference.entries), case.entries);
+    assert_eq!(reference.divergences, 0);
+    assert_eq!(reference.projections, 0, "the import reached `project()`");
+    let (plan, _) = case.plant.expect("a plant");
+    let planted = run_case(&case, plan);
+    let (pair_planted, pair_live) = PLANTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        .expect("the plant ran");
+    assert_ne!(pair_planted, pair_live);
+    assert_eq!(names(&planted.entries), case.entries);
+    let (name, persisted, live) = &planted.entries[0];
+    assert_eq!(
+        persisted, live,
+        "{name} ran before the plant and read an equal core"
+    );
+    assert_eq!(
+        planted.divergences, 1,
+        "the destination row counted the plant, once"
+    );
+    assert_eq!(
+        planted.trace, reference.trace,
+        "the plant was re-synced before the row decided"
+    );
+    assert_eq!(planted.projections, 0, "the import reached `project()`");
 }
 
 // ------------------------------- R104.5 and the speculative capture, through the switched entries
@@ -1280,6 +1505,40 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
                     (Status::Recording, RecordingId(generation + 1)),
                     generation + 1
                 )
+            );
+
+            // The old attempt's cancel arrives late, scoped to the older generation, while the
+            // newer attempt records: refused, and the newer attempt is untouched. (The other
+            // direction, a newer generation than the current one, is refused above.)
+            let cancelled_through = w.state().app_state.cancelled_id.load(Ordering::SeqCst);
+            let before = w.trace().len();
+            w.note("a cancel scoped to the older generation");
+            let mut late = w.cancel(Some(generation));
+            let refused = complete(&mut late);
+            w.reply_unit("cancel older generation", &refused);
+            assert_eq!(refused, Ok(()));
+            let after = &w.trace()[before..];
+            assert!(
+                !after
+                    .iter()
+                    .any(|line| line.starts_with("supervisor.cancel")),
+                "a cancel scoped to the older generation {generation} cancelled the capture of \
+                 {}: {after:#?}",
+                generation + 1
+            );
+            assert_eq!(
+                persisted_and_live(w),
+                (
+                    (Status::Recording, RecordingId(generation + 1)),
+                    generation + 1
+                ),
+                "the newer attempt is untouched by the older generation's cancel"
+            );
+            assert_eq!(terminal(w, generation + 1), None);
+            assert_eq!(
+                w.state().app_state.cancelled_id.load(Ordering::SeqCst),
+                cancelled_through,
+                "nothing newer was marked cancelled"
             );
         },
     });

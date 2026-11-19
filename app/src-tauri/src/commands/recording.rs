@@ -2973,10 +2973,10 @@ fn destination_application_name(
 /// dictation lock (`dictation` is its contents) for as long as it acts on the answer.
 fn owns_delivery(
     app_state: &AppState,
-    dictation: &crate::state::DictationState,
+    dictation: &mut crate::state::DictationState,
     recording_id: u64,
 ) -> bool {
-    crate::dictation_executor::FieldAdapter::start_query_view(app_state, dictation)
+    crate::dictation_executor::FieldAdapter::start_view(app_state, dictation)
         .q_owns_delivery(murmur_dictation_core::ids::RecordingId(recording_id))
 }
 
@@ -2989,8 +2989,8 @@ fn with_current_delivery_owner<T>(
     recording_id: u64,
     operation: impl FnOnce() -> T,
 ) -> Option<T> {
-    let dictation = app_state.dictation.lock_or_recover();
-    if !owns_delivery(app_state, &dictation, recording_id) {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    if !owns_delivery(app_state, &mut dictation, recording_id) {
         return None;
     }
     Some(operation())
@@ -3007,9 +3007,9 @@ fn with_current_delivery_owner_timed<T>(
     } else {
         |r| &mut r.inject_owner_wait_us
     });
-    let dictation = app_state.dictation.lock_or_recover();
+    let mut dictation = app_state.dictation.lock_or_recover();
     drop(wait);
-    if !owns_delivery(app_state, &dictation, recording_id) {
+    if !owns_delivery(app_state, &mut dictation, recording_id) {
         return None;
     }
     Some(operation())
@@ -3203,7 +3203,7 @@ mod clipboard_delivery_tests {
                     "402 {at}"
                 );
                 assert_eq!(
-                    owns_delivery(&app_state, &dictation, id),
+                    owns_delivery(&app_state, &mut dictation, id),
                     delivery_event_recording_id(id, current, cancelled, status).is_some(),
                     "403 {at}"
                 );
@@ -5031,8 +5031,8 @@ async fn run_transcription_pipeline(
         // this same lock before marking the ID cancelled, and a new start also
         // advances the ID under it, so neither can interleave a stale outcome.
         {
-            let dictation = app_state.dictation.lock_or_recover();
-            if owns_delivery(app_state, &dictation, recording_id) {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            if owns_delivery(app_state, &mut dictation, recording_id) {
                 let _ = app_handle.emit(
                     "dictation-delivery-outcome",
                     serde_json::json!({
@@ -5361,6 +5361,10 @@ async fn process_audio_inner(
         let flight = Flight::begin();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
+        // Test builds: D is free here, the point before the destination row's own section
+        // (R301.6), where a test may put the persisted core off live to see that row read it.
+        #[cfg(test)]
+        crate::barrier_hook::at("process_audio.destination");
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         let now = core_now();

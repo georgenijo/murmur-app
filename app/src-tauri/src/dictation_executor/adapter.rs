@@ -366,16 +366,23 @@ impl FieldAdapter {
         )
     }
 
-    /// The view the queries that hold only `&DictationState` read after the cutover: 401/404
-    /// (the ticker registration, `register_partial_ticker_locked`, whose caller under the ready
-    /// entry's D hold is handed the shared reference by the `Ports` trait) and 403 (the
-    /// delivery ownership fence, held across a paste, not a decision). They read the persisted
-    /// M1/M2, not `DictationCore::project` over the live fields, and the same M3 atomic. A query is
-    /// not a decision entry, so it **counts** a persisted/live difference (`core_divergences`)
-    /// but cannot re-sync: the next entry does, under its own D hold (and R104.2's `SD` runs right
-    /// after the ready entry's own [`Self::start_view`] re-synced). The query that owns a D guard
-    /// of its own (402, after the destination capture) takes [`Self::start_view`] and re-syncs
-    /// like an entry.
+    /// The view of the start family's queries that hold only `&DictationState`: 401/404, the
+    /// ticker registration (`register_partial_ticker_locked`). Its two callers are handed the
+    /// shared reference: the ready entry's `SD` (run under the same D hold whose
+    /// [`Self::start_view`] has just re-synced, so no difference can exist there) and the
+    /// lifecycle bridge's detached `StartSideTasks` closure (404), which takes D itself with no
+    /// entry before it. 403 (the delivery fence) and 402 hold a guard they may borrow mutably,
+    /// so they take [`Self::start_view`] and re-sync like an entry.
+    ///
+    /// The persisted M1/M2 and the same M3 atomic, not `DictationCore::project` over the live
+    /// fields. C8.6 is count, then re-sync, never ignore: a persisted/live difference is
+    /// **counted** (`core_divergences`) and, because a shared reference cannot re-sync, the
+    /// returned core carries the **live** M1/M2 (a core seeded from them, through the one
+    /// seeder, on a clone of the state: this is the defect path, so its cost does not matter,
+    /// and `PersistedCore::new` keeps its single caller). The query therefore answers as the
+    /// code did before the cutover, and the stored core is left for the next entry to re-sync
+    /// and count again: one divergence read by a query and then by the next entry is counted
+    /// twice (once per read), by design.
     #[cfg_attr(test, track_caller)]
     pub(crate) fn start_query_view(app: &AppState, dictation: &DictationState) -> DictationCore {
         #[cfg(test)]
@@ -388,11 +395,17 @@ impl FieldAdapter {
             (live_status, live_id),
             std::panic::Location::caller(),
         );
-        if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
-            CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
-        }
+        let core =
+            if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
+                CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
+                let mut live = dictation.clone();
+                Self::seed_core(app, &mut live);
+                live.core
+            } else {
+                dictation.core
+            };
         DictationCore::new(
-            dictation.core,
+            core,
             LiveObs {
                 cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
                 context_for: None,
