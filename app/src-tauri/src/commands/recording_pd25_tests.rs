@@ -16,8 +16,10 @@
 //! 1. Generation 1 records; a runtime failure puts it in `Recovering`; the worker's
 //!    exit stores 9,000 samples and notifies `Interrupted`, so the bridge schedules the
 //!    scoped stop `expected = Some(1)` (`audio_lifecycle.rs:2236,2404`,
-//!    `recording.rs:6041`). The fixture builds that stop and **does not poll it**: it
-//!    is delayed ahead of `T`.
+//!    `recording.rs:6041`). The fixture keeps **the bridge's own task**, with its
+//!    `AutoStop` owner (`carry_auto_stop_owner`, `World::owned_auto_stop`), and does
+//!    not poll it: it is delayed ahead of `T`. A production dispatch that expected
+//!    another id would change what that task does, and the fixtures would fail.
 //! 2. An unscoped stop takes the capture (R201.7) and runs the pipeline. It parks at
 //!    the `pipeline_idle_emit` barrier, after the pipeline's guard wrote `Idle` and
 //!    before R204b.
@@ -35,6 +37,8 @@ use super::golden_tests::{recording, sub};
 use super::pd_witness_tests::repeat;
 use super::process_audio_ports::{ImportedAudioHost, OwnedIdleEmit};
 use super::*;
+use murmur_dictation_core::decision::ContKind;
+use murmur_dictation_core::ids::RecordingId;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -195,6 +199,9 @@ fn allocate_by_start(world: &Arc<World>) {
 
 /// The shared body. `allocate` is the allocator that runs at the barrier.
 fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc<World>)) {
+    // The bridge keeps the task it schedules, and the `AutoStop` owner it carries, instead
+    // of dropping them: the scoped stop below is that task, not a stop the fixture builds.
+    world.knobs().carry_auto_stop_owner = true;
     recording(world);
     world.runtime_failure(1);
     // The worker's exit stores the capture and notifies `Interrupted`; the supervisor
@@ -202,8 +209,16 @@ fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc
     world.finish_interrupted(1, 9_000);
     let requests = world.auto_stop_requests();
     assert_eq!(requests, vec![1], "the bridge scheduled the scoped stop");
-    // The scoped stop (`expected = Some(1)`): built, delayed ahead of `T`, not polled.
-    let scoped: ParkedStop = Rc::new(RefCell::new(Some(world.stop(Some(requests[0])))));
+    // The scoped stop: the bridge's own dispatched task (production's `auto_stop_dispatch`,
+    // `Some(1)` as its expected id, its owner moved in), delayed ahead of `T`, not polled.
+    let (owner, scoped_stop) = world.owned_auto_stop(requests[0]);
+    assert_eq!(owner.recording_id, RecordingId(1), "the owner's generation");
+    assert_eq!(owner.kind, ContKind::AutoStop);
+    assert!(
+        world.state().app_state.core_history.is_outstanding(owner),
+        "the owner is outstanding until the stop is admitted"
+    );
+    let scoped: ParkedStop = Rc::new(RefCell::new(Some(scoped_stop)));
     let scoped_reply: Reply = Rc::new(RefCell::new(None));
     world.knobs().stop_result = Ok(16_000);
     let barrier = {
@@ -229,7 +244,7 @@ fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc
                 .take()
                 .expect("the scoped stop is parked");
             let reply = complete(&mut stop);
-            world.reply("scoped stop(expected=1)", &reply);
+            world.reply("scoped auto-stop(expected=1)", &reply);
             *scoped_reply.borrow_mut() = Some(reply);
         })
     };

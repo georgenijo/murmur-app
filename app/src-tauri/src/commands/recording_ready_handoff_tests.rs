@@ -11,12 +11,19 @@
 //!   model hands the spawn closure the recording, whose `register` passes the production
 //!   ticker gate; a genuine skip (an unsupported model) hands it too, and the spawner returns
 //!   before `register`: nothing is registered.
-//! * **Structure, on the production source of the spawners and of both entry closures.**
-//!   Parsed with `syn`, so a formatting change cannot hide a defect and a comment cannot
-//!   fake one. The ticker spawner must run `register()` and then spawn the task that runs
-//!   the loop; the VAD spawner must start the stream; each entry closure must call both
-//!   with `register` handed through. A spawner that registers the ticker and drops the
-//!   task is a failing plant (`a_spawner_that_registers_and_drops_the_task_fails`).
+//! * **Structure, on the production source of the spawners and of both entry callbacks**
+//!   (D-S2c-16). Parsed with `syn`, so a formatting change cannot hide a defect and a comment
+//!   cannot fake one, and counting only what a body **executes**: a call inside a closure or a
+//!   nested `async` block that is built and never run proves nothing. The ticker spawner
+//!   must execute `register()` and then spawn, on the async runtime, a task that itself
+//!   awaits the ticker loop; the VAD spawner must skip exactly a recording that did not ask
+//!   for streaming and a disabled VAD, and then execute `vad_stream::start`; each entry's
+//!   ready callback, the last argument of the ready decision, must call both spawners with
+//!   its own three arguments. `PLANTS` lists every way to drop the handoff that must fail:
+//!   a spawner that registers the ticker and drops the task, a loop in a nested future nobody
+//!   polls, an inverted VAD guard, and the rest.
+//!
+//! The spawners themselves run only in the lifecycle cutover PR's runtime check (D-S2c-16).
 #![cfg(test)]
 
 use super::golden_harness::*;
@@ -201,36 +208,49 @@ fn callee(call: &syn::ExprCall) -> String {
     }
 }
 
-/// Every call in a body, in source order: `(callee, line, the call)`.
-struct Calls<'a>(Vec<(String, usize, &'a syn::ExprCall)>);
+/// An executed call: its callee, its line, whether the call is `.await`ed, and the call.
+type Executed<'a> = (String, usize, bool, &'a syn::ExprCall);
 
-impl<'ast> Visit<'ast> for Calls<'ast> {
+/// The calls a body **executes**, in source order. It does not descend into a closure, a
+/// nested `async` block or a nested item: such a body is created, and runs only if
+/// something calls or polls it, so a call found there proves nothing about this body. (A
+/// loop moved into a future that is built and dropped must not count.) Start it on the
+/// statements of the body, or on an `async` block's own block, to look inside that one.
+struct Exec<'a>(Vec<Executed<'a>>);
+
+impl<'ast> Visit<'ast> for Exec<'ast> {
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+    fn visit_expr_async(&mut self, _: &'ast syn::ExprAsync) {}
+    fn visit_item(&mut self, _: &'ast syn::Item) {}
+    fn visit_expr_await(&mut self, awaited: &'ast syn::ExprAwait) {
+        if let syn::Expr::Call(call) = &*awaited.base {
+            self.0
+                .push((callee(call), call.span().start().line, true, call));
+            // The call's arguments are executed too; the call itself was recorded here.
+            for argument in &call.args {
+                self.visit_expr(argument);
+            }
+            return;
+        }
+        syn::visit::visit_expr_await(self, awaited);
+    }
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        self.0.push((callee(call), call.span().start().line, call));
+        self.0
+            .push((callee(call), call.span().start().line, false, call));
         syn::visit::visit_expr_call(self, call);
     }
 }
 
-fn calls_in(node: &impl CallsIn) -> Vec<(String, usize, &syn::ExprCall)> {
-    let mut calls = Calls(Vec::new());
-    node.collect(&mut calls);
-    calls.0
+fn executed_in_fn(function: &syn::ItemFn) -> Vec<Executed<'_>> {
+    let mut exec = Exec(Vec::new());
+    exec.visit_block(&function.block);
+    exec.0
 }
 
-trait CallsIn {
-    fn collect<'a>(&'a self, calls: &mut Calls<'a>);
-}
-
-impl CallsIn for syn::ItemFn {
-    fn collect<'a>(&'a self, calls: &mut Calls<'a>) {
-        calls.visit_item_fn(self);
-    }
-}
-
-impl CallsIn for syn::Expr {
-    fn collect<'a>(&'a self, calls: &mut Calls<'a>) {
-        calls.visit_expr(self);
-    }
+fn executed_in_block(block: &syn::Block) -> Vec<Executed<'_>> {
+    let mut exec = Exec(Vec::new());
+    exec.visit_block(block);
+    exec.0
 }
 
 /// The functions named `name` in the file, at any module depth, in every `cfg` variant.
@@ -260,15 +280,84 @@ fn is_path(expr: &syn::Expr, name: &str) -> bool {
     matches!(expr, syn::Expr::Path(path) if path.path.is_ident(name))
 }
 
+/// `name` or `name.clone()`.
+fn is_path_or_clone(expr: &syn::Expr, name: &str) -> bool {
+    is_path(expr, name)
+        || matches!(expr, syn::Expr::MethodCall(call)
+            if call.method == "clone" && call.args.is_empty() && is_path(&call.receiver, name))
+}
+
+/// The name a parameter pattern binds.
+fn bound_name(pattern: &syn::Pat) -> Option<String> {
+    match pattern {
+        syn::Pat::Ident(ident) => Some(ident.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// The name of the `index`th parameter of a function.
+fn parameter(function: &syn::ItemFn, index: usize) -> Option<String> {
+    match function.sig.inputs.iter().nth(index)? {
+        syn::FnArg::Typed(typed) => bound_name(&typed.pat),
+        syn::FnArg::Receiver(_) => None,
+    }
+}
+
+/// The leaves of an `a || b || c` chain.
+fn or_terms(expr: &syn::Expr) -> Vec<&syn::Expr> {
+    match expr {
+        syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::Or(_)) => {
+            let mut terms = or_terms(&binary.left);
+            terms.extend(or_terms(&binary.right));
+            terms
+        }
+        syn::Expr::Paren(paren) => or_terms(&paren.expr),
+        other => vec![other],
+    }
+}
+
+/// `!inner`, with the inner expression.
+fn negated(expr: &syn::Expr) -> Option<&syn::Expr> {
+    match expr {
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => Some(&unary.expr),
+        syn::Expr::Paren(paren) => negated(&paren.expr),
+        _ => None,
+    }
+}
+
+/// `<anything>.<field>`.
+fn is_field(expr: &syn::Expr, field: &str) -> bool {
+    matches!(expr, syn::Expr::Field(access)
+        if matches!(&access.member, syn::Member::Named(name) if name == field))
+}
+
+/// The top-level `if <cond> { return; }` statements of a function: the early returns.
+fn early_returns(function: &syn::ItemFn) -> Vec<(&syn::Expr, usize)> {
+    function
+        .block
+        .stmts
+        .iter()
+        .filter_map(|statement| match statement {
+            syn::Stmt::Expr(syn::Expr::If(branch), _) if branch.else_branch.is_none() => {
+                let only_return = matches!(branch.then_branch.stmts.as_slice(),
+                    [syn::Stmt::Expr(syn::Expr::Return(r), _)] if r.expr.is_none());
+                only_return.then(|| (&*branch.cond, branch.span().start().line))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// What is wrong with the production handoff in `source` (`recording.rs`), as messages;
 /// empty when the handoff holds.
 fn handoff_defects(source: &str) -> Vec<String> {
     let file = syn::parse_file(source).expect("recording.rs parses");
     let mut defects = Vec::new();
 
-    // The ticker spawner, in each of its `cfg` variants: it runs `register()`, and after it
-    // spawns, on the async runtime, the task that runs the ticker loop. A task that is
-    // built and dropped (a future nobody polls) is not a handoff.
+    // The ticker spawner, in each of its `cfg` variants: it executes `register()`, and after
+    // it executes the spawn, on the async runtime, of a task whose own body **awaits** the
+    // ticker loop. A task that is built and dropped (a future nobody polls), or a loop
+    // moved into a nested future, is not a handoff.
     let tickers = functions(&file, "spawn_dictation_partial_ticker");
     if tickers.len() < 2 {
         defects.push(format!(
@@ -277,27 +366,32 @@ fn handoff_defects(source: &str) -> Vec<String> {
         ));
     }
     for (index, spawner) in tickers.iter().enumerate() {
-        let calls = calls_in(*spawner);
+        let register_name = parameter(spawner, 2).unwrap_or_default();
+        let calls = executed_in_fn(spawner);
         let register = calls
             .iter()
-            .find(|(path, _, call)| path == "register" && call.args.is_empty())
-            .map(|(_, line, _)| *line);
-        let spawned = calls.iter().find_map(|(path, line, call)| {
-            let on_runtime = path.ends_with("async_runtime::spawn");
-            let task = call.args.first()?;
-            let runs_the_loop = matches!(task, syn::Expr::Async(_))
-                && calls_in(task)
-                    .iter()
-                    .any(|(inner, _, _)| inner == "run_partial_ticker_loop");
-            (on_runtime && runs_the_loop).then_some(*line)
+            .find(|(path, _, _, call)| *path == register_name && call.args.is_empty())
+            .map(|(_, line, _, _)| *line);
+        let spawned = calls.iter().find_map(|(path, line, _, call)| {
+            if !path.ends_with("async_runtime::spawn") {
+                return None;
+            }
+            let Some(syn::Expr::Async(task)) = call.args.first() else {
+                return None;
+            };
+            executed_in_block(&task.block)
+                .iter()
+                .any(|(inner, _, awaited, _)| inner == "run_partial_ticker_loop" && *awaited)
+                .then_some(*line)
         });
         match (register, spawned) {
             (None, _) => defects.push(format!(
-                "ticker spawner #{index} never calls `register()`: nothing registers the ticker"
+                "ticker spawner #{index} never executes `register()`: nothing registers the ticker"
             )),
             (Some(_), None) => defects.push(format!(
-                "ticker spawner #{index} registers the ticker but never spawns the task that runs \
-                 `run_partial_ticker_loop` on the async runtime: the task is dropped"
+                "ticker spawner #{index} registers the ticker but never spawns, on the async \
+                 runtime, a task that itself awaits `run_partial_ticker_loop`: the task is \
+                 dropped, or the loop is in a future nobody polls"
             )),
             (Some(register), Some(spawned)) if spawned < register => defects.push(format!(
                 "ticker spawner #{index} spawns the task before `register()` decides"
@@ -306,7 +400,8 @@ fn handoff_defects(source: &str) -> Vec<String> {
         }
     }
 
-    // The VAD spawner starts the incremental stream for the recording.
+    // The VAD spawner skips only a recording that did not ask for streaming, a disabled VAD
+    // or a missing model, and otherwise executes `vad_stream::start` for the recording.
     let vads = functions(&file, "spawn_vad_stream");
     if vads.len() != 1 {
         defects.push(format!(
@@ -315,54 +410,112 @@ fn handoff_defects(source: &str) -> Vec<String> {
         ));
     }
     for spawner in vads {
-        let starts = calls_in(spawner).iter().any(|(path, _, call)| {
+        let (app, id) = (
+            parameter(spawner, 0).unwrap_or_default(),
+            parameter(spawner, 1).unwrap_or_default(),
+        );
+        let guards: Vec<(Vec<&syn::Expr>, usize)> = early_returns(spawner)
+            .into_iter()
+            .map(|(cond, line)| (or_terms(cond), line))
+            .collect();
+        let skips = |wanted: &dyn Fn(&syn::Expr) -> bool| {
+            guards
+                .iter()
+                .any(|(terms, _)| terms.iter().any(|term| negated(term).is_some_and(wanted)))
+        };
+        if !skips(&|inner| is_field(inner, "streaming_pipeline_enabled")) {
+            defects.push(
+                "`spawn_vad_stream` does not skip exactly a recording that did not ask for \
+                 streaming (`if !<settings>.streaming_pipeline_enabled .. { return; }`)"
+                    .to_string(),
+            );
+        }
+        if !skips(&|inner| {
+            matches!(inner, syn::Expr::Call(call)
+                if callee(call).ends_with("vad::is_enabled")
+                    && call.args.first().is_some_and(|a| is_field(a, "vad_sensitivity")))
+        }) {
+            defects.push(
+                "`spawn_vad_stream` does not skip exactly a disabled VAD \
+                 (`!vad::is_enabled(<settings>.vad_sensitivity)`)"
+                    .to_string(),
+            );
+        }
+        let guard_end = guards.iter().map(|(_, line)| *line).max().unwrap_or(0);
+        let starts = executed_in_fn(spawner).iter().any(|(path, line, _, call)| {
             path.ends_with("vad_stream::start")
+                && *line > guard_end
                 && call.args.len() == 3
-                && is_path(&call.args[0], "app")
-                && is_path(&call.args[1], "recording_id")
+                && is_path(&call.args[0], &app)
+                && is_path(&call.args[1], &id)
         });
         if !starts {
             defects.push(
-                "`spawn_vad_stream` never starts `vad_stream::start(app, recording_id, ..)`"
+                "`spawn_vad_stream` never executes `vad_stream::start(app, recording_id, ..)` \
+                 after its guards"
                     .to_string(),
             );
         }
     }
 
-    // Both ready entry points hand `register` to the ticker spawner and start the VAD
-    // stream from the one closure they pass the ready decision.
-    for entry in [
-        "handle_audio_lifecycle",
-        "publish_recording_ready_if_audio_ready",
+    // Both ready entry points hand the ready decision a callback, and that callback, with
+    // its own three arguments (the handle, the recording id and `register`), starts the VAD
+    // stream and hands `register` to the ticker spawner.
+    for (entry, receiver) in [
+        ("handle_audio_lifecycle", "handle_audio_lifecycle_events"),
+        (
+            "publish_recording_ready_if_audio_ready",
+            "publish_recording_ready_with",
+        ),
     ] {
         let functions = functions(&file, entry);
         if functions.len() != 1 {
             defects.push(format!("expected one `{entry}`, found {}", functions.len()));
             continue;
         }
-        struct Closures<'a>(Vec<&'a syn::ExprClosure>);
-        impl<'ast> Visit<'ast> for Closures<'ast> {
-            fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
-                self.0.push(closure);
-                syn::visit::visit_expr_closure(self, closure);
-            }
-        }
-        let mut closures = Closures(Vec::new());
-        closures.visit_item_fn(functions[0]);
-        let hands_off = closures.0.iter().any(|closure| {
-            let calls = calls_in(&*closure.body);
-            let vad = calls.iter().any(|(path, _, _)| path == "spawn_vad_stream");
-            let ticker = calls.iter().any(|(path, _, call)| {
-                path == "spawn_dictation_partial_ticker"
-                    && call.args.len() == 3
-                    && is_path(&call.args[2], "register")
-            });
-            vad && ticker
-        });
-        if !hands_off {
+        let executed = executed_in_fn(functions[0]);
+        let callback = executed
+            .iter()
+            .find(|(path, _, _, _)| path == receiver)
+            .and_then(|(_, _, _, call)| call.args.last());
+        let Some(syn::Expr::Closure(closure)) = callback else {
             defects.push(format!(
-                "`{entry}` has no closure that calls `spawn_vad_stream` and \
-                 `spawn_dictation_partial_ticker(.., register)`"
+                "`{entry}` does not pass a closure as the last argument of `{receiver}`"
+            ));
+            continue;
+        };
+        let names: Vec<String> = closure.inputs.iter().filter_map(bound_name).collect();
+        let [handle, id, register] = names.as_slice() else {
+            defects.push(format!(
+                "`{entry}`'s ready callback does not bind three named arguments"
+            ));
+            continue;
+        };
+        let mut exec = Exec(Vec::new());
+        exec.visit_expr(&closure.body);
+        let vad = exec.0.iter().any(|(path, _, _, call)| {
+            path == "spawn_vad_stream"
+                && call.args.len() == 2
+                && is_path_or_clone(&call.args[0], handle)
+                && is_path(&call.args[1], id)
+        });
+        let ticker = exec.0.iter().any(|(path, _, _, call)| {
+            path == "spawn_dictation_partial_ticker"
+                && call.args.len() == 3
+                && is_path_or_clone(&call.args[0], handle)
+                && is_path(&call.args[1], id)
+                && is_path(&call.args[2], register)
+        });
+        if !vad {
+            defects.push(format!(
+                "`{entry}`'s ready callback does not execute `spawn_vad_stream({handle}, {id})` \
+                 with its own arguments"
+            ));
+        }
+        if !ticker {
+            defects.push(format!(
+                "`{entry}`'s ready callback does not execute \
+                 `spawn_dictation_partial_ticker({handle}, {id}, {register})` with its own arguments"
             ));
         }
     }
@@ -392,62 +545,94 @@ fn mutated(source: &str, from: &str, to: &str) -> String {
     source.replace(from, to)
 }
 
-/// The plant the brief names: a production spawner that registers the ticker and drops the
-/// task. The task is built and never spawned, in both `cfg` variants.
-#[test]
-fn a_spawner_that_registers_and_drops_the_task_fails() {
-    let source = production_source();
-    let planted = mutated(
-        &source,
-        "drop(tauri::async_runtime::spawn(async move {\n        let window_app",
-        "drop((async move {\n        let window_app",
-    );
-    let defects = handoff_defects(&planted);
-    assert!(
-        defects
-            .iter()
-            .any(|defect| defect.contains("registers the ticker but never spawns the task")),
-        "{defects:#?}"
-    );
-}
+/// Every plant: a change to the production source that drops the handoff, with the defect
+/// the structural check must report. `(name, [(from, to)], expected defect)`; each `from` is
+/// replaced wherever it occurs (the ticker spawner has two `cfg` variants).
+/// A plant: its name, its `(from, to)` replacements and the defect it must be reported as.
+type Plant = (
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static str,
+);
 
-/// A spawner whose task no longer runs the ticker loop, a spawner that never registers, a
-/// VAD spawner that never starts the stream and an entry that forgets to hand `register` on
-/// each fail too.
+const PLANTS: &[Plant] = &[
+    (
+        "registers the ticker and drops the task",
+        &[("drop(tauri::async_runtime::spawn(async move {\n        let window_app", "drop((async move {\n        let window_app")],
+        "registers the ticker but never spawns",
+    ),
+    (
+        "the loop moved into a nested future that is created and never polled",
+        &[("        run_partial_ticker_loop(", "        let _unpolled = async move { run_partial_ticker_loop("), ("            || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),\n        )\n        .await;\n    }));", "            || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),\n        )\n        .await };\n    }));")],
+        "registers the ticker but never spawns",
+    ),
+    (
+        "the loop is built but never awaited",
+        &[("            || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),\n        )\n        .await;\n    }));", "            || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),\n        );\n    }));")],
+        "registers the ticker but never spawns",
+    ),
+    (
+        "the ticker spawner never registers",
+        &[("    if !register() {\n        return;\n    }\n    // Decode while speaking", "    // Decode while speaking")],
+        "never executes `register()`",
+    ),
+    (
+        "the VAD spawner never starts the stream",
+        &[("    crate::vad_stream::start(app, recording_id, dictation_partial_is_current);\n}", "    let _ = (app, recording_id);\n}")],
+        "never executes `vad_stream::start",
+    ),
+    (
+        "the VAD streaming-enabled guard is inverted",
+        &[("    if !transcription.streaming_pipeline_enabled", "    if transcription.streaming_pipeline_enabled")],
+        "does not skip exactly a recording that did not ask for streaming",
+    ),
+    (
+        "the VAD enabled guard is inverted",
+        &[("        || !vad::is_enabled(transcription.vad_sensitivity)", "        || vad::is_enabled(transcription.vad_sensitivity)")],
+        "does not skip exactly a disabled VAD",
+    ),
+    (
+        "the bridge's ready callback drops the ticker call",
+        &[("            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle, recording_id, register);", "            spawn_vad_stream(app_handle.clone(), recording_id);\n            let _ = (app_handle, register);")],
+        "`handle_audio_lifecycle`'s ready callback does not execute `spawn_dictation_partial_ticker",
+    ),
+    (
+        "the start command's ready callback drops the VAD call",
+        &[("            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);", "            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);")],
+        "`publish_recording_ready_if_audio_ready`'s ready callback does not execute `spawn_vad_stream",
+    ),
+    (
+        "the bridge's ready callback hands the ticker another recording id",
+        &[("            spawn_dictation_partial_ticker(app_handle, recording_id, register);", "            spawn_dictation_partial_ticker(app_handle, 0, register);")],
+        "`handle_audio_lifecycle`'s ready callback does not execute `spawn_dictation_partial_ticker",
+    ),
+    (
+        "the start command's ready callback hands the ticker its own register, not the decision's",
+        &[("            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);", "            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, Box::new(|| true));")],
+        "`publish_recording_ready_if_audio_ready`'s ready callback does not execute `spawn_dictation_partial_ticker",
+    ),
+    (
+        "the bridge passes the ready decision a different callback",
+        &[("        |app_handle, recording_id, register| {\n            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle, recording_id, register);\n        },\n    );", "        |_, _, _| {},\n    );\n    let _unused = |app_handle: tauri::AppHandle, recording_id: u64, register: Box<dyn FnOnce() -> bool>| {\n            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle, recording_id, register);\n        };")],
+        "`handle_audio_lifecycle`'s ready callback does not bind three named arguments",
+    ),
+];
+
+/// Every plant fails the structural check, with the defect it names. The plants include the
+/// one the brief names (a spawner that registers the ticker and drops the task) and the
+/// ones Sol found missed in the first round: a loop in a nested future that is never
+/// polled, and an inverted VAD streaming-enabled guard.
 #[test]
-fn every_other_way_to_drop_the_handoff_fails_too() {
+fn every_plant_that_drops_the_handoff_fails() {
     let source = production_source();
-    for (from, to, expected) in [
-        (
-            "        run_partial_ticker_loop(\n            interval,",
-            "        std::future::ready(()).await;\n        let _ = (\n            interval,",
-            "never spawns the task",
-        ),
-        (
-            "    if !register() {\n        return;\n    }\n    // Decode while speaking",
-            "    // Decode while speaking",
-            "never calls `register()`",
-        ),
-        (
-            "    crate::vad_stream::start(app, recording_id, dictation_partial_is_current);\n}",
-            "    let _ = (app, recording_id);\n}",
-            "never starts `vad_stream::start",
-        ),
-        (
-            "            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle, recording_id, register);",
-            "            spawn_vad_stream(app_handle.clone(), recording_id);\n            let _ = (app_handle, register);",
-            "`handle_audio_lifecycle` has no closure",
-        ),
-        (
-            "            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);",
-            "            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);",
-            "`publish_recording_ready_if_audio_ready` has no closure",
-        ),
-    ] {
-        let defects = handoff_defects(&mutated(&source, from, to));
+    for (name, replacements, expected) in PLANTS {
+        let planted = replacements
+            .iter()
+            .fold(source.clone(), |text, (from, to)| mutated(&text, from, to));
+        let defects = handoff_defects(&planted);
         assert!(
             defects.iter().any(|defect| defect.contains(expected)),
-            "plant `{expected}` was not caught: {defects:#?}"
+            "plant `{name}` was not caught as `{expected}`: {defects:#?}"
         );
     }
 }

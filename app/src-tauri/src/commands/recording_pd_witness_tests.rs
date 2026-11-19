@@ -1194,16 +1194,25 @@ enum PdKind {
 }
 
 #[cfg(feature = "dictation-shadow")]
-type Fixture = (&'static str, fn());
+type Fixture = (&'static str, &'static str, fn());
 
-/// A fixture by the name of its function.
+/// A fixture by the name of its function: `(name, the path of the function, the function)`.
+/// The path is what the compiled test harness lists the test as (minus the crate).
 #[cfg(feature = "dictation-shadow")]
 macro_rules! fx {
     ($module:ident :: $name:ident) => {
-        (stringify!($name), $module::$name as fn())
+        (
+            stringify!($name),
+            std::any::type_name_of_val(&$module::$name),
+            $module::$name as fn(),
+        )
     };
     ($name:ident) => {
-        (stringify!($name), $name as fn())
+        (
+            stringify!($name),
+            std::any::type_name_of_val(&$name),
+            $name as fn(),
+        )
     };
 }
 
@@ -1399,7 +1408,7 @@ fn run_e8_fixtures() {
         fx!(g::golden_s12_start_failure_vs_initialization_failed),
     ];
     let mut ran = std::collections::BTreeSet::new();
-    let mut run = |(name, fixture): Fixture| {
+    let mut run = |(name, _, fixture): Fixture| {
         if ran.insert(name) {
             fixture();
         }
@@ -1413,11 +1422,87 @@ fn run_e8_fixtures() {
     run(fx!(pd09c_abandoned_at_the_awaited_capture_start));
 }
 
+/// The tests the compiled harness lists, and those of them it ignores, by their full path
+/// without the crate (`commands::recording::golden_tests::golden_s01..`). Asked of this very
+/// test binary (`--list`), so `cfg_attr(.., ignore)` and `cfg` are resolved as compiled.
+#[cfg(feature = "dictation-shadow")]
+fn compiled_harness() -> &'static (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    static LISTS: std::sync::OnceLock<(
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    )> = std::sync::OnceLock::new();
+    LISTS.get_or_init(|| {
+        let list = |ignored_only: bool| {
+            let mut command = std::process::Command::new(
+                std::env::current_exe().expect("the test binary's own path"),
+            );
+            command.args(["--list", "--format", "terse"]);
+            if ignored_only {
+                command.arg("--ignored");
+            }
+            let output = command.output().expect("the test binary lists its tests");
+            assert!(output.status.success(), "`--list` failed");
+            String::from_utf8(output.stdout)
+                .expect("a test list is UTF-8")
+                .lines()
+                .filter_map(|line| line.strip_suffix(": test"))
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        (list(false), list(true))
+    })
+}
+
+/// Whether the compiled harness runs the test at `path` (a `type_name` path, with the
+/// crate): it lists it and does not ignore it.
+#[cfg(feature = "dictation-shadow")]
+fn compiled_harness_runs(path: &str) -> bool {
+    let Some((_, listed_as)) = path.split_once("::") else {
+        return false;
+    };
+    let (all, ignored) = compiled_harness();
+    all.contains(listed_as) && !ignored.contains(listed_as)
+}
+
+/// A test the feature build ignores through a `cfg_attr`, as the control for
+/// [`e8_rejects_a_fixture_the_compiled_harness_skips`]: a source scan for `#[ignore]` sees no
+/// `ignore` attribute on it.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+#[cfg_attr(feature = "dictation-shadow", ignore = "E8 probe: skipped by libtest")]
+fn e8_probe_skipped_through_cfg_attr() {}
+
+/// E8 does not accept a fixture libtest skips (a `cfg_attr(.., ignore)` the feature build
+/// enables), nor a path that is no test, and does accept one it runs.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn e8_rejects_a_fixture_the_compiled_harness_skips() {
+    let probe = std::any::type_name_of_val(&e8_probe_skipped_through_cfg_attr);
+    assert!(
+        !compiled_harness_runs(probe),
+        "the harness skips the probe, so E8 must not take it as run: {probe}"
+    );
+    let running = std::any::type_name_of_val(&pd13_task_panic_restores_idle_without_a_terminal);
+    assert!(compiled_harness_runs(running), "{running}");
+    assert!(!compiled_harness_runs(
+        "ui_lib::commands::recording::nothing"
+    ));
+    assert!(
+        !compiled_harness().1.is_empty(),
+        "the control saw no ignored test at all"
+    );
+}
+
 /// E8's accounting (D-S2c-15 C4), over what [`run_e8_fixtures`] replayed:
 /// * PD-1 to PD-25 each have one row in [`e8_pds`], and a latent PD names no fixture;
 /// * the PDs of the shadow's allowlist are exactly the `Row` ones, and each was credited;
 /// * the shadow credited nothing else;
-/// * every named fixture is a `#[test]` Cargo runs, in one of the files that hold them.
+/// * every named fixture is, by its full path, a test the **compiled** harness runs: listed by
+///   libtest in this very build and not ignored in it (so an `#[ignore]` behind a `cfg_attr`
+///   that this build enables is seen).
 #[cfg(feature = "dictation-shadow")]
 fn assert_every_preserved_signature_is_accounted(totals: &crate::dictation_shadow::replay::Totals) {
     let table = e8_pds();
@@ -1436,27 +1521,17 @@ fn assert_every_preserved_signature_is_accounted(totals: &crate::dictation_shado
         allowlisted, rows,
         "the shadow's allowlist and E8's row-signature PDs differ"
     );
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
-    let mut running = std::collections::BTreeSet::new();
-    for file in [
-        "recording_golden_tests.rs",
-        "recording_pd_witness_tests.rs",
-        "recording_harness_findings_tests.rs",
-        "recording_pd25_tests.rs",
-    ] {
-        let source = std::fs::read_to_string(root.join(file)).expect("a fixture file");
-        running.extend(running_tests(&source));
-    }
     for (pd, kind, fixtures) in &table {
         assert_eq!(
             fixtures.is_empty(),
             *kind == PdKind::Latent,
             "PD-{pd}: only a latent PD names no fixture"
         );
-        for (name, _) in fixtures {
+        for (name, path, _) in fixtures {
             assert!(
-                running.contains(*name),
-                "PD-{pd}: `{name}` is not a `#[test]` that Cargo runs"
+                compiled_harness_runs(path),
+                "PD-{pd}: `{name}` ({path}) is not a test the compiled harness runs: it is \
+                 missing, ignored in this build, or not a `#[test]`"
             );
         }
         let credited = totals.pd_witness.get(pd).copied().unwrap_or(0);
@@ -1766,6 +1841,38 @@ pub(super) mod under_d {
         ("bridge Idle while idle (short idle, R215.3/R216)", 6, 5),
     ];
 
+    /// The blocking threads the pool is warmed to hold idle before a measured delivery.
+    const WARM_BLOCKING_THREADS: usize = 8;
+
+    /// Make the app runtime's blocking pool hold [`WARM_BLOCKING_THREADS`] idle threads, so a
+    /// measured delivery never makes the pool create one under D. The R211 arm persists
+    /// the recording's performance completion with `spawn_blocking`
+    /// (`spawn_dictation_performance_completion`, a call both builds make while D is
+    /// held), and Tokio creates a worker thread there whenever none is idle: seven
+    /// allocations that land in the calling thread's count. Whether one is idle depends on
+    /// whether the previous delivery's persist has returned to the pool, which is timing,
+    /// not behaviour; the pins measure the bridge, not the pool. The tasks rendezvous on a
+    /// barrier, so every one of them holds its own thread at once; the pool then keeps them
+    /// idle for its keep-alive, far longer than a run. First-delivery and steady-state
+    /// numbers stay separate measurements of the same code.
+    fn warm_the_blocking_pool() {
+        let barrier = Arc::new(std::sync::Barrier::new(WARM_BLOCKING_THREADS + 1));
+        let tasks: Vec<_> = (0..WARM_BLOCKING_THREADS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                tauri::async_runtime::spawn_blocking(move || {
+                    barrier.wait();
+                })
+            })
+            .collect();
+        barrier.wait();
+        tauri::async_runtime::block_on(async {
+            for task in tasks {
+                task.await.expect("a warming task finished");
+            }
+        });
+    }
+
     fn bridge_measure(world: &Arc<World>, event: AudioLifecycleEvent) {
         let state = world.state();
         let (_, allocations) = count_under_d(&state.app_state.dictation, || {
@@ -1832,6 +1939,7 @@ pub(super) mod under_d {
         // delivery first warms the process-wide state (callsite registration) so the
         // numbers do not depend on which test ran before.
         let pair = |scenario: &Scenario, disarmed: bool| -> (u64, u64) {
+            warm_the_blocking_pool();
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| {
