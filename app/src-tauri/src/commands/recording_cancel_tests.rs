@@ -816,6 +816,12 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
 /// to its place, not only the first port after it (`cancel_window_preserved`).
 #[test]
 fn the_processing_cancel_tail_runs_in_r205_5_order() {
+    processing_cancel_tail_runs_in_r205_5_order();
+}
+
+/// The body of the test above; the cancel cutover's tests run it again through the switched
+/// entry (`recording_cancel_cutover_tests.rs`).
+pub(super) fn processing_cancel_tail_runs_in_r205_5_order() {
     let seen: TailSeen = Arc::new(StdMutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     TAIL_SINK.with(|slot| *slot.borrow_mut() = Some(sink));
@@ -925,6 +931,12 @@ thread_local! {
 /// stays blocked until the old emit has finished.
 #[test]
 fn a_new_start_stays_blocked_until_the_cancels_trailing_idle_is_emitted() {
+    a_new_start_stays_blocked_until_the_trailing_idle();
+}
+
+/// The body of the test above; the cancel cutover's tests run it again through the switched
+/// entry.
+pub(super) fn a_new_start_stays_blocked_until_the_trailing_idle() {
     let lines = run_sub_run(&SubRun {
         title: "late idle",
         setup: Setup {

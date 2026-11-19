@@ -259,6 +259,26 @@ impl FieldAdapter {
         )
     }
 
+    /// The decision view of the cancel family's one D entry after the cutover (C9.7 b,
+    /// C8.6): site 205 (`decide_cancel_request`, R205.1-.5), decided under the D hold the
+    /// section already takes with T held. Site 206 (the capture-cancel result, shared by the
+    /// cancel command and the stop's R201.4) is D-less and keeps its lock-free reads. Exactly
+    /// [`Self::lifecycle_view`] for the cancel family: the same persisted M1/M2, the same M3
+    /// atomic, M4 left `None` (no cancel decide reads it), the same C8.6 count-and-re-sync.
+    /// A test build records its reads apart, with the caller (`probe::cancel_entry`), so a
+    /// cancel test sees only cancel entries and which one.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn cancel_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            super::probe::cancel_entry,
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
     /// The one body of the cut-over views (see [`Self::lifecycle_view`]). `record` and
     /// `caller` are the family's probe and the entry's call site in a test build.
     fn persisted_view(
