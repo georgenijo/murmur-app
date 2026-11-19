@@ -592,6 +592,9 @@ thread_local! {
 /// Outstanding history operations seen while the capture cancel (`PT:CC`) was in flight.
 static OUTSTANDING_IN_CC: AtomicUsize = AtomicUsize::new(usize::MAX);
 
+/// Outstanding history operations seen at site 206's `TERM` barrier (R206.2's effect).
+static OUTSTANDING_AT_TERM: AtomicUsize = AtomicUsize::new(usize::MAX);
+
 /// The body of a delegation fixture: a start in flight (`Starting`), a decoy continuation
 /// another owner holds, then the caller's command with the supervisor's answer. Everything
 /// the test asserts is read from the run (the ledger, the history, the real executor
@@ -625,12 +628,30 @@ fn delegated_body(world: &Arc<World>) {
         }
         OUTSTANDING_IN_CC.store(during.outstanding_ops(), AtomicOrdering::SeqCst);
     });
+    // Site 206's `TERM` runs after the site consumed its operation: the history is read
+    // there, just before the effect.
+    let at_term = history.clone();
+    let _barrier = crate::barrier_hook::install(move |point| {
+        if point == "TERM" {
+            OUTSTANDING_AT_TERM.store(at_term.outstanding_ops(), AtomicOrdering::SeqCst);
+        }
+    });
     super::cancel_tests::forget_206_witness();
     match delegation.caller {
         Caller::Cancel => cancel_command(world, None),
         Caller::Stop => stop_command(world),
     }
     super::cancel_tests::note_206_witness(world);
+    if delegation.result.is_err() {
+        // R206.2 has an effect, so the owner's consumption is observable before it: the
+        // command's own `K:CaptureCancel` is already gone, the other owner's still there.
+        assert_eq!(
+            OUTSTANDING_AT_TERM.load(AtomicOrdering::SeqCst),
+            before,
+            "{}: site 206 consumed the command's own operation before its effect",
+            delegation.name
+        );
+    }
 
     // The owner: the operation the command registered for its own capture cancel was
     // outstanding while the capture cancel ran, and was consumed once site 206 had decided;
@@ -674,6 +695,7 @@ fn delegated_body(world: &Arc<World>) {
 fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>, Vec<String>) {
     DELEGATION.with(|slot| *slot.borrow_mut() = Some(delegation));
     OUTSTANDING_IN_CC.store(usize::MAX, AtomicOrdering::SeqCst);
+    OUTSTANDING_AT_TERM.store(usize::MAX, AtomicOrdering::SeqCst);
     probe::take_cancel_entries();
     COMMAND_PROJECTIONS.store(u64::MAX, AtomicOrdering::SeqCst);
     let trace = run_sub_run(&SubRun {
