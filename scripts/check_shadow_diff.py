@@ -861,16 +861,115 @@ def is_shadow_change(
     return reasons
 
 
-def shadow_module_changes(stats: dict[str, tuple[int, int]], root: Path, base: str) -> list[str]:
+def retired_wrapper_names(
+    old_table: dict[str, list[dict]] | None,
+    table: dict[str, list[dict]] | None = None,
+) -> set[str]:
+    """The wrapper commands of the handler entries this PR retired: a `handler` entry the base
+    table had and this one lacks, named by the last path segment of its `twin`
+    (`...::process_audio_witnessed,` -> `process_audio_witnessed`)."""
+    table = SHADOW_TWINS if table is None else table
+    if not old_table:
+        return set()
+    kept = {(path, e["first"]) for path, entries in table.items() for e in entries if e.get("form") == "handler"}
+    names = set()
+    for path, entries in old_table.items():
+        for entry in entries:
+            if entry.get("form") != "handler" or (path, entry["first"]) in kept:
+                continue
+            match = re.search(r"(\w+)\s*,?\s*$", entry.get("twin", ""))
+            if match:
+                names.add(match.group(1))
+    return names
+
+
+def function_line_span(tokens: list[tuple[str, int]], lines: list[str], name: str) -> set[int]:
+    """The lines of `fn <name>` in a text: its attributes and doc comments, the signature and
+    the body (empty when there is no such function)."""
+    for k in range(len(tokens) - 1):
+        if tokens[k][0] != "fn" or tokens[k + 1][0] != name:
+            continue
+        depth, end = 0, None
+        started = False
+        for j in range(k, len(tokens)):
+            if tokens[j][0] == "{":
+                depth += 1
+                started = True
+            elif tokens[j][0] == "}":
+                depth -= 1
+            if started and depth == 0:
+                end = tokens[j][1]
+                break
+        if end is None:
+            return set()
+        start = tokens[k][1]
+        while start > 1 and lines[start - 2].strip().startswith(("#[", "///", "//")):
+            start -= 1
+        return set(range(start, end + 1))
+    return set()
+
+
+def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str]) -> bool:
+    """A feature-only module's change that only takes out the wrappers of retired handler
+    entries: no line is added, every removed line is inside such a wrapper (or is a blank or
+    `use` line a removed wrapper leaves behind), and the wrapper's name is gone from the whole
+    tree (its handler entry and call sites went with it). Anything else in the module is a
+    shadow edit."""
+    if not names or added_lines(root, base, path):
+        return False
+    removed = removed_lines(root, base, path)
+    if not removed:
+        return False
+    text = show(root, base, path)
+    lines = text.splitlines()
+    tokens = tokenize(text)
+    covered: set[int] = set()
+    removed_names = set()
+    for name in names:
+        span = function_line_span(tokens, lines, name)
+        if span:
+            covered |= span
+            removed_names.add(name)
+    if not removed_names:
+        return False
+    for line in removed - covered:
+        shown = lines[line - 1].strip() if 0 < line <= len(lines) else ""
+        if shown and not shown.startswith("use "):
+            return False
+    for name in removed_names:
+        result = subprocess.run(
+            ["git", "grep", "-lw", "-e", name, "HEAD", "--", f"{TAURI}/*.rs"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
+            return False
+    return True
+
+
+def shadow_module_changes(
+    stats: dict[str, tuple[int, int]],
+    root: Path,
+    base: str,
+    old_table: dict[str, list[dict]] | None = None,
+) -> list[str]:
     """A change to a feature-only module (`SHADOW_ONLY`) is itself a shadow change: the PR is
     classified as one, so an ungated live edit beside it (an `instrument_invoke_handler`
     `return false`, say) is held to insertion only and feature scoping. The module's own lines
-    stay exempt from insertion only (it is not in `guarded`); tests of it do not count."""
+    stay exempt from insertion only (it is not in `guarded`); tests of it do not count.
+
+    The one exception is a cutover's: removing the wrappers of handler entries the PR retires
+    from the table (with their entries and every reference) is part of the retirement, not a
+    shadow edit, and must not subject the cutover's deletions to insertion-only."""
+    retired = retired_wrapper_names(old_table)
     reasons = []
     for path in sorted(stats):
         if not is_production_path(path) or not is_shadow_only(path):
             continue
         if is_test_file(path, show(root, base, path) or show(root, "HEAD", path)):
+            continue
+        if retired and is_wrapper_retirement(root, base, path, retired):
             continue
         reasons.append(f"{path} (feature-only module changed)")
     return reasons
@@ -1338,7 +1437,7 @@ def main(root: Path = ROOT, base: str = "origin/main") -> int:
     # Only a PR that adds or removes shadow lines is a shadow change, and only it is held to
     # insertion only, with every inserted statement behind the feature (C2 i). Any other PR
     # may edit and delete live code, with its originals and twins kept consistent above.
-    reasons = is_shadow_change(root, base, guarded, old_table) + shadow_module_changes(stats, root, base)
+    reasons = is_shadow_change(root, base, guarded, old_table) + shadow_module_changes(stats, root, base, old_table)
     problems.extend(retired_pin_problems(root, old_table))
     if reasons:
         problems.extend(violations(stats, guarded))

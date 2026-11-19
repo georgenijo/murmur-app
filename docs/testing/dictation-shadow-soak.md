@@ -303,7 +303,7 @@ The candidate commit (`$SHA`, 40 hex) binds the evidence: every session's `sessi
 and the E7 dump's `git_sha` must equal it, and the dump must come from a clean checkout.
 
 ```bash
-python3 scripts/shadow_soak_verdict.py --expect-sha "$SHA" --e7 "$E7_OUT" \
+python3 scripts/shadow_soak_verdict.py --expect-sha "$SHA" --e7 "${E7_OUT:?run the E7 step first}" \
   --checklist "$SOAK/checklist-pass1.json" --checklist "$SOAK/checklist-pass2.json" \
   --checklist "$SOAK/checklist-pass3.json" "$SOAK"/session-*-summary.json
 python3 scripts/shadow_soak_verdict.py --family start --expect-sha "$SHA" ... # one family
@@ -390,17 +390,21 @@ MURMUR_GOLDEN_REPEAT=100 cargo nextest run --lib --features dictation-shadow \
 
 # E8 and the per-row dump the verdict script reads (E3 adds these hits for the rows a
 # replay may credit; E7 reads golden_repeat, git_sha and dirty; E8 reads pd_witness).
-# Use a **new path for every run**: the test refuses a path that already exists, so a
-# failed rerun can never leave an earlier run's dump behind for the verdict. The test writes
-# it only if it passed, and the file takes its final name only after the runner exits 0.
+# Every attempt gets its own **new directory** (`mktemp -d`, never a timestamp that two
+# attempts can share): the test refuses a path that already exists, and `E7_OUT` is unset
+# first and set only after the test **and** the rename both succeed. A failed attempt leaves
+# no `E7_OUT`, so the verdict cannot be pointed at an earlier attempt's dump by mistake.
 # The dump names the revision this test binary was built from (`build.rs`'s
-# `MURMUR_GIT_SHA`), and is `dirty` when the checkout's HEAD is not that revision. It is
+# `MURMUR_GIT_SHA`), and is `dirty` when the checkout's HEAD is another revision. It is
 # numeric: per row `matched`, `delegated`, `compared` (information only) and `e3_credit`.
-E7_OUT="$SOAK/e7-per-row-$(date +%Y%m%dT%H%M%S).json"
-MURMUR_GOLDEN_REPEAT=100 MURMUR_E7_PER_ROW_OUT="$E7_OUT.pending" \
-  cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --test-threads=1 \
-  && mv "$E7_OUT.pending" "$E7_OUT"
-echo "pass this file to the verdict: --e7 $E7_OUT"
+unset E7_OUT
+E7_DIR="$(mktemp -d "$SOAK/e7-attempt-XXXXXX")" &&
+  MURMUR_GOLDEN_REPEAT=100 MURMUR_E7_PER_ROW_OUT="$E7_DIR/pending.json" \
+    cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --test-threads=1 &&
+  mv "$E7_DIR/pending.json" "$E7_DIR/e7-per-row.json" &&
+  E7_OUT="$E7_DIR/e7-per-row.json" &&
+  echo "pass this file to the verdict: --e7 $E7_OUT" ||
+  echo "E7 attempt failed: there is no dump to pass to the verdict (repeat the attempt)"
 
 # Site order (C8.7): headers leave D, and precede the blocking effects.
 cargo test --lib --features dictation-shadow headers_leave_d -- --test-threads=1

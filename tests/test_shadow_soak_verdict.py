@@ -2,7 +2,9 @@ import contextlib
 import copy
 import io
 import json
+import os
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -709,6 +711,11 @@ class ManifestTests(unittest.TestCase):
 
     DECIDES = re.compile(r"\b(decide\w*|d_\d+\w*|start|tail|stop|expect_\w+|assert_pure_refusal)\(")
     NOT_A_DECISION = re.compile(r"ordinal|C3_ROWS|Split::|allowlist")
+    # Calls whose arguments only print or format: a row id there is not an assertion.
+    NOT_AN_ASSERTION = {
+        "print", "println", "eprint", "eprintln", "dbg", "format", "write", "writeln", "panic",
+        "info", "warn", "debug", "trace", "error", "log",
+    }
 
     @classmethod
     def waiver_problem(cls, body: str, shown: str, row_id: str, name: str) -> str | None:
@@ -720,19 +727,25 @@ class ManifestTests(unittest.TestCase):
         tracer: it rules out a row that survives only in a comment or outside any call."""
         code = cls.strip_comments(body)
         literal = f'"{shown}"'
-        depth = 0
+        # The literal must sit inside parentheses (a row-asserting call or macro, a decision
+        # call's argument, or a case tuple), and none of the calls around it may be a print or
+        # a log: `eprintln!("R203.2r")` names the row without asserting anything.
+        stack: list[str] = []
         inside = False
-        # Walk the code outside of string literals tracking the paren depth at each match.
-        for match in re.finditer(r'"(?:[^"\\]|\\.)*"|[()]', code):
+        for match in re.finditer(r'"(?:[^"\\]|\\.)*"|[()]|[A-Za-z_]\w*!?(?=\s*\()', code):
             token = match.group()
             if token == "(":
-                depth += 1
+                before = code[: match.start()].rstrip()
+                opener = re.search(r"([A-Za-z_]\w*)!?$", before)
+                stack.append(opener.group(1) if opener else "")
             elif token == ")":
-                depth -= 1
-            elif token == literal and depth > 0:
-                inside = True
-        if not inside and not (row_id.lower().replace(".", "_") in name and literal in code):
-            return f"{row_id}: {name} never names the row in code (a comment does not count)"
+                if stack:
+                    stack.pop()
+            elif token == literal:
+                if stack and not any(call in cls.NOT_AN_ASSERTION for call in stack):
+                    inside = True
+        if not inside:
+            return f"{row_id}: {name} never names the row in an assertion, a decision argument or a case table (a comment or a log line does not count)"
         if not cls.DECIDES.search(code):
             return f"{row_id}: {name} calls no decision"
         if cls.NOT_A_DECISION.search(code):
@@ -771,9 +784,26 @@ class ManifestTests(unittest.TestCase):
         line = next(l for l in body.splitlines() if '"R203.2r"' in l and not l.lstrip().startswith("//"))
         planted = body.replace(line, "        // " + line.strip())
         self.assertNotEqual(body, planted)
-        self.assertIn("never names the row in code", self.waiver_problem(planted, entry["id"], entry["id"], entry["name"]))
+        self.assertIn("never names the row in an assertion", self.waiver_problem(planted, entry["id"], entry["id"], entry["name"]))
         block = body.replace(line, "        /* " + line.strip() + " */")
-        self.assertIn("never names the row in code", self.waiver_problem(block, entry["id"], entry["id"], entry["name"]))
+        self.assertIn("never names the row in an assertion", self.waiver_problem(block, entry["id"], entry["id"], entry["name"]))
+
+    def test_a_log_line_naming_the_row_does_not_keep_the_waiver(self):
+        # Sol round 3, minor 4: `eprintln!("R203.2r")` beside the commented-out case.
+        body, entry = self.cited_body("stop", "R203.2r")
+        line = next(l for l in body.splitlines() if '"R203.2r"' in l and not l.lstrip().startswith("//"))
+        for logged in ('eprintln!("R203.2r");', 'println!("R203.2r");', 'dbg!("R203.2r");', 'tracing::info!("R203.2r");', 'let _ = format!("{}", "R203.2r");'):
+            planted = body.replace(line, "        // " + line.strip()).replace("    for (status, row) in cases {", f"    {logged}\n    for (status, row) in cases {{")
+            self.assertNotEqual(body, planted)
+            self.assertIn(
+                "never names the row in an assertion",
+                self.waiver_problem(planted, entry["id"], entry["id"], entry["name"]),
+                logged,
+            )
+        # An assertion or a decision argument still counts.
+        for good in ('assert_eq!(row, "R203.2r");', 'expect_203(&d, "R203.2r", term, true, FAIL_TAIL, status);'):
+            planted = body.replace(line, "        // " + line.strip()).replace("    for (status, row) in cases {", f"    {good}\n    for (status, row) in cases {{")
+            self.assertIsNone(self.waiver_problem(planted, entry["id"], entry["id"], entry["name"]), good)
 
     def test_a_row_named_only_outside_a_call_or_case_is_not_asserted(self):
         body, entry = self.cited_body("stop", "R203.2r")
@@ -840,6 +870,59 @@ class ManifestTests(unittest.TestCase):
                 (Path(tmp) / "cancel.json").write_text(json.dumps(data))
                 with self.assertRaises(ValueError, msg=field):
                     verdict.load_manifest("cancel", Path(tmp))
+
+
+class RunbookE7StepTests(unittest.TestCase):
+    """Sol round 3, finding 1: a failed E7 retry must not leave a passing dump to point at."""
+
+    @staticmethod
+    def snippet() -> str:
+        text = (ROOT / "docs/testing/dictation-shadow-soak.md").read_text()
+        start = text.index("unset E7_OUT\n")
+        return text[start : text.index("# Site order (C8.7)", start)]
+
+    def attempt(self, tmp: Path, *, passes: bool, soak: Path) -> tuple[str, str]:
+        """Run the runbook's E7 step with a stub `cargo`; return (stdout, E7_OUT afterwards)."""
+        stub = tmp / "bin"
+        stub.mkdir(exist_ok=True)
+        cargo = stub / "cargo"
+        cargo.write_text(
+            "#!/bin/sh\n"
+            + ('echo "{}" > "$MURMUR_E7_PER_ROW_OUT"\n' if passes else "exit 101\n")
+        )
+        cargo.chmod(0o755)
+        script = f'SOAK="{soak}"\n{self.snippet()}\necho "E7_OUT=${{E7_OUT-<unset>}}"\n'
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{stub}:{os.environ['PATH']}", "HOME": str(tmp)},
+        )
+        out = result.stdout
+        return out, out.strip().splitlines()[-1].removeprefix("E7_OUT=")
+
+    def test_a_failed_retry_never_leaves_an_e7_out_and_attempts_do_not_share_a_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            soak = tmp / "soak"
+            soak.mkdir()
+            out, first = self.attempt(tmp, passes=True, soak=soak)
+            self.assertTrue(Path(first).is_file(), out)
+            self.assertIn(f"--e7 {first}", out)
+            # The retry fails (exit 101): no path is printed and E7_OUT is not the first one.
+            out, second = self.attempt(tmp, passes=False, soak=soak)
+            self.assertEqual(second, "<unset>", out)
+            self.assertNotIn("pass this file", out)
+            self.assertIn("attempt failed", out)
+            # A passing retry is a different directory from the first attempt's.
+            _, third = self.attempt(tmp, passes=True, soak=soak)
+            self.assertNotEqual(first, third)
+            self.assertTrue(Path(third).is_file())
+
+    def test_the_verdict_example_refuses_an_unset_dump(self):
+        text = (ROOT / "docs/testing/dictation-shadow-soak.md").read_text()
+        self.assertIn('--e7 "${E7_OUT:?', text)
+        self.assertNotIn("e7-per-row.json\"", text.replace('"$E7_DIR/e7-per-row.json"', ""))
 
 
 class CommandLineTests(unittest.TestCase):

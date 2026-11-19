@@ -535,6 +535,28 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
+    def test_a_rust_change_cannot_bypass_the_rust_jobs_through_the_filters(self) -> None:
+        # Sol round 3, finding 2: a misspelt glob, or an output forced to false, leaves a
+        # Rust-only PR with both Rust jobs skipped, and `ci-pass` accepts that.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            ("              - 'app/src-tauri/**'\n", "              - 'app/src-taurii/**'\n"),
+            ("              - 'app/src-tauri/**'\n", ""),
+            ("              - '.github/**'\n", "              - '.githubb/**'\n"),
+            ("              - 'app/src/**'\n", "              - 'app/sr/**'\n"),
+            ("              - '**/Cargo.lock'\n", ""),
+            ("      rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}\n", "      rust: false\n"),
+            ("      rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}\n", "      rust: ${{ steps.filter.outputs.github == 'true' }}\n"),
+            ("      github: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}\n", "      github: ${{ 'false' == 'true' }}\n"),
+            ("      frontend: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}\n", "      frontend: false\n"),
+            ("        id: filter\n", "        id: filtered\n"),
+        ):
+            with self.subTest(old=old.strip()[:50], new=new.strip()[:40]):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_ci_pass_requires_success_from_a_job_its_filters_selected(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old, new in (

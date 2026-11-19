@@ -55,6 +55,53 @@ CI_SELECTED_JOB_CHECKS = (
         "frontend",
     ),
 )
+# The change filters and the outputs that select jobs from them. A misspelt glob
+# (`app/src-taurii/**`) or an output forced to `false` would skip the Rust jobs on a Rust-only
+# PR, and `ci-pass` accepts a job its filters did not select.
+CI_FILTER_PATHS = {
+    "frontend": (
+        "app/src/**",
+        "app/public/**",
+        "app/index.html",
+        "app/log-viewer.html",
+        "app/overlay.html",
+        "app/package.json",
+        "app/package-lock.json",
+        "app/tsconfig*.json",
+        "app/vite.config.ts",
+        "app/vitest.config.ts",
+        "app/vitest.setup.ts",
+        "app/visual-fixtures.html",
+        "app/visual-tests/**",
+        "app/playwright*.ts",
+        "app/src-tauri/tauri.conf.json",
+        "app/src-tauri/capabilities/**",
+    ),
+    "rust": (
+        "app/src-tauri/**",
+        "scripts/configure_ci_rust_library.py",
+        "app/src-tauri/Cargo.toml",
+        "app/src-tauri/Cargo.lock",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rustfmt.toml",
+    ),
+    "github": (".github/**",),
+    "rust-cache": (
+        "scripts/configure_ci_rust_library.py",
+        "**/Cargo.toml",
+        "**/Cargo.lock",
+        "rust-toolchain*",
+        ".cargo/**",
+        ".github/workflows/ci.yml",
+    ),
+}
+CI_CHANGES_OUTPUTS = {
+    "verified": "${{ steps.verified.outputs.verified == 'true' }}",
+    "frontend": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}",
+    "rust": "${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}",
+    "github": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}",
+}
 CI_RUST_TEST_STEPS = (
     "Run tests",
     "Run dictation shadow tests",
@@ -303,20 +350,29 @@ def validate_ci(ci: str) -> int:
             "          fi\n"
         )
         assert selected in ci_pass_step, f"ci-pass must require success from {jobs} when {outputs} select them"
-    rust_filter = re.search(
-        r"^            rust:\n(?P<paths>(?:^              - .+\n)+)",
-        changes,
-        re.MULTILINE,
+    # The filter step and what it selects, pinned exactly (a glob that matches nothing, or an
+    # output that is always false, would let a Rust-only PR skip both Rust jobs).
+    assert "      - uses: dorny/paths-filter@v3\n        id: filter\n" in changes
+    for name, expected in CI_FILTER_PATHS.items():
+        found = re.search(
+            rf"^            {re.escape(name)}:\n(?P<paths>(?:^              (?:- |#).*\n)+)",
+            changes,
+            re.MULTILINE,
+        )
+        assert found, f"missing {name} paths filter"
+        listed = tuple(
+            line.strip()[2:].strip().strip("'")
+            for line in found.group("paths").splitlines()
+            if line.strip().startswith("- ")
+        )
+        assert listed == expected, f"the {name} change filter is not the pinned list: {listed}"
+    outputs = re.search(r"^    outputs:\n(?P<body>(?:^      .+\n)+)", changes, re.MULTILINE)
+    assert outputs, "missing changes outputs"
+    declared = dict(
+        (line.split(":", 1)[0].strip(), line.split(":", 1)[1].strip())
+        for line in outputs.group("body").splitlines()
     )
-    assert rust_filter, "missing rust paths filter"
-    assert "'rustfmt.toml'" in rust_filter.group("paths")
-    assert "'scripts/configure_ci_rust_library.py'" in rust_filter.group("paths")
-    cache_filter = re.search(
-        r"^            rust-cache:\n(?P<paths>(?:^              - .+\n)+)",
-        changes,
-        re.MULTILINE,
-    )
-    assert cache_filter and "'scripts/configure_ci_rust_library.py'" in cache_filter.group("paths")
+    assert declared == CI_CHANGES_OUTPUTS, f"the changes outputs are not the pinned expressions: {declared}"
     validation = named_step_block(policy, "Validate workflow policy", 6)
     for marker in (
         "python3 -m pip install -r requirements-test.txt",

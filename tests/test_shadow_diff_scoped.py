@@ -542,6 +542,127 @@ class HandlerAndBaseTests(unittest.TestCase):
         self.assertIn("call site remains", err)
 
 
+class LifecycleCutoverTests(unittest.TestCase):
+    """Sol round 3, finding 3: a cutover removes a handler pair, its wrapper in the
+    feature-only `shadow_commands.rs`, its pins and its call sites, in one PR. It must pass;
+    an unrelated edit of the same module beside it must still count as a shadow change."""
+
+    GATE = '#[cfg(not(feature = "dictation-shadow"))]'
+    FEATURE = '#[cfg(feature = "dictation-shadow")]'
+    LIB = "app/src-tauri/src/lib.rs"
+    MODULE = "app/src-tauri/src/commands/recording/shadow_commands.rs"
+    SCRIPT = (
+        "SHADOW_TWINS: dict[str, list[dict]] = {\n"
+        '    "app/src-tauri/src/lib.rs": [\n'
+        '        {"first": "commands::recording::process_audio,", "form": "handler",\n'
+        '         "twin": "commands::recording::shadow_commands::process_audio_witnessed,", "why": "x"},\n'
+        "    ],\n"
+        '    "app/src-tauri/src/keyboard.rs": [\n'
+        '        {"first": "fn orig_observed(x: u64) -> (bool, u64) {", "form": "frozen_fn",\n'
+        '         "original": "fn orig(x: u64) -> bool {", "pair": "0000000000000000", "why": "x"},\n'
+        "    ],\n}\n"
+    )
+    LIVE_BASE = (
+        "fn orig(x: u64) -> bool {\n    x > 1\n}\n"
+        '#[cfg(feature = "dictation-shadow")]\n'
+        "fn orig_observed(x: u64) -> (bool, u64) {\n    (x > 1, x)\n}\n"
+        "fn caller() {\n"
+        '    #[cfg(not(feature = "dictation-shadow"))]\n'
+        "    let a = orig(1);\n"
+        '    #[cfg(feature = "dictation-shadow")]\n'
+        "    let (a, witness) = orig_observed(1);\n"
+        "    use_it(a);\n}\n"
+    )
+    LIVE_AFTER = "fn orig(x: u64) -> bool {\n    x > 1\n}\nfn caller() {\n    let a = decide(1);\n    use_it(a);\n}\n"
+    LIB_BASE = (
+        "fn handlers() {\n    generate_handler![\n        a,\n"
+        f"        {GATE}\n        commands::recording::process_audio,\n"
+        f"        {FEATURE}\n        commands::recording::shadow_commands::process_audio_witnessed,\n"
+        "        b,\n    ]\n}\n"
+    )
+    LIB_AFTER = "fn handlers() {\n    generate_handler![\n        a,\n        commands::recording::process_audio,\n        b,\n    ]\n}\n"
+    MODULE_BASE = (
+        "use crate::commands::recording::process_audio;\n\n"
+        "#[tauri::command]\npub async fn process_audio_witnessed() {\n    process_audio().await\n}\n\n"
+        "#[tauri::command]\npub async fn other_witnessed() {\n    other().await\n}\n"
+    )
+    MODULE_AFTER = "#[tauri::command]\npub async fn other_witnessed() {\n    other().await\n}\n"
+
+    def cutover_repo(self, module_after: str):
+        root = repo(self.LIVE_BASE, self.LIVE_AFTER)
+        git(root, "checkout", "-q", "main")
+        for rel, text in (
+            ("scripts/check_shadow_diff.py", self.SCRIPT),
+            (self.LIB, self.LIB_BASE),
+            (self.MODULE, self.MODULE_BASE),
+        ):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text)
+        git(root, "add", ".")
+        git(root, "commit", "-m", "the reviewed tree")
+        git(root, "checkout", "-q", "branch")
+        git(root, "merge", "-q", "main", "-m", "merge main")
+        (root / self.LIB).write_text(self.LIB_AFTER)
+        (root / self.MODULE).write_text(module_after)
+        git(root, "commit", "-am", "the cutover")
+        return root
+
+    def test_a_cutover_removing_the_pair_the_wrapper_the_pin_and_the_call_sites_passes(self):
+        with allowed({}):
+            code, out, err = run(self.cutover_repo(self.MODULE_AFTER))
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+
+    def test_an_unrelated_edit_of_the_module_beside_the_cutover_is_a_shadow_change(self):
+        for after in (
+            self.MODULE_AFTER + "pub async fn another() {}\n",
+            self.MODULE_AFTER.replace("other().await", "other().await?"),
+            self.MODULE_AFTER.replace("    other().await\n", ""),
+        ):
+            with allowed({}):
+                code, out, err = run(self.cutover_repo(after))
+            self.assertIn("shadow change: yes", out, after)
+            self.assertIn("feature-only module changed", out)
+            # The cutover's own deletions are held to insertion only again.
+            self.assertEqual(code, 1, err)
+
+    def test_removing_a_wrapper_that_is_still_registered_is_a_shadow_change(self):
+        # The handler entry stays in the table (not retired): the wrapper's removal is an edit.
+        entry = {
+            "first": "commands::recording::process_audio,",
+            "form": "handler",
+            "twin": "commands::recording::shadow_commands::process_audio_witnessed,",
+            "why": "x",
+        }
+        with allowed({self.LIB: [entry]}):
+            code, out, err = run(self.cutover_repo(self.MODULE_AFTER))
+        self.assertIn("shadow change: yes", out)
+        self.assertEqual(code, 1, err)
+
+    def test_a_wrapper_removed_while_the_name_is_still_referenced_is_a_shadow_change(self):
+        live_after = self.LIVE_AFTER + "fn leftover() { process_audio_witnessed(); }\n"
+        root = repo(self.LIVE_BASE, live_after)
+        git(root, "checkout", "-q", "main")
+        for rel, text in (
+            ("scripts/check_shadow_diff.py", self.SCRIPT),
+            (self.LIB, self.LIB_BASE),
+            (self.MODULE, self.MODULE_BASE),
+        ):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text)
+        git(root, "add", ".")
+        git(root, "commit", "-m", "the reviewed tree")
+        git(root, "checkout", "-q", "branch")
+        git(root, "merge", "-q", "main", "-m", "merge main")
+        (root / self.LIB).write_text(self.LIB_AFTER)
+        (root / self.MODULE).write_text(self.MODULE_AFTER)
+        git(root, "commit", "-am", "the cutover")
+        with allowed({}):
+            code, out, err = run(root)
+        self.assertIn("shadow change: yes", out)
+        self.assertEqual(code, 1, err)
+
+
 class PinnedHelperTests(unittest.TestCase):
     """Sol round 1, finding 4: the live helper copies are pinned, not only their call sites."""
 
