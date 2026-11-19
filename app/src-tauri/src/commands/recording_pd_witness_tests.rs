@@ -1730,7 +1730,7 @@ pub(super) mod under_d {
         ("cancel refused (stale, R205.1)", (0, 3), (0, 2)),
         ("cancel no-op (idle, R205.2)", (0, 3), (0, 2)),
         ("cancel no-op (recovering, R205.3)", (0, 3), (0, 2)),
-        ("bridge Ready while starting (R207)", (0, 3), (1, 2)),
+        ("bridge Ready while starting (R207)", (0, 3), (2, 2)),
         (
             "bridge StillConnecting while starting (R208)",
             (0, 2),
@@ -1742,7 +1742,7 @@ pub(super) mod under_d {
             (0, 2),
             (0, 1),
         ),
-        ("bridge Idle while recording (R211)", (0, 3), (1, 2)),
+        ("bridge Idle while recording (R211)", (0, 3), (2, 2)),
         (
             "bridge Idle while idle (short idle, R215.3/R216)",
             (0, 2),
@@ -1751,7 +1751,7 @@ pub(super) mod under_d {
         (
             "start accepted (R104.2, the ticker spawner under D)",
             (0, 23),
-            (2, 16),
+            (10, 16),
         ),
     ];
 

@@ -380,8 +380,12 @@ pub(crate) fn ticker_start_check(app_state: &AppState, recording_id: u64) -> Tic
         }
     };
     // The outcome of that one lookup, for the port that called the spawner: one flag load
-    // while disarmed, and nothing else (D-S2c-10 amendment 1 i, ii).
-    crate::dictation_executor::shadow::ticker_outcome(started.as_ref().err().copied());
+    // while disarmed, and the result is inspected only behind it (D-S2c-10 amendment 1 i, ii).
+    if crate::dictation_shadow::enabled() {
+        crate::dictation_executor::shadow::ticker_outcome(
+            crate::dictation_executor::shadow::ticker_skip_of(&started),
+        );
+    }
     started
 }
 
@@ -1334,6 +1338,8 @@ impl PipelineOwner {
     /// The H2 retirement `retire_pipeline` made, once.
     #[cfg(feature = "dictation-shadow")]
     fn take_h2_retired(&mut self) -> Option<crate::dictation_shadow::types::LiveOp> {
+        #[cfg(test)]
+        crate::dictation_executor::probe::shadow_read();
         self.h2_retired.take()
     }
 
@@ -1656,9 +1662,7 @@ impl<'a> IdleGuard<'a> {
         }
         .after_pre();
         #[cfg(feature = "dictation-shadow")]
-        if let Some(op) = owner.as_mut().and_then(|owner| owner.op.take_retired()) {
-            flight.history(op);
-        }
+        flight.history_of(|| owner.as_mut().and_then(|owner| owner.op.take_retired()));
         stop_ports::expect_valid(&decision);
         // H2 `ret rid`: after the decision, before its `In` effects. A panic in
         // an effect (the `ST` trace) can no longer leave either entry behind.
@@ -1666,9 +1670,7 @@ impl<'a> IdleGuard<'a> {
             owner.retire_pipeline();
         }
         #[cfg(feature = "dictation-shadow")]
-        if let Some(op) = owner.as_mut().and_then(PipelineOwner::take_h2_retired) {
-            flight.history(op);
-        }
+        flight.history_of(|| owner.as_mut().and_then(PipelineOwner::take_h2_retired));
         #[cfg(feature = "dictation-shadow")]
         if let (true, Some(at)) = (flight.is_active(), decided_at.get()) {
             flight.decided(
@@ -7290,9 +7292,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
         // alone is the header.
         #[cfg(feature = "dictation-shadow")]
         {
-            if let Some(op) = ready_op.take_retired() {
-                flight.history(op);
-            }
+            flight.history_of(|| ready_op.take_retired());
             crate::shadow_site!(issue = 1154);
             if flight.is_active() {
                 flight.decided(
@@ -7336,9 +7336,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     expect_valid(&decision);
     #[cfg(feature = "dictation-shadow")]
     {
-        if let Some(op) = ready_op.take_retired() {
-            flight.history(op);
-        }
+        flight.history_of(|| ready_op.take_retired());
         crate::shadow_site!(issue = 1154);
         if flight.is_active() {
             flight.decided(
@@ -7815,7 +7813,7 @@ async fn start_native_recording_inner(
             .expect("R101.15 returns K:CaptureStart");
         let capture_guard = ContinuationGuard::register(&state.app_state.core_history, spec);
         #[cfg(feature = "dictation-shadow")]
-        flight_101.history(capture::registered(capture_guard.token()));
+        flight_101.history_of(|| Some(capture::registered(capture_guard.token())));
         let ports = StartPorts::new(host, state, &slots, None);
         let mut exec = executor(&ports, decision, kept_preview);
         // The scope ends with this section, before the `.await` below; the flight itself
@@ -7958,10 +7956,8 @@ async fn start_native_recording_inner(
             // the capture's op and the registration of the context's are the header.
             #[cfg(feature = "dictation-shadow")]
             if let Some(op_status) = seen_status.get() {
-                if let Some(op) = capture_guard.take_retired() {
-                    flight_102.history(op);
-                }
-                flight_102.history(capture::registered(context_guard.token()));
+                flight_102.history_of(|| capture_guard.take_retired());
+                flight_102.history_of(|| Some(capture::registered(context_guard.token())));
                 crate::shadow_site!(issue = 1154);
                 if flight_102.is_active() {
                     flight_102.decided(
@@ -8062,9 +8058,7 @@ async fn start_native_recording_inner(
             expect_valid(&decision);
             #[cfg(feature = "dictation-shadow")]
             if let (Some(op_status), Some(seen_error)) = (seen_status.get(), seen_error) {
-                if let Some(op) = capture_guard.take_retired() {
-                    flight_102.history(op);
-                }
+                flight_102.history_of(|| capture_guard.take_retired());
                 crate::shadow_site!(issue = 1154);
                 if flight_102.is_active() {
                     flight_102.decided(
@@ -8259,12 +8253,12 @@ async fn start_after_capture(
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
         #[cfg(feature = "dictation-shadow")]
         if let Some(op_status) = seen_status.get() {
-            if let Some(op) = context_guard.take_retired() {
-                flight_103.history(op);
-            }
-            if let Some(ready) = ready_op.as_ref() {
-                flight_103.history(capture::registered(ready.token()));
-            }
+            flight_103.history_of(|| context_guard.take_retired());
+            flight_103.history_of(|| {
+                ready_op
+                    .as_ref()
+                    .map(|ready| capture::registered(ready.token()))
+            });
             crate::shadow_site!(issue = 1154);
             if flight_103.is_active() {
                 flight_103.decided(
@@ -8706,9 +8700,11 @@ async fn stop_native_recording_admitted(
             .continuation
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
         #[cfg(feature = "dictation-shadow")]
-        if let Some(guard) = op_guard.as_ref() {
-            flight_201.history(capture::registered(guard.token()));
-        }
+        flight_201.history_of(|| {
+            op_guard
+                .as_ref()
+                .map(|guard| capture::registered(guard.token()))
+        });
         let slots = {
             let ports = StopPorts::new(host, state, rid, stop_entered_at);
             let mut exec = executor(&ports, decision.clone());
@@ -8772,9 +8768,7 @@ async fn stop_native_recording_admitted(
                 #[cfg(feature = "dictation-shadow")]
                 {
                     if let Some(op_status) = seen_status.get() {
-                        if let Some(op) = guard.take_retired() {
-                            flight_206.history(op);
-                        }
+                        flight_206.history_of(|| guard.take_retired());
                         crate::shadow_site!(issue = 1154);
                         if flight_206.is_active() {
                             flight_206.decided(
@@ -8885,9 +8879,7 @@ async fn stop_native_recording_admitted(
         });
         #[cfg(feature = "dictation-shadow")]
         if let Some(op_status) = seen_status.get() {
-            if let Some(op) = op_guard.take_retired() {
-                flight_202.history(op);
-            }
+            flight_202.history_of(|| op_guard.take_retired());
             crate::shadow_site!(issue = 1154);
             if flight_202.is_active() {
                 flight_202.decided(
@@ -8951,9 +8943,7 @@ async fn stop_native_recording_admitted(
         })
     });
     #[cfg(feature = "dictation-shadow")]
-    if let Some(op) = op_guard.take_retired() {
-        flight_202n.history(op);
-    }
+    flight_202n.history_of(|| op_guard.take_retired());
     if let Verdict::Invalid(_) = decision.verdict {
         // An invalid decision has no header: named, so the books balance.
         #[cfg(feature = "dictation-shadow")]
@@ -8965,7 +8955,7 @@ async fn stop_native_recording_admitted(
         .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec))
         .expect("a context-present stop registered `K:CaptureStop`");
     #[cfg(feature = "dictation-shadow")]
-    flight_202n.history(capture::registered(stop_guard.token()));
+    flight_202n.history_of(|| Some(capture::registered(stop_guard.token())));
     tracing::debug!(target: "pipeline", "stop_native_recording: stopping");
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -9155,9 +9145,7 @@ async fn stop_native_recording_admitted(
         })
     });
     #[cfg(feature = "dictation-shadow")]
-    if let Some(op) = stop_guard.take_retired() {
-        flight_203n.history(op);
-    }
+    flight_203n.history_of(|| stop_guard.take_retired());
     if let Verdict::Invalid(_) = decision.verdict {
         // An invalid decision has no header: named, so the books balance.
         #[cfg(feature = "dictation-shadow")]
@@ -9619,9 +9607,7 @@ fn run_stop_capture_rows<'a>(
     });
     #[cfg(feature = "dictation-shadow")]
     if let Some(op_status) = seen_status.get() {
-        if let Some(op) = capture_stop.take_retired() {
-            flight.history(op);
-        }
+        flight.history_of(|| capture_stop.take_retired());
         crate::shadow_site!(issue = 1154);
         if let (true, Some(at)) = (flight.is_active(), decided_at.get()) {
             flight.decided(
@@ -9784,11 +9770,13 @@ async fn cancel_native_recording_inner(
         .continuation
         .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
     #[cfg(feature = "dictation-shadow")]
-    if let Some(guard) = op_guard.as_ref() {
-        flight_205.history(capture::registered(guard.token()));
-        // R205.4's reply is the capture cancel's result, rendered by site 206, which
-        // is the flight compared for it.
-        flight_205.delegated_reply();
+    if flight_205.is_active() {
+        if let Some(guard) = op_guard.as_ref() {
+            flight_205.history(capture::registered(guard.token()));
+            // R205.4's reply is the capture cancel's result, rendered by site 206, which
+            // is the flight compared for it.
+            flight_205.delegated_reply();
+        }
     }
     let ports = CancelPorts::new(host, state, rid);
     let mut exec = executor(&ports, decision.clone());
@@ -9851,9 +9839,7 @@ async fn cancel_native_recording_inner(
     // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
     #[cfg(feature = "dictation-shadow")]
     if let Some(op_status) = seen_status.get() {
-        if let Some(op) = op_guard.take_retired() {
-            flight_206.history(op);
-        }
+        flight_206.history_of(|| op_guard.take_retired());
         crate::shadow_site!(issue = 1154);
         if flight_206.is_active() {
             flight_206.decided(

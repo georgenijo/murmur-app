@@ -216,7 +216,14 @@ How E7 counts, so a missed site cannot hide:
   counts those reads (`dictation_shadow::enabled()` in test builds) and the pin
   `the_shadow_makes_only_its_one_flag_load_and_its_one_take_as_pinned` fixes, per entry,
   `(state reads, flag loads)` disarmed and armed, so a second load in a block, a second
-  mailbox take, or any state read while disarmed fails it.
+  mailbox take, or any state read while disarmed fails it. The argument of a shadow call is
+  evaluated **behind** the check (`if enabled() { ticker_outcome(ticker_skip_of(&started)) }`;
+  `Flight::history_of(|| ..)` builds a history op and asks the live path's guard for it only
+  for an active flight). The state reads are counted by instrumented accessors
+  (`ticker_skip_of`, `registered`, the guards' `take_retired`, and `keyboard_sequence::read`,
+  which is the only way to read the keyboard write sequence, the bracket's opener and
+  closer), so an argument evaluated before its check, or a sequence read before the hook's
+  check, fails the disarmed pin.
 * **Reads are pinned.** `the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned`
   counts `core_now()` calls and live-field view projections per entry (disarmed and armed),
   and `a_disarmed_keyboard_write_reads_no_shadow_state` the disarmed shadow's reads of its

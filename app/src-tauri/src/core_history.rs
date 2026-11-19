@@ -514,6 +514,8 @@ impl ContinuationGuard {
     /// The retirement this guard's consumption made, once (the flight's H1 witness).
     #[cfg(feature = "dictation-shadow")]
     pub(crate) fn take_retired(&mut self) -> Option<crate::dictation_shadow::types::LiveOp> {
+        #[cfg(test)]
+        crate::dictation_executor::probe::shadow_read();
         self.retired.take()
     }
 }

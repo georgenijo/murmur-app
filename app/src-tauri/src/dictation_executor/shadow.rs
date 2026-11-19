@@ -417,6 +417,17 @@ impl Flight {
     /// the header exists it is buffered; before the header is submitted it joins
     /// `live_ops`; after, it is its own message (an owner's `Drop`, a deferred
     /// retirement).
+    pub(crate) fn history_of(&self, op: impl FnOnce() -> Option<LiveOp>) {
+        // The check comes first; the op is built, and the live path's guard asked for it,
+        // only for an active flight (D-S2c-10 amendment 1 i).
+        if self.live.is_some() {
+            if let Some(op) = op() {
+                self.history(op);
+            }
+        }
+    }
+
+    /// [`Flight::history_of`] for an op that is already built.
     pub(crate) fn history(&self, op: LiveOp) {
         let Some(live) = &self.live else {
             return;
@@ -715,8 +726,28 @@ impl Flight {
 // effect's witness only if **exactly one** write happened in between, so a missing or a
 // repeated write fails closed (no witness) and is never attributed, and another thread's
 // write cannot be taken for this one (D-S2c-9 d). Nothing here names a flight.
-thread_local! {
-    static KEYBOARD_WRITES: Cell<u64> = const { Cell::new(0) };
+//
+// The sequence is private to this module, so every **read** of it goes through [`read`],
+// which the test build counts (the bracket's opener and closer): a read added before an
+// enable check cannot bypass the pin. The capture's own write (`record`) is accepted.
+mod keyboard_sequence {
+    use std::cell::Cell;
+
+    thread_local! {
+        static KEYBOARD_WRITES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// This thread's sequence (the one instrumented read).
+    pub(super) fn read() -> u64 {
+        #[cfg(test)]
+        super::super::probe::shadow_read();
+        KEYBOARD_WRITES.with(Cell::get)
+    }
+
+    /// One more write, with its operands (the capture's write).
+    pub(super) fn record(operands: u64) {
+        KEYBOARD_WRITES.with(|writes| writes.set((((writes.get() >> 2) + 1) << 2) | operands));
+    }
 }
 
 /// `set_processing` swapped the flag: `was` is what the atomic swap returned, `now` what it
@@ -725,20 +756,18 @@ pub(crate) fn keyboard_written(was: bool, now: bool) {
     if !crate::dictation_shadow::enabled() {
         return;
     }
-    let operands = (u64::from(was) << 1) | u64::from(now);
-    KEYBOARD_WRITES.with(|writes| writes.set((((writes.get() >> 2) + 1) << 2) | operands));
+    keyboard_sequence::record((u64::from(was) << 1) | u64::from(now));
 }
 
 /// This thread's number of keyboard writes so far (the bracket's opening).
 pub(crate) fn keyboard_writes() -> u64 {
-    #[cfg(test)]
-    super::probe::shadow_read();
-    KEYBOARD_WRITES.with(Cell::get)
+    keyboard_sequence::read()
 }
 
-/// The write this thread made since `before`, if there was exactly one.
+/// The write this thread made since `before`, if there was exactly one (the bracket's
+/// closing).
 pub(crate) fn keyboard_write_since(before: u64) -> Option<MirrorWitness> {
-    let now = KEYBOARD_WRITES.with(Cell::get);
+    let now = keyboard_sequence::read();
     if (now >> 2) != (before >> 2) + 1 {
         return None;
     }
@@ -873,13 +902,21 @@ thread_local! {
     static TICKER_SKIP: Cell<Option<TickerSkipReason>> = const { Cell::new(None) };
 }
 
+/// The skip a spawner lookup took, read from its result: the argument of
+/// [`ticker_outcome`], evaluated by the caller **inside** its enable check (counted in test
+/// builds, so evaluating it before the check fails the disarmed read pin).
+pub(crate) fn ticker_skip_of<T>(started: &Result<T, TickerSkipReason>) -> Option<TickerSkipReason> {
+    #[cfg(test)]
+    super::probe::shadow_read();
+    started.as_ref().err().copied()
+}
+
 /// The ticker spawner's one lookup is done: `skip` is the skip it takes before it asks for
 /// the registration gate (no recorded context, or a model with no live preview), `None`
-/// when it goes on to ask. One flag load is this function's whole cost while disarmed.
+/// when it goes on to ask. The caller has made the enable check (its one flag load), so this
+/// only writes the mailbox.
 pub(crate) fn ticker_outcome(skip: Option<TickerSkipReason>) {
-    if crate::dictation_shadow::enabled() {
-        TICKER_SKIP.with(|slot| slot.set(skip));
-    }
+    TICKER_SKIP.with(|slot| slot.set(skip));
 }
 
 /// The spawner's outcome of the port's call (an active port only, once per call).
@@ -1075,6 +1112,8 @@ pub(crate) fn facts_projection(facts: murmur_dictation_core::state::LockFreeFact
 
 /// An H1 registration: the token the shell drew and registered for a continuation.
 pub(crate) fn registered(token: murmur_dictation_core::decision::Continuation) -> LiveOp {
+    #[cfg(test)]
+    super::probe::shadow_read();
     use crate::dictation_shadow::types::{HistoryAction, HistoryTable};
     LiveOp {
         table: HistoryTable::H1,
