@@ -141,6 +141,9 @@ SHADOW_TEST_SELECTIONS = (
     # The lifecycle cutover module (switched entries, the C8.6 re-sync, the not-called checks),
     # which runs in both configs; the shadow step runs it with the comparator armed.
     "lifecycle_cutover_tests::",
+    # The stop cutover module (switched entries, the C8.6 re-sync, the not-called checks, the
+    # PD-25 winners), which runs in both configs; the shadow step runs it with the comparator armed.
+    "stop_cutover_tests::",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"

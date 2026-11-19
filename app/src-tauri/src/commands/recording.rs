@@ -205,6 +205,10 @@ mod lifecycle_barrier_tests;
 mod lifecycle_cutover_tests;
 
 #[cfg(test)]
+#[path = "recording_stop_cutover_tests.rs"]
+mod stop_cutover_tests;
+
+#[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
 
@@ -1633,7 +1637,7 @@ impl<'a> IdleGuard<'a> {
         // a concurrent start advances the ID between our check and the
         // status write.
         let mut dictation = app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+        let view = FieldAdapter::stop_view(app_state, &mut dictation);
         // R302.1: the legacy parse failure is exactly the 204a `LegacyParse` rows,
         // decided by site 302; every other origin is 204a.
         let decide = || {
@@ -2321,7 +2325,7 @@ fn run_pipeline_idle_emit(
     let after_d = AfterD::new();
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+    let view = FieldAdapter::stop_view(app_state, &mut dictation);
     let input = PipelineIdleEmitInput {
         rid: RecordingId(recording_id),
         kind,
@@ -5179,7 +5183,7 @@ async fn process_audio_inner(
         {
             seen_input.occupancy.file_transcribing = start_input.occupancy.file_transcribing;
         }
-        let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+        let view = FieldAdapter::stop_view(app_state, &mut dictation);
         let mut decision =
             decide(|| core_pa::decide_process_audio_start(&view, start_input.clone(), now));
         // D-S1-2: the coordinator mutex is read only when the decision asks, after
@@ -5325,7 +5329,7 @@ async fn process_audio_inner(
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         let now = core_now();
         // R301.6: the start's R103.0 decision under the import's own row id.
         let decision = decide(|| {
@@ -8706,7 +8710,7 @@ async fn stop_native_recording_admitted(
         // Atomic check-and-set + generation capture in a single lock: site 201
         // (R201.2-.8) decides under D, the effects `PH`, `ST`, `AX` run under it.
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         let mut decision = stop_ports::decide(|| core_stop::decide_stop_request(&view, input, now));
         if let Verdict::NeedObservation(ObsKind::TakeInterrupted { id }) = decision.verdict {
             // R201.5: only a `Recovering` stop reads the preserved capture, exactly
@@ -8916,7 +8920,7 @@ async fn stop_native_recording_admitted(
             rid,
         );
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         #[cfg(feature = "dictation-shadow")]
         let seen_status = capture::SeenStatus::new();
         let decision = op_guard.consume(|op_status| {
@@ -9642,7 +9646,7 @@ fn run_stop_capture_rows<'a>(
     // The decision's `In` effects are the guard's D section: it must not run again.
     guard.disarm();
     let mut dictation = state.app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
     #[cfg(feature = "dictation-shadow")]
     let seen_status = capture::SeenStatus::new();
     let decision = capture_stop.consume(|op_status| {

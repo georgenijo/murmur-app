@@ -45,16 +45,19 @@ use std::rc::Rc;
 type ParkedStop = Rc<RefCell<Option<Fut<Result<serde_json::Value, String>>>>>;
 type Reply = Rc<RefCell<Option<Result<serde_json::Value, String>>>>;
 
-const SUPERSEDED: (DictationTerminalOutcome, DictationErrorCode) = (
+pub(super) const SUPERSEDED: (DictationTerminalOutcome, DictationErrorCode) = (
     DictationTerminalOutcome::Superseded,
     DictationErrorCode::StaleOwner,
 );
 
-fn status(world: &Arc<World>) -> DictationStatus {
+pub(super) fn status(world: &Arc<World>) -> DictationStatus {
     world.state().app_state.dictation.lock_or_recover().status
 }
 
-fn terminal(world: &Arc<World>, id: u64) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
+pub(super) fn terminal(
+    world: &Arc<World>,
+    id: u64,
+) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
     world
         .state()
         .app_state
@@ -62,7 +65,7 @@ fn terminal(world: &Arc<World>, id: u64) -> Option<(DictationTerminalOutcome, Di
         .terminal_for_test(id)
 }
 
-fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
+pub(super) fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
     dictation_performance_begins().claimed_outcome(id)
 }
 
@@ -71,7 +74,20 @@ fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
 /// The legacy import's host (`process_audio_inner`'s own seam). It supplies what the
 /// import needs from outside the shell, and the real pipeline `IdleGuard` its fake
 /// pipeline takes, so the import allocates generation 2 through production's R301.5.
-struct ImportHost;
+pub(super) struct ImportHost {
+    /// Runs once, when the import reaches its destination capture: after its first D
+    /// section (301) and before the one that follows (301.6). The stop cutover's tests
+    /// plant a persisted-core divergence there.
+    pub(super) at_capture: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl ImportHost {
+    pub(super) fn new() -> Self {
+        Self {
+            at_capture: std::sync::Mutex::new(None),
+        }
+    }
+}
 
 impl ImportedAudioHost for ImportHost {
     fn emit_import_json(
@@ -106,7 +122,17 @@ impl ImportedAudioHost for ImportHost {
         _expected: &'a crate::frontmost::DeliveryTargetSnapshot,
         _enabled: bool,
     ) -> HostFuture<'a, crate::smart_destination::Snapshot> {
-        Box::pin(async { crate::smart_destination::Snapshot::Disabled })
+        let hook = self
+            .at_capture
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        Box::pin(async move {
+            if let Some(hook) = hook {
+                hook();
+            }
+            crate::smart_destination::Snapshot::Disabled
+        })
     }
 
     fn emit_smart_destination(
@@ -141,7 +167,7 @@ impl ImportedAudioHost for ImportHost {
 }
 
 /// A WAV of 8,000 silent-ish 16 kHz samples, as the import command receives it.
-fn import_audio() -> String {
+pub(super) fn import_audio() -> String {
     let mut bytes = std::io::Cursor::new(Vec::new());
     {
         let spec = hound::WavSpec {
@@ -166,13 +192,18 @@ fn import_audio() -> String {
 
 /// R301.5: an accepted legacy import allocates the next generation, runs its pipeline
 /// and returns to `Idle`. Run to its end inside the barrier (it is synchronous there).
-fn allocate_by_import(world: &Arc<World>) {
+pub(super) fn allocate_by_import(world: &Arc<World>) {
     let audio = import_audio();
     let mut import: Fut<Result<serde_json::Value, String>> = Box::pin({
         let world = Arc::clone(world);
         async move {
             let state = world.state();
-            commanded_reply(process_audio_inner(&ImportHost, state.inner(), &audio)).await
+            commanded_reply(process_audio_inner(
+                &ImportHost::new(),
+                state.inner(),
+                &audio,
+            ))
+            .await
         }
     });
     let reply = complete(&mut import);
@@ -185,7 +216,7 @@ fn allocate_by_import(world: &Arc<World>) {
 }
 
 /// R101.15: an ordinary microphone start allocates the next generation.
-fn allocate_by_start(world: &Arc<World>) {
+pub(super) fn allocate_by_start(world: &Arc<World>) {
     recording(world);
     assert_eq!(
         world.state().app_state.recording_id.load(Ordering::SeqCst),
@@ -287,11 +318,11 @@ fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc
     );
 }
 
-fn pd25_import(world: &Arc<World>) {
+pub(super) fn pd25_import(world: &Arc<World>) {
     pd25_scoped_stop_after_a_new_generation(world, allocate_by_import);
 }
 
-fn pd25_start(world: &Arc<World>) {
+pub(super) fn pd25_start(world: &Arc<World>) {
     pd25_scoped_stop_after_a_new_generation(world, allocate_by_start);
 }
 
