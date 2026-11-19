@@ -562,24 +562,44 @@ fn import(world: &Arc<World>) {
     run_import(world, host);
 }
 
+/// The divergences counted between the two barrier points that bracket the import's
+/// destination row (R301.6): `process_audio.destination` before its D section, and
+/// `process_audio.accepted` after it released D. Nothing else reads the core in between, so the
+/// count is the row's own.
+static ROW_DIVERGENCES: StdMutex<Option<u64>> = StdMutex::new(None);
+
 /// The import with Smart Destination on: after the capture check (402) its own destination
 /// section (R301.6, a stop-family entry) runs. A plant made at the `process_audio.destination`
-/// barrier lands between the two, so the row reads it first.
+/// barrier lands between the two, so the row reads it first; the same hook counts the
+/// divergences across the row alone.
 fn import_with_destination(world: &Arc<World>) {
     enable_smart_destination(world);
-    let _plant = match PLAN.with(|plan| *plan.borrow()) {
-        Plant::AtBarrier(point) => {
-            let planted = Arc::clone(world);
-            let mut done = false;
-            Some(crate::barrier_hook::install(move |reached| {
-                if reached == point && !done {
-                    done = true;
-                    planted_now(&planted);
-                }
-            }))
+    *ROW_DIVERGENCES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    let plant = matches!(
+        PLAN.with(|plan| *plan.borrow()),
+        Plant::AtBarrier("process_audio.destination")
+    );
+    let planted = Arc::clone(world);
+    let mut start = None;
+    let _hook = crate::barrier_hook::install(move |reached| match reached {
+        "process_audio.destination" => {
+            if plant {
+                planted_now(&planted);
+            }
+            start = Some(core_divergences());
         }
-        _ => None,
-    };
+        "process_audio.accepted" => {
+            if let Some(start) = start.take() {
+                *ROW_DIVERGENCES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(core_divergences() - start);
+            }
+        }
+        _ => {}
+    });
     run_import(world, ImportHost::new());
 }
 
@@ -1234,12 +1254,44 @@ fn the_imports_destination_row_re_syncs_a_plant_made_after_the_capture_check() {
         queries: &[],
         plant: Some((Plant::AtBarrier("process_audio.destination"), 0)),
     };
+    // The row's only effect is the destination emit, which the host swallows without a trace,
+    // so a trace comparison cannot tell a row that decided on the re-synced core from one that
+    // decided on the stale pair (which is `Stale`, with no effect). What the row decided is the
+    // witness it recorded: one `SmartDestinationEmit`, in both runs.
+    let take_witness = || {
+        super::process_audio_ports::DESTINATION
+            .with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+            .len()
+    };
+    let row_divergences = || {
+        ROW_DIVERGENCES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    };
+    take_witness();
     let reference = run_case(&case, Plant::Nowhere);
+    assert_eq!(
+        take_witness(),
+        1,
+        "the reference row ran its destination emit"
+    );
+    assert_eq!(row_divergences(), Some(0), "the reference row counted none");
     assert_eq!(names(&reference.entries), case.entries);
     assert_eq!(reference.divergences, 0);
     assert_eq!(reference.projections, 0, "the import reached `project()`");
     let (plan, _) = case.plant.expect("a plant");
     let planted = run_case(&case, plan);
+    assert_eq!(
+        take_witness(),
+        1,
+        "the planted row decided on the re-synced core, not the pair it read (`Stale`, no effect)"
+    );
+    assert_eq!(
+        row_divergences(),
+        Some(1),
+        "the destination row itself counted the plant, once"
+    );
     let (pair_planted, pair_live) = PLANTED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1254,7 +1306,7 @@ fn the_imports_destination_row_re_syncs_a_plant_made_after_the_capture_check() {
     );
     assert_eq!(
         planted.divergences, 1,
-        "the destination row counted the plant, once"
+        "the plant was counted once in the whole run"
     );
     assert_eq!(
         planted.trace, reference.trace,
