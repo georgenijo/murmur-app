@@ -40,6 +40,7 @@ A file's additions are checked by the Rust tests (`shadow_off_by_default` reads 
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
@@ -63,12 +64,16 @@ TEST_ONLY_FILES = [
 
 # A production file that may lose lines: `path -> (most removed lines, why)`. An entry needs
 # a reason a reviewer can weigh; this list is a reviewed exception, never a convenience.
-SHADOW_DIFF_ALLOW: dict[str, tuple[int, str]] = {
+SHADOW_DIFF_ALLOW: dict[str, tuple] = {
     f"{TAURI}/src/main_thread_watch.rs": (
         1,
         "test-only: the `tests` module parses `lib.rs`'s `generate_handler!` list up to the "
         "first `]`; the shadow's `#[cfg(..)]` entries inside the macro carry their own `]`, so "
         "that one line now stops at the macro's closing `]))`. No production statement changes.",
+        # The one line it may remove, exactly (a third element is optional: without it the file
+        # may remove `limit` lines of any text). Every other line of the file is checked like any
+        # other production file's: scoping and the base tokens surviving.
+        ['let end = start + lib_rs[start..].find(\']\').expect("handler end");'],
     ),
 }
 
@@ -126,12 +131,28 @@ SHADOW_TWINS: dict[str, list[dict]] = {
         {"first": "FieldAdapter::cancel_through(ports.app_state(), id.0);", "form": "frozen", "pair": "c4e1922cc096db96", "why": 'an observing flight takes the mirror witness the cancel returns (the fetch_max result the original discards)'},
         {"first": "FieldAdapter::clear_context(ports.app_state(), id.0);", "form": "frozen", "pair": "c865ad563d1e19a2", "why": 'an observing flight takes the mirror witness, built after the leaf guard is released (D-S2c-12 a); otherwise the original'},
         {"first": "FieldAdapter::set_context(ports.app_state(), id.0, snapshot);", "form": "frozen", "pair": "1fa8e76a377b9034", "why": 'an observing flight takes the mirror witness, built after the leaf guard is released (D-S2c-12 a); otherwise the original'},
+        {"first": 'fn detached_observed(', "form": "frozen_fn", "original": 'fn detached(&self, effect: &Effect) -> PortResult;', "pair": '8c0dec6ac06f57d7', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
+        {"first": 'fn detached_under_d_observed(', "form": "frozen_fn", "original": 'fn detached_under_d(&self, effect: &Effect, _dictation: &DictationState) -> PortResult {', "pair": '57ac298d6fc44deb', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
+    ],
+    "app/src-tauri/src/commands/recording/start_ports.rs": [
+        {"first": 'pub(super) fn release_and_reply_observed(', "form": "frozen_fn", "original": 'pub(super) fn release_and_reply(', "pair": '4ceece00dd7bb5fb', "why": "the armed refusal helper (the PT:REL run with the flight attached) beside the original helper every disarmed refusal takes: editing the original (its reply, the smart-auto error) without the copy, or the copy alone, fails until both are re-pinned (C3)"},
+    ],
+    "app/src-tauri/src/commands/recording/lifecycle_ports.rs": [
+        {"first": 'fn detached_observed(', "form": "frozen_fn", "original": 'fn detached(&self, effect: &Effect) -> PortResult {', "pair": 'e52189b0f63f9c9b', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
+    ],
+    "app/src-tauri/src/commands/recording/ready_ports.rs": [
+        {"first": 'fn detached_under_d_observed(', "form": "frozen_fn", "original": 'fn detached_under_d(&self, effect: &Effect, dictation: &DictationState) -> PortResult {', "pair": 'adb2f953a951b906', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
+    ],
+    "app/src-tauri/src/dictation_executor/adapter.rs": [
+        {"first": 'pub(crate) fn cancel_through_observed(', "form": "frozen_fn", "original": 'pub(crate) fn cancel_through(app: &AppState, id: u64) {', "pair": '9054b40228d09f7e', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
+        {"first": 'pub(crate) fn set_context_observed(', "form": "frozen_fn", "original": 'pub(crate) fn set_context(', "pair": '93c80bc579b75441', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
+        {"first": 'pub(crate) fn clear_context_observed(', "form": "frozen_fn", "original": 'pub(crate) fn clear_context(app: &AppState, id: u64) -> bool {', "pair": '1eeb6a4ee4aae1ed', "why": "the shadow's observed copy of a live function: it must stay the original plus the shadow's own observation, so editing either side needs a reviewed new digest (C3, D-S2c-15 round 2)"},
     ],
     "app/src-tauri/src/lib.rs": [
-        {"first": "commands::recording::process_audio,", "form": "handler", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
-        {"first": "commands::recording::start_native_recording,", "form": "handler", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
-        {"first": "commands::recording::stop_native_recording,", "form": "handler", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
-        {"first": "commands::recording::cancel_native_recording,", "form": "handler", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
+        {"first": "commands::recording::process_audio,", "form": "handler", "twin": "commands::recording::shadow_commands::process_audio_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
+        {"first": "commands::recording::start_native_recording,", "form": "handler", "twin": "commands::recording::shadow_commands::start_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
+        {"first": "commands::recording::stop_native_recording,", "form": "handler", "twin": "commands::recording::shadow_commands::stop_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
+        {"first": "commands::recording::cancel_native_recording,", "form": "handler", "twin": "commands::recording::shadow_commands::cancel_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
     ],
 }
 
@@ -575,7 +596,12 @@ def twin_regions(tokens: list[tuple[str, int]]) -> dict[int, dict]:
 
 
 def base_survives(
-    root: Path, base: str, path: str, tokens: list[tuple[str, int]], added: set[int]
+    root: Path,
+    base: str,
+    path: str,
+    tokens: list[tuple[str, int]],
+    added: set[int],
+    exempt: set[int] | None = None,
 ) -> list[str]:
     """D-S2c-10 amendment 3 / round 9 nit 4: take every inserted attribute and the statement a
     gated one governs out of the branch's tokens (a negated twin gate loses only its
@@ -583,6 +609,9 @@ def base_survives(
     order. A gated block that wraps an original statement removes it from the default
     build, and the removal shows here as base tokens that are gone."""
     base_tokens = tokenize(show(root, base, path))
+    if exempt:
+        # The named removed line of a `SHADOW_DIFF_ALLOW` entry is meant to go.
+        base_tokens = [(text, line) for text, line in base_tokens if line not in exempt]
     if not base_tokens:
         return []
     drop: set[int] = set()
@@ -683,6 +712,7 @@ def classify(
     tokens: list[tuple[str, int]],
     lines: list[str] | None = None,
     path: str | None = None,
+    table: dict[str, list[dict]] | None = None,
 ) -> tuple[list[str | None], set[int]]:
     """What each token is under, and which tokens belong to an attribute.
 
@@ -712,13 +742,28 @@ def classify(
 
     # A pinned function and its observed copy are a twin pair too (C3): editing either is the
     # pin's business, not a shadow change's.
-    for entry in SHADOW_TWINS.get(path or "", []):
+    # `table` is the twin table the text was written under: the base's, for the base's text (a
+    # complete retirement removes its entries, and the base's copies are still twins then).
+    attribute_starts: dict[int, int] = {}
+    cursor = 0
+    while cursor < n:
+        attr_end = attribute_at(tokens, cursor)
+        if attr_end is None:
+            cursor += 1
+            continue
+        attribute_starts[attr_end] = cursor
+        cursor = attr_end
+    for entry in (SHADOW_TWINS if table is None else table).get(path or "", []):
         if entry["form"] != "frozen_fn" or lines is None:
             continue
         for name, kind in ((entry["original"], "orig"), (entry["first"], "twin")):
             for k, (_, line) in enumerate(tokens):
                 if (k == 0 or tokens[k - 1][1] != line) and first_line_of(lines, line) == name:
-                    put(k, statement_end(tokens, k), kind)
+                    # The attributes in front of the function (its feature gate) go with it.
+                    first = k
+                    while first in attribute_starts:
+                        first = attribute_starts[first]
+                    put(first, statement_end(tokens, k), kind)
                     break
     for region in twin_regions(tokens).values():
         gate_end = attribute_at(tokens, region["gate"]) or region["gate"]
@@ -792,7 +837,12 @@ def _shadow_lines(tokens: list[tuple[str, int]], marks: list[str | None], lines:
     return sorted(found)
 
 
-def is_shadow_change(root: Path, base: str, guarded: list[str]) -> list[str]:
+def is_shadow_change(
+    root: Path,
+    base: str,
+    guarded: list[str],
+    base_table: dict[str, list[dict]] | None = None,
+) -> list[str]:
     """Why this PR is a shadow change (C2): it adds or removes lines under a
     `dictation-shadow` gate, or that name the shadow, in a production file, outside the twins
     (a twin is checked by its own rule). Empty for any other PR, which may edit and delete
@@ -806,7 +856,7 @@ def is_shadow_change(root: Path, base: str, guarded: list[str]) -> list[str]:
         old_text = show(root, base, path)
         old = tokenize(old_text)
         if old:
-            old_marks, _ = classify(old, old_text.splitlines(), path)
+            old_marks, _ = classify(old, old_text.splitlines(), path, base_table)
             reasons.extend(f"{path}:{line} (removed)" for line in _shadow_lines(old, old_marks, removed_lines(root, base, path)))
     return reasons
 
@@ -878,6 +928,25 @@ def twin_problems(
         if form == "handler":
             if region["twin_stack"] or region["original_stack"]:
                 found.append(f"{path}:{line}: the handler entry at line {target} carries another attribute")
+            # Both paths are pinned: the entry is the command itself and the feature entry is
+            # its witnessing wrapper, until the pair is retired (the gates, the wrapper entry
+            # and the table entry all go together). A feature entry that names the command
+            # itself, or another wrapper, skips the reply witness.
+            want_original = normalised([t for t, _ in tokenize(entry["first"])])
+            want_twin = normalised([t for t, _ in tokenize(entry.get("twin", ""))])
+            if region["original"] != want_original:
+                found.append(f"{path}:{line}: the handler entry at line {target} is not `{entry['first']}`")
+            if region["twin"] is None:
+                found.append(
+                    f"{path}:{line}: the handler entry `{entry['first']}` has no feature entry: "
+                    f"the shadow build must register `{entry.get('twin', '')}`"
+                )
+            elif region["twin"] != want_twin:
+                found.append(
+                    f"{path}:{line}: the feature handler entry of `{entry['first']}` is not "
+                    f"`{entry.get('twin', '')}`: the shadow build must register the witnessing "
+                    "wrapper, not another command"
+                )
             continue
         if region["twin"] is None:
             found.append(f"{path}:{line}: the twin of the statement at line {target} is missing")
@@ -996,8 +1065,23 @@ def scoping_problems(
     marks, attributes = classify(tokens, lines, path)
     found: list[str] = []
     # A new file adds nothing to the live path by itself: the `mod` line that includes it is
-    # an inserted statement of its parent and is checked there.
-    if path not in SHADOW_DIFF_ALLOW and in_base:
+    # an inserted statement of its parent and is checked there. A file of `SHADOW_DIFF_ALLOW`
+    # is held to the same rules: the allowance is for the named removed line alone.
+    exempt: set[int] = set()
+    allowed = SHADOW_DIFF_ALLOW.get(path)
+    if allowed is not None:
+        base_text_lines = show(root, base, path).splitlines()
+        permitted_text = allowed[2] if len(allowed) > 2 else None
+        for number in sorted(removed_lines(root, base, path)):
+            text = base_text_lines[number - 1].strip() if 0 < number <= len(base_text_lines) else ""
+            if permitted_text is not None and text not in permitted_text:
+                found.append(
+                    f"{path}:{number}: removes `{text}`, which is not the line SHADOW_DIFF_ALLOW "
+                    "names: the allowance covers that one line only"
+                )
+            else:
+                exempt.add(number)
+    if in_base:
         for entry in SHADOW_UNGATED_ALLOW.get(path, []):
             for k, (_, line) in enumerate(tokens):
                 if (k == 0 or tokens[k - 1][1] != line) and first_line_of(lines, line) == entry["first"]:
@@ -1079,9 +1163,9 @@ def scoping_problems(
                 f"the one permitted gate, `{NEGATED_GATE}` on an allowlisted twin or handler entry"
             )
         at = end
-    # A file with a named removal (`SHADOW_DIFF_ALLOW`) has base tokens that are meant to go.
-    if in_base and path not in SHADOW_DIFF_ALLOW:
-        found.extend(base_survives(root, base, path, tokens, added))
+    # The base's tokens survive, except the one line a `SHADOW_DIFF_ALLOW` entry names.
+    if in_base:
+        found.extend(base_survives(root, base, path, tokens, added, exempt))
     return found
 
 
@@ -1104,14 +1188,17 @@ def twin_table_problems(allow: dict[str, list[dict]] | None = None) -> list[str]
                 found.append(f"{name} is frozen without a digest")
             if entry.get("form") == "frozen_fn" and not str(entry.get("original", "")).strip():
                 found.append(f"{name} pins a function without naming its original")
+            if entry.get("form") == "handler" and not str(entry.get("twin", "")).strip():
+                found.append(f"{name} is a handler entry without its witnessing wrapper (`twin`)")
     return found
 
 
-def allow_table_problems(allow: dict[str, tuple[int, str]] | None = None) -> list[str]:
+def allow_table_problems(allow: dict[str, tuple] | None = None) -> list[str]:
     """What is wrong with the list of named removals itself."""
     allow = SHADOW_DIFF_ALLOW if allow is None else allow
     found = []
-    for path, (limit, reason) in allow.items():
+    for path, entry in allow.items():
+        reason = entry[1]
         if not reason.strip():
             found.append(f"SHADOW_DIFF_ALLOW[{path}] gives no reason")
         if not is_production_path(path):
@@ -1149,12 +1236,44 @@ def violations(
     return found
 
 
+def resolve_base(root: Path, base: str) -> str:
+    """The merge base of `base` and `HEAD`, as a commit hash, resolved once. Every diff
+    coordinate (added and removed line numbers) and every base-side source read of one run
+    then uses this one revision: if the base branch advances between two reads, a line number
+    taken from the diff would otherwise be looked up in a text that has moved."""
+    result = subprocess.run(["git", "merge-base", base, "HEAD"], cwd=root, capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"git merge-base {base} HEAD failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def base_twin_table(root: Path, base: str) -> dict[str, list[dict]] | None:
+    """`SHADOW_TWINS` as this script was at the base revision, or `None` when the base has no
+    such table (then the running script's own is the reference). The base's text is classified
+    with the base's table: a PR that retires a copy removes the entry and the code together,
+    and the base's copy is still the twin the table named."""
+    text = show(root, base, "scripts/check_shadow_diff.py")
+    if not text:
+        return None
+    try:
+        tree = ast.parse(text)
+        for node in tree.body:
+            target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
+            if isinstance(target, ast.Name) and target.id == "SHADOW_TWINS" and node.value is not None:
+                return ast.literal_eval(node.value)
+    except (SyntaxError, ValueError):
+        return None
+    return None
+
+
 def main(root: Path = ROOT, base: str = "origin/main") -> int:
     try:
+        base = resolve_base(root, base)
         stats = numstat(root, base)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 2
+    old_table = base_twin_table(root, base)
     guarded = guarded_paths(stats, root, base)
     # On every PR (C2 ii, iii; C3): twins stay consistent, pinned copies stay pinned, and no
     # new twin appears.
@@ -1164,7 +1283,7 @@ def main(root: Path = ROOT, base: str = "origin/main") -> int:
     # Only a PR that adds or removes shadow lines is a shadow change, and only it is held to
     # insertion only, with every inserted statement behind the feature (C2 i). Any other PR
     # may edit and delete live code, with its originals and twins kept consistent above.
-    reasons = is_shadow_change(root, base, guarded)
+    reasons = is_shadow_change(root, base, guarded, old_table)
     if reasons:
         problems.extend(violations(stats, guarded))
         for path in guarded:

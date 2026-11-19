@@ -24,22 +24,30 @@ inherits `release` with `panic = "unwind"`). A plain `--release --features
 dictation-shadow` build does not compile on purpose, and a default build (no
 feature) contains no shadow code, so a pass on it says nothing about the shadow.
 
+Build from a **clean checkout of the candidate commit** (`git status --porcelain` empty): the
+passes, the E7 replay and the verdict are all bound to that one commit.
+
 ```bash
+SHA="$(git rev-parse HEAD)"                       # the candidate; 40 hex, used again below
+SOAK="$HOME/shadow-soak/$SHA"; mkdir -p "$SOAK"   # one directory per candidate, never reused
 python3 scripts/build_capture_helpers.py          # once per checkout (helpers are gitignored)
-export MURMUR_DEV_SIGNING_IDENTITY="<a Developer ID or Apple Development identity>"
+# An Apple Development identity: the script refuses a Developer ID (release) identity.
+export MURMUR_DEV_SIGNING_IDENTITY="Apple Development: <name> (<team id>)"   # a name, part of it, or the hash
 python3 scripts/build_dev_bundle.py --require-identity \
   --profile shadow-soak --features dictation-shadow \
-  --config app/src-tauri/tauri.refactor-test.conf.json
+  --config app/src-tauri/tauri.refactor-test.conf.json 2>&1 | tee "$SOAK/build.log"
+DEV_APP="$(sed -n 's/^DEV_APP=//p' "$SOAK/build.log")"
+test -d "$DEV_APP" && echo "bundle: $DEV_APP"      # must print the bundle path
 ```
 
-The script prints the bundle path as `DEV_APP=...`. It is derived from the profile:
+The script prints the bundle path as `DEV_APP=...` (hence the `sed` above: later steps use the
+variable, so set it in every new shell). It is derived from the profile:
 `app/src-tauri/target/shadow-soak/bundle/macos/Murmur Refactor Test.app` (under
 `$CARGO_TARGET_DIR` when that is set). `--profile` cannot be combined with `--debug`.
 Signing needs the Mac's desktop session (see [Development](../DEVELOPMENT.md)).
 
-Record the commit (`git rev-parse HEAD`) and keep one signed bundle for every pass:
-**E2 needs all three passes on one build.** Confirm the running binary carries the
-shadow before counting a pass:
+Keep one signed bundle for every pass: **E2 needs all three checklists on one build.**
+Confirm the running binary carries the shadow before counting a pass:
 
 ```bash
 BIN="$DEV_APP/Contents/MacOS/ui"
@@ -52,22 +60,47 @@ grep -ac shadow-summary "$BIN"      # > 0
 Two switches, both required: the `dictation-shadow` Cargo feature (compiled in) and
 `MURMUR_SHADOW=1` in the environment of the process **at start**. It is read once.
 
-Settings are also read at launch. A pass may therefore be several launches, each
-quit with Cmd-Q, with each session's summary kept and all of them given to the
-verdict script (it sums `per_row.matched` over N summaries).
+Settings are also read at launch. A checklist may therefore be several launches (sessions),
+each quit with Cmd-Q, with every session's summary kept. The verdict counts **checklists**,
+not launches: a record lists the sessions of each (see "The checklist record" below), and
+`per_row.matched` is summed over all the sessions.
+
+### Preflight: Refactor Test must be the only Murmur
+
+The hotkey listener of every running Murmur is global. Synthetic Left Shift or Escape events,
+and a changed default input, reach production Murmur (`com.localdictation`) or the dev build
+(`com.localdictation.dev`) if either is running: they would start a dictation or cancel a
+recording there. **Define this once per shell and run it before every launch and before any
+step that sends global input or changes the system default input:**
+
+```bash
+soak_preflight() {   # prints OK, or STOP and why
+  local others count
+  others="$(lsappinfo list | grep -o 'bundleID="com\.localdictation[^"]*"' | sort -u \
+            | grep -v 'bundleID="com\.localdictation\.refactor-test"' || true)"
+  count="$(pgrep -f 'Murmur Refactor Test.app/Contents/MacOS/' | wc -l | tr -d ' ')"
+  if [ -n "$others" ]; then echo "STOP: another Murmur is running: $others"; return 1; fi
+  if [ "$count" -gt 1 ]; then echo "STOP: $count Refactor Test processes"; return 1; fi
+  echo "OK: no other Murmur; $count Refactor Test process(es)"
+}
+```
+
+If it prints **STOP, stop and report** to the person who owns the machine. **Never quit, signal or
+touch the other instance**, and do not send input until a later preflight prints OK.
 
 Before every launch, move the old files aside so that a stale file can never be read
 as this session's:
 
 ```bash
 L="$HOME/Library/Application Support/local-dictation-refactor-test/logs"
-SOAK="$HOME/shadow-soak/$(date +%Y%m%d)"; mkdir -p "$SOAK"
+mkdir -p "$SOAK"                      # $SOAK was set in the build step; set it again in a new shell
 for f in dictation-shadow-summary.json dictation-shadow-events.jsonl; do
   [ -e "$L/$f" ] && mv "$L/$f" "$SOAK/before-$(date +%H%M%S)-$f"
 done
+soak_preflight                        # must print OK before the launch
 pgrep -fl "Murmur Refactor Test" || echo "none running"     # must print "none running"
 open -n --env MURMUR_SHADOW=1 --env MURMUR_LOG=debug --env MURMUR_LOG_SHIPPER=off "$DEV_APP"
-sleep 5; pgrep -f "Murmur Refactor Test.app/Contents/MacOS/ui" | wc -l     # exactly 1
+sleep 5; soak_preflight               # OK with exactly 1 Refactor Test process
 ls -l "$L/dictation-shadow-events.jsonl"     # exists, 0 bytes: the shadow is armed
 # A first summary is written right after the first drain, so the freshness proof is
 # available straight after launch, before any native step (if it is not there yet, wait
@@ -126,6 +159,9 @@ goes through `tracing`. Spoken test input is a fixed content-free phrase; never 
 
 * **No microphone on the Mac mini.** The default input is BlackHole 2ch. Feed speech with
   `say -a "BlackHole 2ch" "<fixed test phrase>"`.
+* **Preflight first.** Run `soak_preflight` before sending any hotkey event, Escape or
+  `say`, and before changing the system default input; it must print OK (Refactor Test is
+  the only Murmur). On STOP, stop and report; never quit or touch the other instance.
 * **The hotkey** is read by `rdev`, which ignores `osascript` key codes. Post real
   CGEvents: `kCGEventFlagsChanged`, keycode 56 (Left Shift), flags `maskShift | 0x2` on
   press and `0` on release, from `CGEventSource(stateID: .hidSystemState)` to
@@ -159,6 +195,7 @@ rows); the verdict script, not this list, decides E3.
 Drives **R101.5** (`busy_transcribing_file`). The refusal exists only while a file
 transcription is running, so the file must keep it busy for the whole step:
 
+0. `soak_preflight` prints OK.
 1. Make a long, content-free audio file (about 15 minutes):
    `say -o "$SOAK/long.aiff" "$(yes 'one two three four five six seven eight' | head -n 1500)"`
 2. In Murmur, start a file transcription on it (drop the file onto the window or use the
@@ -172,17 +209,39 @@ transcription is running, so the file must keep it busy for the whole step:
 ### Default input switch
 
 Replaces unplugging a microphone (D-S2c-13). It is user-level, needs no `sudo` and is
-reversible. Drives **R209.5**.
+reversible. Drives **R209.5**. The shell only turns an input change into a `DeviceChanged`
+recovery when the capture is a **warm resume**: the capture worker was already running
+(standby) and a new recording resumed it, and the input topology changed after that
+recording began (`worker_owner != owner` in the audio supervisor). A switch during a cold
+start, or one that happens before the recording starts, does not exercise it.
+
+0. `soak_preflight` prints OK. Remember the current default input, and restore it at the end
+   even if a step fails:
+
+   ```bash
+   PREV_INPUT="$(SwitchAudioSource -t input -c)"; echo "previous input: $PREV_INPUT"
+   trap 'SwitchAudioSource -t input -s "$PREV_INPUT"' EXIT     # in this shell; or restore by hand
+   ```
 
 1. Audio MIDI Setup (`open -a "Audio MIDI Setup"`) → **+** → *Create Aggregate Device*;
-   tick BlackHole 2ch only, name it `Soak Aggregate`. It now exists as a second input.
-2. Start a recording (hold-to-talk or toggle) with BlackHole 2ch as the default input.
-3. While it records, switch the default input: `SwitchAudioSource -t input -s "Soak Aggregate"`
-   (or System Settings → Sound → Input). Do it five or more times, switching back to
-   BlackHole 2ch (`SwitchAudioSource -t input -s "BlackHole 2ch"`) before each next
-   recording.
-4. Afterwards switch the default input back to BlackHole 2ch and remove the aggregate
-   in Audio MIDI Setup (select it, **-**). Check with `SwitchAudioSource -t input -c`.
+   tick BlackHole 2ch only, name it `Soak Aggregate`. It now exists as a second input
+   (`SwitchAudioSource -a -t input` lists it).
+2. Make the capture warm: dictate once with BlackHole 2ch as the default input and let it
+   finish, then start the next recording within a few seconds (hold-to-talk or toggle). Check
+   `app.log` for `audio.capture_ready` with `warm=true` for that recording. A recording whose
+   ready line says `warm=false` does not count; do not switch during it.
+3. While that warm recording runs, switch the default input:
+   `SwitchAudioSource -t input -s "Soak Aggregate"` (or System Settings → Sound → Input).
+   Expect the recording to end in the `DeviceChanged` recovery.
+4. Let the app finish recovering (it must reach Idle: see the `Recovering` note below), switch
+   back with `SwitchAudioSource -t input -s "$PREV_INPUT"`, and repeat from step 2 five or
+   more times.
+5. Afterwards remove the aggregate in Audio MIDI Setup (select it, **-**) and check the input
+   is as it was: `SwitchAudioSource -t input -c` prints `$PREV_INPUT`.
+
+The verdict needs five **native** `matched` closes of R209.5 for this step. The replay's hits
+do not stand in for it: the step is listed in the lifecycle manifest's `runbook_driven`, and
+so is "File transcription busy" for R101.5 in the start manifest.
 
 ### Sleep and wake: waived
 
@@ -213,27 +272,50 @@ evidence, not noise), relaunch with a fresh set of files, and restart the pass f
 first step. PD-19 is witnessed through `pd_witness["PD-19"]`; seeing it is information,
 not a failure, but a decision that differs from the core is `mismatched_root`.
 
-## Reading the result
+### The checklist record
+
+E2 counts **checklists**. A checklist is the full native checklist above, which may take
+several launches because settings are read at launch. When one is finished, write its record
+(numbers only) next to its sessions' summaries, from the `session` blocks you copied:
 
 ```bash
-python3 scripts/shadow_soak_verdict.py --e7 "$SOAK/e7-per-row.json" \
-  "$SOAK/session-A-summary.json" "$SOAK/session-B-summary.json" ...
-python3 scripts/shadow_soak_verdict.py --family start --e7 "$SOAK/e7-per-row.json" "$SOAK"/*-summary.json
+jq -n --arg label pass1 --arg date "$(date +%Y-%m-%d)" \
+  --slurpfile a "$SOAK/session-A-summary.json" --slurpfile b "$SOAK/session-B-summary.json" '
+  {label: $label, date: $date, complete: true,
+   sessions: [$a[0].session, $b[0].session] | map({pid, started_unix_ms})}' \
+  > "$SOAK/checklist-pass1.json"
+```
+
+`date` is the local day the checklist began (its first session's start; the script checks it).
+`complete` is `true` only when every checklist input was run. A summary that no record lists,
+a session a record lists with no summary, and one session in two records all fail E2. Two
+launches of one checklist are one pass, never two.
+
+## Reading the result
+
+The candidate commit (`$SHA`, 40 hex) binds the evidence: every session's `session.git_sha`
+and the E7 dump's `git_sha` must equal it, and the dump must come from a clean checkout.
+
+```bash
+python3 scripts/shadow_soak_verdict.py --expect-sha "$SHA" --e7 "$SOAK/e7-per-row.json" \
+  --checklist "$SOAK/checklist-pass1.json" --checklist "$SOAK/checklist-pass2.json" \
+  --checklist "$SOAK/checklist-pass3.json" "$SOAK"/session-*-summary.json
+python3 scripts/shadow_soak_verdict.py --family start --expect-sha "$SHA" ... # one family
 ```
 
 It prints `family  E#  PASS|FAIL  values` for every family, exits 0 only if every line
-passes, 1 on a FAIL and 2 on unreadable input. Summaries from earlier passes (the
-moved-aside `before-*` files) are not passed to it. The criteria it applies:
+passes, 1 on a FAIL and 2 on unreadable input (a missing `--expect-sha` included). Summaries
+from earlier candidates (the moved-aside `before-*` files) are not passed to it. The criteria it applies:
 
 | Criterion | What is read | Pass |
 | --- | --- | --- |
 | **E1** | global `mismatched_root` and the family's rows with `mismatched > 0` (and the events file is empty) | `0`. `followup` is a cascade of an earlier root, not a separate failure. |
-| **E2** | one `session` block per summary: distinct `(pid, started_unix_ms)`, local-day of `started_unix_ms`, one `git_sha` (40 hex) and one `build_profile`, `armed` true | at least 3 passes on at least 2 different days, one build |
-| **E3** | `per_row["<site>.<row>"].matched` for every C3 row of the family, summed over the summaries and the E7 dump | each row `>= 5`, or waived in the manifest with a named test, or driven by a runbook step above (those need 5 hits too) |
+| **E2** | one `session` block per summary: distinct `(pid, started_unix_ms)`, `armed` true, one `build_profile`, `git_sha` (40 hex) equal to `--expect-sha`; each summary claimed by exactly one complete checklist record whose `date` is its first session's local day | at least 3 completed checklists on at least 2 different days, one build, the candidate |
+| **E3** | `per_row["<site>.<row>"].matched` for every C3 row of the family, summed over the summaries and the E7 dump | each row `>= 5`, or waived in the manifest with a named test (a test that drives the decision and asserts the row), or driven by a runbook step above (R101.5, R209.5: five **native** closes of their own, no replay credit). A `delegated` row (compared at another row) is credited by that row's closes |
 | **E4** | `dropped + lost_open + loss_unattributed + sum(lost_by_site[family sites])` | `0` |
 | **E5** | the same sum over `compared` plus the sum, overall | `<= 0.001` |
 | **E6** | `shadow_panic` and `witness_overflow` | both `0` |
-| **E7** | the E7 dump: `golden_repeat >= 100` and every row it lists | present, at least 100 |
+| **E7** | the E7 dump: `golden_repeat >= 100`, `git_sha` equal to `--expect-sha`, `dirty` false (the file is written only after the E7 and E8 assertions pass) | present, at least 100, the candidate, clean |
 | **E8** | the manifest's `pds` for the family all `> 0` in the dump's `pd_witness` | all witnessed |
 | **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, a summary that is not `final`, and a conservation imbalance: `conservation.total.balanced` must be `true` (`total.entries == headers + no_decision + unwound`; the books are kept over all family sites together, only `headers` is per site, `non_family` is keyed by `file:line` and informational, and `unclassified` must be `0`). `named_no_reply` is an expected close kind (every effect ran, only the command's reply never came), counted and never taint | all `0`, balanced, every summary `final`. Repeat a tainted run. |
 
@@ -285,9 +367,10 @@ test. **A `diff_kind` 5 divergence is a rollback trigger** for a cutover (C9).
 
 ## E7 and E8 (tests, not the soak)
 
-Run from `app/src-tauri` with the feature on, and `CARGO_BUILD_JOBS=4`. Do not pass
-`--config-file`: the kill budgets are in `app/src-tauri/.config/nextest.toml`, which
-nextest finds on its own. CI runs the same selections (the `rust-macos` shadow steps).
+Run from `app/src-tauri` with the feature on, and `CARGO_BUILD_JOBS=4`, **on a clean checkout of
+the candidate** (the same commit as `$SHA`). Do not pass `--config-file`: the kill budgets are in
+`app/src-tauri/.config/nextest.toml`, which nextest finds on its own. CI runs the same
+selections (the `rust-macos` shadow steps).
 
 ```bash
 cd app/src-tauri
@@ -297,8 +380,10 @@ cd app/src-tauri
 MURMUR_GOLDEN_REPEAT=100 cargo nextest run --lib --features dictation-shadow \
   -E 'kind(lib) & test(/golden_tests::golden_/)'
 
-# E8 and the per-row dump the verdict script reads (E3 adds these hits; E7 reads
-# golden_repeat; E8 reads pd_witness). The dump is numeric.
+# E8 and the per-row dump the verdict script reads (E3 adds these hits for the rows a
+# replay may credit; E7 reads golden_repeat, git_sha and dirty; E8 reads pd_witness).
+# The file is written when the test returns, only if it passed: a failed run leaves none,
+# and an old file names the commit it ran on. The dump is numeric.
 MURMUR_GOLDEN_REPEAT=100 MURMUR_E7_PER_ROW_OUT="$SOAK/e7-per-row.json" \
   cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --test-threads=1
 
@@ -307,7 +392,7 @@ cargo test --lib --features dictation-shadow headers_leave_d -- --test-threads=1
 
 # The rest of the shadow tests, as CI runs them.
 cargo nextest run --lib --features dictation-shadow \
-  -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/)'
+  -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/pd_witness_tests::/)'
 ```
 
 CI also runs clippy with the feature (`cargo clippy --all-targets --features
@@ -323,18 +408,35 @@ tiers (D-S2c-15 C2):
 
 * **Always, for any PR that changes a guarded file:** the twin table must match the code.
   No new `cfg(not(feature = "dictation-shadow"))` twin appears outside `SHADOW_TWINS`;
-  every `closed`, `handler` and `frozen` entry is checked as before; a `frozen_fn` entry
-  pins the digest of the reviewed original function and its observed copy
-  (`set_active_context`, `clear_active_context`, `cancel_recording`,
-  `register_partial_ticker_locked`, `note_ticker_started`, `HideOwnership::ticker_started`
-  and the `&self` `consume` of `core_history.rs`), so editing an original without
-  re-pinning fails and says which side changed.
+  every `closed`, `handler` and `frozen` entry is checked as before; a `handler` entry pins both
+  paths of the `generate_handler!` list: the command itself under the negated gate and its
+  witnessing wrapper (`..::shadow_commands::<name>_witnessed`) under the feature gate, so a
+  feature entry that names the ordinary command (the reply never witnessed) fails; a
+  `frozen_fn` entry pins the digest of the reviewed original function and its observed copy:
+  `set_active_context`, `clear_active_context`, `cancel_recording`,
+  `register_partial_ticker_locked`, `note_ticker_started`, `HideOwnership::ticker_started`,
+  the `&self` `consume`, the refusal helper `release_and_reply` and its armed
+  `release_and_reply_observed`, the detached ready-task copies (`detached` /
+  `detached_under_d` of the lifecycle and ready ports and the executor's defaults) and the
+  adapter's `cancel_through`, `set_context` and `clear_context`. Editing an original without
+  re-pinning fails and says which side changed. The live copies stay duplicated until the
+  cutover PRs retire them (sharing the implementation is a production change).
+* **A complete retirement** (a cutover PR that removes an observed copy, its call-site twins
+  and its table entries together) is recognised from the **base** revision's table: the base's
+  text is classified with the base's `SHADOW_TWINS`, so the removed copy, with its feature
+  gate, is a twin that went and not a removed capture line. A table entry whose code is gone,
+  or code whose entry is gone, still fails.
 * **Only for a shadow change** (a PR that adds or removes a line under a dictation-shadow
   gate, or one naming `dictation_shadow` or `shadow_site`): insertion only, no deleted
   line in a guarded production path, every inserted token behind the feature, a test, a
   named twin or the `shadow_site!` macro (or one of the named allowances: `SHADOW_DIFF_ALLOW`
-  for `main_thread_watch.rs`, `SHADOW_UNGATED_ALLOW` for the `ordinal_inline` helper), and the
+  names the **one** test line of `main_thread_watch.rs` that may be replaced, exactly, and
+  nothing else in that file; `SHADOW_UNGATED_ALLOW` the `ordinal_inline` helper), and the
   base's tokens surviving in order. A non-shadow PR may delete or rewrite live code freely.
+
+Every diff coordinate and base-side read of a run uses **one** revision, the merge base
+resolved once at the start: a base branch that advances while the check runs cannot move a
+removed line onto another statement.
 
 The D-S2c-12 rules for the twins are unchanged: a `closed` twin is its original plus at most
 one insertion (a trailing `.attach_flight(<ident>)` or one extra trailing `<ident>`

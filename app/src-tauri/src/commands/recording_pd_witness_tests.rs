@@ -1181,35 +1181,59 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     let totals = replay::totals();
     eprintln!("E8 pd_witness: {:?}", totals.pd_witness);
     eprintln!("E7 rows compared: {:?}", totals.per_row);
-    // S6 (D-S2c-15): hand the replay's counts to `scripts/shadow_soak_verdict.py`. A sub-run
-    // that diverged has already failed the test, so the file exists only for a replay with no
-    // divergence. Numbers keyed by row id and PD number only; no content.
-    if let Some(path) = std::env::var_os("MURMUR_E7_PER_ROW_OUT") {
-        let per_row: serde_json::Map<String, serde_json::Value> = totals
-            .per_row
-            .iter()
-            .map(|((site, row), compared)| (format!("{site}.{row}"), serde_json::json!(compared)))
-            .collect();
-        let pd_witness: serde_json::Map<String, serde_json::Value> = totals
-            .pd_witness
-            .iter()
-            .map(|(pd, count)| (format!("PD-{pd}"), serde_json::json!(count)))
-            .collect();
-        let repeat = std::env::var("MURMUR_GOLDEN_REPEAT")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(1);
-        let dump = serde_json::json!({
-            "golden_repeat": repeat,
-            "per_row": per_row,
-            "pd_witness": pd_witness,
-        });
-        std::fs::write(
-            &path,
-            serde_json::to_vec_pretty(&dump).expect("E7 dump JSON"),
-        )
-        .expect("write MURMUR_E7_PER_ROW_OUT");
+    // S6 (D-S2c-15): hand the replay's counts to `scripts/shadow_soak_verdict.py`. The file is
+    // written when this test function *returns*, after the E7 divergence checks (a diverging
+    // sub-run fails earlier) and after the E8 assertion below: a failed test leaves no file, and
+    // a file from an older run cannot be mistaken for this one, because it names the revision
+    // it ran on. Numbers keyed by row id and PD number, and a revision hash; no content.
+    struct E7Dump(std::ffi::OsString);
+    impl Drop for E7Dump {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                return;
+            }
+            let totals = crate::dictation_shadow::replay::totals();
+            let per_row: serde_json::Map<String, serde_json::Value> = totals
+                .per_row
+                .iter()
+                .map(|((site, row), compared)| {
+                    (format!("{site}.{row}"), serde_json::json!(compared))
+                })
+                .collect();
+            let pd_witness: serde_json::Map<String, serde_json::Value> = totals
+                .pd_witness
+                .iter()
+                .map(|(pd, count)| (format!("PD-{pd}"), serde_json::json!(count)))
+                .collect();
+            let repeat = std::env::var("MURMUR_GOLDEN_REPEAT")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1);
+            let git = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            };
+            let dump = serde_json::json!({
+                "git_sha": git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string()),
+                "dirty": git(&["status", "--porcelain", "--untracked-files=no"])
+                    .map_or(true, |status| !status.is_empty()),
+                "golden_repeat": repeat,
+                "per_row": per_row,
+                "pd_witness": pd_witness,
+            });
+            std::fs::write(
+                &self.0,
+                serde_json::to_vec_pretty(&dump).expect("E7 dump JSON"),
+            )
+            .expect("write MURMUR_E7_PER_ROW_OUT");
+        }
     }
+    let _e7_dump = std::env::var_os("MURMUR_E7_PER_ROW_OUT").map(E7Dump);
     let missing: Vec<u8> = [1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
         .into_iter()
         .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)

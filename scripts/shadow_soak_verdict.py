@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """Evaluate the dictation-shadow exit criteria E1-E9 for each family (D-S2c-15 S6).
 
-    python3 scripts/shadow_soak_verdict.py --e7 e7.json pass1.json pass2.json pass3.json
-    python3 scripts/shadow_soak_verdict.py --family start --e7 e7.json pass*.json
+    python3 scripts/shadow_soak_verdict.py --expect-sha <40-hex candidate> --e7 e7.json \\
+        --checklist c1.json --checklist c2.json --checklist c3.json  s1.json s2.json s3.json ...
 
-Each positional argument is the `dictation-shadow-summary.json` of one native pass (copy
-it after a clean exit, see docs/testing/dictation-shadow-soak.md). `--e7` is the file the E8
-test writes when `MURMUR_E7_PER_ROW_OUT` is set; run that test with `MURMUR_GOLDEN_REPEAT=100`.
+Each positional argument is the `dictation-shadow-summary.json` of one native *session* (a
+launch, copied after a clean exit, see docs/testing/dictation-shadow-soak.md). A checklist
+(`--checklist`, one per completed native checklist) is a record that lists the sessions that
+made it up, so two launches of one checklist are one pass, not two:
+
+    {"label": "pass1", "date": "2026-11-18", "complete": true,
+     "sessions": [{"pid": 69329, "started_unix_ms": 1795063000000}, ...]}
+
+`--expect-sha` is the candidate commit the passes and the replay were meant to test: every
+session's `session.git_sha` and the E7 dump's `git_sha` must be it. `--e7` is the file the E8
+test writes when `MURMUR_E7_PER_ROW_OUT` is set (only after the test passes); run that test
+with `MURMUR_GOLDEN_REPEAT=100` on a clean checkout of the candidate.
 
 For every family the script prints one line per criterion, `PASS` or `FAIL` with the values
 read, and exits 1 if any line is a FAIL. Every input is fail closed: a summary without the
@@ -15,7 +24,9 @@ S1-S4 evidence and cannot count.
 
 The row manifests (docs/testing/shadow-rows/<family>.json) list each family's C3 rows, the
 rows a native pass cannot produce (with the golden or unit test that drives each), and the
-rows a step of the runbook drives (those count as natively reachable: they need 5 hits). The summary
+rows a step of the runbook drives (those need 5 native `matched` closes of their own: replay
+hits do not count for them). A manifest may also list `delegated` rows (a row whose decision is
+compared at another row, such as R205.4 at R206): they are credited with the target's closes. The summary
 fields it reads are the ones the dictation shadow writes: `session`, `outstanding_at_exit`,
 `per_row[..].matched`, `incomplete_closes`, `conservation` (`total` books with `balanced`,
 headers per site, `non_family` by file:line), `core_divergences`, and `final` (true only on the
@@ -88,6 +99,35 @@ def load_summaries(paths: list[Path]) -> list[dict]:
     return summaries
 
 
+def load_checklist(path: Path) -> dict:
+    record = json.loads(path.read_text())
+    problems = []
+    if not isinstance(record, dict):
+        raise ValueError(f"{path}: not a checklist record")
+    if not isinstance(record.get("complete"), bool):
+        problems.append("`complete` is not true/false")
+    date = record.get("date")
+    try:
+        datetime.date.fromisoformat(date)
+    except (TypeError, ValueError):
+        problems.append(f"`date` is {date!r}, not YYYY-MM-DD")
+    sessions = record.get("sessions")
+    if not isinstance(sessions, list) or not sessions:
+        problems.append("`sessions` is empty")
+    else:
+        for index, entry in enumerate(sessions):
+            if not (
+                isinstance(entry, dict)
+                and isinstance(entry.get("pid"), int)
+                and isinstance(entry.get("started_unix_ms"), int)
+            ):
+                problems.append(f"sessions[{index}] needs integer `pid` and `started_unix_ms`")
+    if problems:
+        raise ValueError(f"{path}: " + "; ".join(problems))
+    record["_path"] = str(path)
+    return record
+
+
 def load_manifest(family: str, directory: Path = MANIFESTS) -> dict:
     manifest = json.loads((directory / f"{family}.json").read_text())
     reachable = {entry["row"] for entry in manifest["not_natively_reachable"]}
@@ -101,6 +141,13 @@ def load_manifest(family: str, directory: Path = MANIFESTS) -> dict:
                 problems.append(f"{entry['row']}: names no test")
             if field == "why" and not str(entry.get("why", "")).strip():
                 problems.append(f"{entry['row']}: gives no reason")
+    for entry in manifest.get("delegated", []):
+        if entry.get("row") not in rows:
+            problems.append(f"{entry.get('row')}: delegated but not a row of the family")
+        if not str(entry.get("to", "")).strip() or not str(entry.get("why", "")).strip():
+            problems.append(f"{entry.get('row')}: a delegated row names its target (`to`) and a reason")
+        if entry.get("row") in reachable:
+            problems.append(f"{entry.get('row')}: both delegated and not natively reachable")
     for entry in manifest.get("runbook_driven", []):
         if entry["row"] not in rows:
             problems.append(f"{entry['row']}: runbook-driven but not a row of the family")
@@ -132,9 +179,16 @@ def local_day(started_unix_ms: int) -> str:
     return datetime.datetime.fromtimestamp(started_unix_ms / 1000).strftime("%Y-%m-%d")
 
 
-def evaluate_e2(summaries: list[dict], family: str) -> Verdict:
+def _is_sha(value) -> bool:
+    return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
+def evaluate_e2(summaries: list[dict], checklists: list[dict], expect_sha: str, family: str) -> Verdict:
+    """E2: at least 3 completed native checklists on at least 2 days, on one build that is the
+    candidate. A checklist may be several launches: its record names the sessions, and each
+    must be one of the summaries given. A summary no checklist claims is rejected."""
     problems = []
-    sessions = []
+    by_key: dict[tuple, dict] = {}
     for summary in summaries:
         session = summary.get("session")
         name = Path(summary["_path"]).name
@@ -144,28 +198,62 @@ def evaluate_e2(summaries: list[dict], family: str) -> Verdict:
         if session.get("armed") is not True:
             problems.append(f"{name}: session.armed is not true")
         sha = session.get("git_sha")
-        if not (isinstance(sha, str) and len(sha) == 40 and all(c in "0123456789abcdef" for c in sha)):
+        if not _is_sha(sha):
             problems.append(f"{name}: session.git_sha is {sha!r}, not a 40-hex commit")
+        elif sha != expect_sha:
+            problems.append(f"{name}: session.git_sha {sha[:12]} is not the candidate {expect_sha[:12]}")
         started = session.get("started_unix_ms")
         if not isinstance(started, int) or isinstance(started, bool) or started <= 0:
             problems.append(f"{name}: session.started_unix_ms is {started!r}")
-        sessions.append(session)
-    keys = [(s.get("pid"), s.get("started_unix_ms")) for s in sessions]
-    if len(set(keys)) != len(keys):
-        problems.append("two summaries come from the same session (same pid and start): one pass counted twice")
-    builds = {(s.get("git_sha"), s.get("build_profile")) for s in sessions}
-    if len(builds) > 1:
-        problems.append(f"passes come from {len(builds)} builds, not one: {sorted(map(str, builds))}")
-    days = {
-        local_day(s["started_unix_ms"])
-        for s in sessions
-        if isinstance(s.get("started_unix_ms"), int) and s["started_unix_ms"] > 0
+            continue
+        key = (session.get("pid"), started)
+        if key in by_key:
+            problems.append(f"{name}: the same session (pid and start) as {Path(by_key[key]['_path']).name}")
+        by_key[key] = summary
+    builds = {
+        (s["session"].get("git_sha"), s["session"].get("build_profile"))
+        for s in summaries
+        if isinstance(s.get("session"), dict)
     }
-    if len(summaries) < E2_PASSES:
-        problems.append(f"{len(summaries)} passes, need at least {E2_PASSES}")
-    if len(days) < E2_DAYS:
-        problems.append(f"{len(days)} distinct day(s), need at least {E2_DAYS}")
-    detail = f"passes={len(summaries)} days={len(days)} builds={len(builds)}"
+    if len(builds) > 1:
+        problems.append(f"sessions come from {len(builds)} builds, not one: {sorted(map(str, builds))}")
+    claimed: set[tuple] = set()
+    complete = 0
+    dates: set[str] = set()
+    for record in checklists:
+        label = record.get("label") or Path(record["_path"]).name
+        keys = [(entry["pid"], entry["started_unix_ms"]) for entry in record["sessions"]]
+        ok = True
+        if record["complete"] is not True:
+            problems.append(f"checklist {label}: not marked complete")
+            ok = False
+        if len(set(keys)) != len(keys):
+            problems.append(f"checklist {label}: lists a session twice")
+            ok = False
+        for key in keys:
+            if key not in by_key:
+                problems.append(f"checklist {label}: session pid={key[0]} start={key[1]} has no summary (or its summary is not valid)")
+                ok = False
+            elif key in claimed:
+                problems.append(f"checklist {label}: session pid={key[0]} start={key[1]} is also in another checklist")
+                ok = False
+            claimed.add(key)
+        # The record's date is the day the checklist began: its first session's local day.
+        first = min(entry["started_unix_ms"] for entry in record["sessions"])
+        if local_day(first) != record["date"]:
+            problems.append(f"checklist {label}: date {record['date']} is not the local day of its first session ({local_day(first)})")
+            ok = False
+        if ok:
+            complete += 1
+            dates.add(record["date"])
+    for key, summary in by_key.items():
+        if key not in claimed:
+            problems.append(f"{Path(summary['_path']).name}: belongs to no checklist record")
+    if complete < E2_PASSES:
+        problems.append(f"{complete} completed checklists, need at least {E2_PASSES}")
+    if len(dates) < E2_DAYS:
+        problems.append(f"{len(dates)} distinct day(s), need at least {E2_DAYS}")
+    detail = f"checklists={complete} sessions={len(summaries)} days={len(dates)} builds={len(builds)}"
     if problems:
         detail += "; " + "; ".join(problems)
     return Verdict(family, "E2", not problems, detail)
@@ -176,6 +264,8 @@ def evaluate_family(
     manifest: dict,
     summaries: list[dict],
     e7: dict | None,
+    checklists: list[dict],
+    expect_sha: str,
 ) -> list[Verdict]:
     sites = manifest["sites"]
     site_keys = {str(site) for site in sites}
@@ -198,32 +288,52 @@ def evaluate_family(
         )
     )
 
-    verdicts.append(evaluate_e2(summaries, family))
+    verdicts.append(evaluate_e2(summaries, checklists, expect_sha, family))
 
-    # E3: every C3 row of the family hit >= 5 times (matched closes in the passes plus the E7
-    # replay's compared count) unless it is on the not-natively-reachable list.
+    # E3: every C3 row of the family hit >= 5 times: `matched` closes in the sessions, plus
+    # the E7 replay's `matched` for the rows a replay may credit, unless the row is on the
+    # not-natively-reachable list. A row a runbook step drives (R101.5, R209.5) needs its five
+    # native closes of its own: the replay's hits never stand in for the step.
     waived = {entry["row"] for entry in manifest["not_natively_reachable"]}
+    driven = {entry["row"] for entry in manifest.get("runbook_driven", [])}
+    delegated = {entry["row"]: entry["to"] for entry in manifest.get("delegated", [])}
     e7_rows = (e7 or {}).get("per_row", {})
+
+    def native(key: str) -> tuple[int, bool]:
+        total, stale = 0, False
+        for summary in summaries:
+            value = row_total(summary, key, "matched")
+            if value is None:
+                stale = True
+                value = 0
+            total += value
+        return total, stale
+
+    def replay(key: str) -> int:
+        value = e7_rows.get(key, 0)
+        if isinstance(value, dict):  # the export of per-row matched closes
+            value = value.get("matched", 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
     short = []
-    stale = []
+    stale_in = []
     for entry in manifest["rows"]:
         key = entry["row"]
         if key in waived:
             continue
-        total = 0
-        for summary in summaries:
-            value = row_total(summary, key, "matched")
-            if value is None:
-                stale.append(Path(summary["_path"]).name)
-                value = 0
-            total += value
-        total += e7_rows.get(key, 0) if isinstance(e7_rows.get(key, 0), int) else 0
+        source = delegated.get(key, key)
+        total, stale = native(source)
+        if stale:
+            stale_in.extend(Path(s["_path"]).name for s in summaries)
+        if key not in driven:
+            total += replay(source)
         if total < E3_HITS:
-            short.append(f"{entry['id']}={total}")
+            short.append(f"{entry['id']}={total}" + (" (native only: a runbook step drives it)" if key in driven else ""))
+    stale = sorted(set(stale_in))
     checked = len(manifest["rows"]) - len(waived)
     detail = f"rows_checked={checked} waived={len(waived)} below_{E3_HITS}={len(short)}"
     if stale:
-        detail += f"; per_row.matched missing in {sorted(set(stale))} (a build before S2)"
+        detail += f"; per_row.matched missing in {stale} (a build before S2)"
     if short:
         detail += ": " + ", ".join(short)
     verdicts.append(Verdict(family, "E3", not short and not stale, detail))
@@ -266,12 +376,23 @@ def evaluate_family(
         verdicts.append(Verdict(family, "E7", False, "no --e7 file: run the E8 test with MURMUR_E7_PER_ROW_OUT"))
     else:
         repeat = e7.get("golden_repeat", 0)
+        sha = e7.get("git_sha")
+        problems = []
+        if not (isinstance(repeat, int) and not isinstance(repeat, bool) and repeat >= E7_REPEAT):
+            problems.append(f"golden_repeat={repeat} (< {E7_REPEAT})")
+        if not _is_sha(sha):
+            problems.append(f"the dump has no git_sha ({sha!r}): it is from a build before the revision was written")
+        elif sha != expect_sha:
+            problems.append(f"the dump is from {sha[:12]}, not the candidate {expect_sha[:12]}")
+        if e7.get("dirty") is not False:
+            problems.append(f"dirty={e7.get('dirty')!r}: the replay must run on a clean checkout of the candidate")
         verdicts.append(
             Verdict(
                 family,
                 "E7",
-                isinstance(repeat, int) and repeat >= E7_REPEAT,
-                f"golden_repeat={repeat} (>= {E7_REPEAT}) replayed_rows={len(e7_rows)}",
+                not problems,
+                f"golden_repeat={repeat} git_sha={str(sha)[:12]} dirty={e7.get('dirty')} replayed_rows={len(e7_rows)}"
+                + ("; " + "; ".join(problems) if problems else ""),
             )
         )
 
@@ -338,10 +459,15 @@ def evaluate(
     e7: dict | None,
     families: list[str],
     directory: Path = MANIFESTS,
+    *,
+    checklists: list[dict],
+    expect_sha: str,
 ) -> list[Verdict]:
+    if not _is_sha(expect_sha):
+        raise ValueError(f"--expect-sha {expect_sha!r} is not a 40-hex commit")
     verdicts: list[Verdict] = []
     for family in families:
-        verdicts.extend(evaluate_family(family, load_manifest(family, directory), summaries, e7))
+        verdicts.extend(evaluate_family(family, load_manifest(family, directory), summaries, e7, checklists, expect_sha))
     return verdicts
 
 
@@ -349,15 +475,16 @@ def load_e7(path: Path | None) -> dict | None:
     if path is None:
         return None
     dump = json.loads(path.read_text())
-    if "per_row" not in dump:
-        # The bare `{"<site>.<row>": n}` map.
-        dump = {"per_row": dump}
+    if not isinstance(dump, dict) or not isinstance(dump.get("per_row"), dict):
+        raise ValueError(f"{path}: not an E7 dump (no per_row)")
     return dump
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("summaries", nargs="+", type=Path, help="one dictation-shadow-summary.json per native pass")
+    parser.add_argument("summaries", nargs="+", type=Path, help="one dictation-shadow-summary.json per native session")
+    parser.add_argument("--expect-sha", required=True, help="the candidate commit (40 hex) the passes and the replay must be on")
+    parser.add_argument("--checklist", action="append", type=Path, default=[], help="a completed-checklist record (repeat once per checklist)")
     parser.add_argument("--e7", type=Path, help="the file the E8 test writes (MURMUR_E7_PER_ROW_OUT)")
     parser.add_argument("--family", action="append", choices=FAMILIES, help="a family to evaluate (default: all)")
     parser.add_argument("--manifests", type=Path, default=MANIFESTS)
@@ -365,7 +492,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summaries = load_summaries(arguments.summaries)
         e7 = load_e7(arguments.e7)
-        verdicts = evaluate(summaries, e7, arguments.family or list(FAMILIES), arguments.manifests)
+        checklists = [load_checklist(path) for path in arguments.checklist]
+        verdicts = evaluate(
+            summaries,
+            e7,
+            arguments.family or list(FAMILIES),
+            arguments.manifests,
+            checklists=checklists,
+            expect_sha=arguments.expect_sha,
+        )
     except (OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

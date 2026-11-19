@@ -50,6 +50,9 @@ SHADOW_TEST_SELECTIONS = (
     "headers_leave_d",
     "pd_witness_tests::under_d::",
     "the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal",
+    # The module E8 lives in: its controls (e8_rejects_a_fixture_the_compiled_harness_skips)
+    # and any added later run with it, not by name.
+    "pd_witness_tests::",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -83,6 +86,49 @@ def named_step_block(text: str, name: str, indent: int) -> str:
     if next_step < 0:
         next_step = len(text)
     return text[start:next_step]
+
+
+def step_fields(block: str, indent: int) -> dict[str, str]:
+    """The executable fields of one workflow step: `key -> value`, the value of a block scalar
+    joined on spaces (a folded `run` is one line to the shell). Comment lines between keys are
+    skipped, so a field that was commented out is missing. A step line that is not a field is
+    refused, and so is a key given twice."""
+    fields: dict[str, list[str]] = {}
+    key = None
+    for line in block.split("\n")[1:]:
+        if not line.strip():
+            continue
+        pad = len(line) - len(line.lstrip())
+        text = line.strip()
+        if pad == indent + 2 and not text.startswith("#"):
+            match = re.fullmatch(r"([A-Za-z_-]+):\s*(.*)", text)
+            if not match or match.group(1) in fields:
+                raise AssertionError(f"unreadable or repeated step field: {line!r}")
+            key = match.group(1)
+            fields[key] = [match.group(2)]
+        elif pad > indent + 2 and key is not None:
+            fields[key].append(text)
+        elif text.startswith("#") and pad >= indent + 2:
+            continue
+        else:
+            raise AssertionError(f"unexpected line in a step: {line!r}")
+    values = {}
+    for name, parts in fields.items():
+        value = " ".join(part for part in parts if part).strip()
+        values[name] = re.sub(r"^[>|][-+]?\s*", "", value)
+    return values
+
+
+def validate_exact_step(job: str, name: str, expected: dict[str, str]) -> None:
+    """A step that must run exactly as written: its fields are `expected`, no more (no
+    `continue-on-error`, `shell`, `working-directory` or any other key), and its `run` text is
+    the whole command, so `|| true`, a `;`-chained command, a command in a comment and a
+    weakened `if` all fail (the job's failure then reaches `ci-pass`)."""
+    fields = step_fields(named_step_block(job, name, 6), 6)
+    fields.pop("name", None)
+    assert fields == expected, (
+        f"step {name!r} must be exactly {expected!r}, found {fields!r}"
+    )
 
 
 def validate_sherpa_refresh(job: str, build_marker: str) -> None:
@@ -261,29 +307,37 @@ def validate_ci(ci: str) -> int:
     assert "cargo clippy" not in capture_build
     # The shadow feature is off in every other step: its own lint, build and tests are
     # pinned here (D-S2c-15 C1), so a PR cannot drop the only job that compiles it.
-    shadow_lint = " ".join(
-        named_step_block(rust_lint, "Lint Rust with the dictation shadow", 6).split()
+    validate_exact_step(
+        rust_lint,
+        "Lint Rust with the dictation shadow",
+        {"run": "cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings"},
     )
-    assert (
-        "run: cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow"
-        " -- -D warnings" in shadow_lint
-    ), "clippy must also lint the dictation-shadow feature build"
-    shadow_tests = " ".join(named_step_block(rust_macos, "Run dictation shadow tests", 6).split())
-    assert "cargo nextest run --lib --features dictation-shadow" in shadow_tests
-    for selection in SHADOW_TEST_SELECTIONS:
-        assert (
-            f"test(/{selection}/)" in shadow_tests
-        ), f"the dictation-shadow test step must select {selection}"
-    shadow_goldens = " ".join(
-        named_step_block(
-            rust_macos, "Run golden dictation scenarios 100 times with the dictation shadow", 6
-        ).split()
+    selection = " | ".join(f"test(/{name}/)" for name in SHADOW_TEST_SELECTIONS)
+    validate_exact_step(
+        rust_macos,
+        "Run dictation shadow tests",
+        {
+            "if": "needs.changes.outputs.verified != 'true'",
+            "timeout-minutes": "25",
+            "run": "cd app/src-tauri && cargo nextest run --lib --features dictation-shadow"
+            f" -E '{selection}'",
+        },
     )
-    assert 'MURMUR_GOLDEN_REPEAT: "100"' in shadow_goldens
-    assert (
-        "cargo nextest run --lib --features dictation-shadow"
-        " -E 'kind(lib) & test(/golden_tests::golden_/)'" in shadow_goldens
-    ), "the goldens must run 100 times with the dictation-shadow feature"
+    validate_exact_step(
+        rust_macos,
+        "Run golden dictation scenarios 100 times with the dictation shadow",
+        {
+            "if": "needs.changes.outputs.verified != 'true'",
+            "timeout-minutes": "10",
+            "env": 'MURMUR_GOLDEN_REPEAT: "100"',
+            "run": "cd app/src-tauri && cargo nextest run --lib --features dictation-shadow"
+            " -E 'kind(lib) & test(/golden_tests::golden_/)'",
+        },
+    )
+    # No failure of either job is suppressed, and `ci-pass` waits on both of them.
+    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
+        assert "continue-on-error" not in job, f"{job_name} must not suppress a failure"
+        assert f"needs.{job_name}.result" in ci_pass, f"ci-pass must read {job_name}"
     for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
         cache = named_step_block(job, "Cache Rust dependencies", 6)
         assert (

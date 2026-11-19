@@ -111,8 +111,9 @@ class ShadowDiffTests(unittest.TestCase):
             ["app/src-tauri/src/main_thread_watch.rs"],
             "an allowed removal is a reviewed exception, named one by one",
         )
-        for count, reason in SHADOW_DIFF_ALLOW.values():
+        for count, reason, *exact in SHADOW_DIFF_ALLOW.values():
             self.assertEqual(count, 1)
+            self.assertEqual(len(exact[0]), 1, "the allowance names the one removed line")
             self.assertIn("test-only", reason)
         self.assertEqual(violations({}), [])
         stats = {LIVE: (3, 2)}
@@ -344,7 +345,7 @@ class ShadowDiffTests(unittest.TestCase):
         twin = '#[cfg(feature = "dictation-shadow")]'
         branch = f"a\n{gate}\nhandler,\n{twin}\nwrapper,\nb\n"
         base = "a\nhandler,\nb\n"
-        entry = {"first": "handler,", "form": "handler", "why": "wrapper of the same name"}
+        entry = {"first": "handler,", "form": "handler", "twin": "wrapper,", "why": "wrapper of the same name"}
         with allowed({LIVE: [entry]}):
             code, _, err = run(repo(base, branch))
             self.assertEqual(code, 0, err)

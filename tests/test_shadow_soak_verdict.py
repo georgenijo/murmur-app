@@ -78,7 +78,7 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
 
 def e7_dump(**overrides) -> dict:
     pds = {f"PD-{n}": 3 for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18)}
-    dump = {"golden_repeat": 100, "per_row": {}, "pd_witness": pds}
+    dump = {"git_sha": SHA, "dirty": False, "golden_repeat": 100, "per_row": {}, "pd_witness": pds}
     dump.update(overrides)
     return dump
 
@@ -87,14 +87,43 @@ def three_passes() -> list[dict]:
     return [clean_summary(0, 0), clean_summary(1, 0), clean_summary(2, 1)]
 
 
-def evaluate(summaries: list[dict], e7: dict | None = None, families=None):
+def records(summaries: list[dict], groups=None) -> list[dict]:
+    """Checklist records for `summaries`: by default one checklist per summary; `groups` lists
+    the summary indexes of each checklist (two launches of one checklist are one group)."""
+    if groups is None:
+        groups = [[i] for i in range(len(summaries))]
+    out = []
+    for number, group in enumerate(groups):
+        sessions = [summaries[i]["session"] for i in group if "session" in summaries[i]]
+        if not sessions:
+            continue
+        first = min(session["started_unix_ms"] for session in sessions)
+        out.append(
+            {
+                "label": f"checklist-{number}",
+                "date": verdict.local_day(first),
+                "complete": True,
+                "sessions": [{"pid": x["pid"], "started_unix_ms": x["started_unix_ms"]} for x in sessions],
+                "_path": f"checklist-{number}.json",
+            }
+        )
+    return out
+
+
+def evaluate(summaries: list[dict], e7: dict | None = None, families=None, checklists=None, expect_sha: str = SHA):
     with tempfile.TemporaryDirectory() as tmp:
         loaded = []
         for index, summary in enumerate(summaries):
             summary = dict(summary)
             summary["_path"] = f"{tmp}/pass{index}.json"
             loaded.append(summary)
-        return verdict.evaluate(loaded, e7 if e7 is not None else e7_dump(), families or list(verdict.FAMILIES))
+        return verdict.evaluate(
+            loaded,
+            e7 if e7 is not None else e7_dump(),
+            families or list(verdict.FAMILIES),
+            checklists=records(summaries) if checklists is None else checklists,
+            expect_sha=expect_sha,
+        )
 
 
 def by(verdicts, family: str, criterion: str):
@@ -112,7 +141,7 @@ class CleanRunTests(unittest.TestCase):
 
     def test_a_line_names_the_family_the_criterion_the_result_and_the_values(self):
         line = by(evaluate(three_passes()), "start", "E2").line()
-        self.assertRegex(line, r"^start\s+E2\s+PASS\s+passes=3 days=2 builds=1")
+        self.assertRegex(line, r"^start\s+E2\s+PASS\s+checklists=3 sessions=3 days=2 builds=1")
 
 
 class E1Tests(unittest.TestCase):
@@ -140,7 +169,7 @@ class E2Tests(unittest.TestCase):
         self.assertIn(needle, result.detail)
 
     def test_fewer_than_three_passes_fail(self):
-        self.fails(three_passes()[:2], "need at least 3")
+        self.fails(three_passes()[:2], "completed checklists, need at least 3")
 
     def test_one_day_fails(self):
         self.fails([clean_summary(0, 0), clean_summary(1, 0), clean_summary(2, 0)], "need at least 2")
@@ -167,6 +196,58 @@ class E2Tests(unittest.TestCase):
         passes = three_passes()
         passes[1] = copy.deepcopy(passes[0])
         self.fails(passes, "same session")
+
+    def test_two_launches_of_one_checklist_are_one_pass_not_two(self):
+        # Sol's plant: two launches on day one plus one on day two passed as three passes.
+        passes = three_passes()
+        checklists = records(passes, [[0, 1], [2]])
+        result = by(evaluate(passes, checklists=checklists), "start", "E2")
+        self.assertFalse(result.passed)
+        self.assertIn("2 completed checklists, need at least 3", result.detail)
+        # Three checklists, one of them two launches: counted three times, on two days.
+        passes = three_passes() + [clean_summary(3, 1)]
+        result = by(evaluate(passes, checklists=records(passes, [[0, 1], [2], [3]])), "start", "E2")
+        self.assertTrue(result.passed, result.detail)
+        self.assertIn("checklists=3 sessions=4", result.detail)
+
+    def test_a_summary_no_checklist_claims_fails(self):
+        passes = three_passes() + [clean_summary(3, 1)]
+        self.fails_with(passes, records(passes[:3]), "belongs to no checklist record")
+
+    def fails_with(self, passes, checklists, needle):
+        result = by(evaluate(passes, checklists=checklists), "start", "E2")
+        self.assertFalse(result.passed, result.detail)
+        self.assertIn(needle, result.detail)
+
+    def test_a_checklist_that_is_incomplete_or_lists_a_missing_or_shared_session_fails(self):
+        passes = three_passes()
+        checklists = records(passes)
+        checklists[0]["complete"] = False
+        self.fails_with(passes, checklists, "not marked complete")
+        checklists = records(passes)
+        checklists[0]["sessions"].append({"pid": 4242, "started_unix_ms": 1})
+        self.fails_with(passes, checklists, "has no summary")
+        checklists = records(passes)
+        checklists[1]["sessions"] = checklists[0]["sessions"]
+        self.fails_with(passes, checklists, "also in another checklist")
+
+    def test_the_date_is_the_local_day_of_the_first_session(self):
+        passes = three_passes()
+        checklists = records(passes)
+        checklists[2]["date"] = checklists[0]["date"]  # day two claimed as day one
+        self.fails_with(passes, checklists, "is not the local day of its first session")
+
+    def test_summaries_from_another_commit_fail_even_when_they_agree_with_each_other(self):
+        passes = three_passes()
+        for summary in passes:
+            summary["session"]["git_sha"] = "f" * 40
+        result = by(evaluate(passes), "start", "E2")
+        self.assertFalse(result.passed)
+        self.assertIn("is not the candidate 0123456789ab", result.detail)
+
+    def test_an_expect_sha_that_is_not_a_commit_is_refused(self):
+        with self.assertRaises(ValueError):
+            evaluate(three_passes(), expect_sha="main")
 
 
 class E3Tests(unittest.TestCase):
@@ -196,6 +277,51 @@ class E3Tests(unittest.TestCase):
         for summary in passes:
             summary["per_row"][key].update(compared=50, matched=0)
         self.assertFalse(by(evaluate(passes), "lifecycle", "E3").passed)
+
+    def test_replay_hits_never_stand_in_for_a_runbook_driven_row(self):
+        # Sol's plant: zero native R209.5 and five replay hits passed.
+        for key, family in (("209.5", "lifecycle"), ("101.5", "start")):
+            passes = three_passes()
+            for summary in passes:
+                summary["per_row"].pop(key, None)
+            result = by(evaluate(passes, e7_dump(per_row={key: 5})), family, "E3")
+            self.assertFalse(result.passed, key)
+            self.assertIn("native only", result.detail)
+            passes = three_passes()
+            for index, summary in enumerate(passes):
+                summary["per_row"][key]["matched"] = 2 if index < 2 else 1  # five native closes
+            self.assertTrue(by(evaluate(passes), family, "E3").passed, key)
+
+    def test_the_replay_exports_per_row_matched_as_an_object_too(self):
+        passes = three_passes()
+        key = natively_required("start")[0]
+        for summary in passes:
+            summary["per_row"][key]["matched"] = 0
+        self.assertTrue(by(evaluate(passes, e7_dump(per_row={key: {"matched": 5}})), "start", "E3").passed)
+        self.assertFalse(by(evaluate(passes, e7_dump(per_row={key: {"matched": 4}})), "start", "E3").passed)
+
+    def test_a_delegated_row_is_credited_by_its_targets_closes(self):
+        data = copy.deepcopy(manifest("cancel"))
+        data["delegated"] = [{"row": "205.4", "to": "206.1", "why": "R205.4 closes as the named no-reply close; its comparison stays at R206"}]
+        passes = three_passes()
+        for summary in passes:
+            summary["per_row"]["205.4"] = {"compared": 0, "matched": 0, "mismatched": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "cancel.json").write_text(json.dumps(data))
+            loaded = []
+            for index, summary in enumerate(passes):
+                loaded.append({**summary, "_path": f"{tmp}/p{index}.json"})
+            run = lambda: verdict.evaluate(  # noqa: E731
+                loaded, e7_dump(), ["cancel"], Path(tmp), checklists=records(passes), expect_sha=SHA
+            )
+            self.assertTrue(by(run(), "cancel", "E3").passed)
+            for summary in loaded:
+                summary["per_row"]["206.1"]["matched"] = 0
+            self.assertFalse(by(run(), "cancel", "E3").passed)
+            data["delegated"][0]["why"] = ""
+            (Path(tmp) / "cancel.json").write_text(json.dumps(data))
+            with self.assertRaises(ValueError):
+                verdict.load_manifest("cancel", Path(tmp))
 
     def test_a_row_on_the_not_natively_reachable_list_needs_no_hits(self):
         data = manifest("stop")
@@ -261,11 +387,27 @@ class E7E8Tests(unittest.TestCase):
             for index, summary in enumerate(three_passes()):
                 summary["_path"] = f"{tmp}/p{index}.json"
                 passes.append(summary)
-            absent = verdict.evaluate(passes, None, ["start"])
+            absent = verdict.evaluate(passes, None, ["start"], checklists=records(passes), expect_sha=SHA)
             self.assertFalse(by(absent, "start", "E7").passed)
             self.assertFalse(by(absent, "start", "E8").passed)
         self.assertFalse(by(evaluate(three_passes(), e7_dump(golden_repeat=1)), "start", "E7").passed)
         self.assertTrue(by(evaluate(three_passes(), e7_dump(golden_repeat=100)), "start", "E7").passed)
+
+    def test_a_dump_without_a_revision_from_another_commit_or_from_a_dirty_tree_fails_e7(self):
+        for change, needle in (
+            ({"git_sha": None}, "no git_sha"),
+            ({"git_sha": "f" * 40}, "not the candidate"),
+            ({"dirty": True}, "clean checkout"),
+            ({"dirty": None}, "clean checkout"),
+        ):
+            dump = e7_dump()
+            if change.get("git_sha", 1) is None:
+                del dump["git_sha"]
+            else:
+                dump.update(change)
+            result = by(evaluate(three_passes(), dump), "start", "E7")
+            self.assertFalse(result.passed, change)
+            self.assertIn(needle, result.detail)
 
     def test_a_family_pd_never_witnessed_fails_e8_for_the_families_that_own_it(self):
         pds = e7_dump()["pd_witness"]
@@ -411,6 +553,47 @@ class ManifestTests(unittest.TestCase):
                 )
                 self.assertTrue(entry["why"].strip())
 
+    @staticmethod
+    def function_body(text: str, name: str) -> str:
+        match = re.search(rf"\bfn {re.escape(name)}\b", text)
+        start = text.index("{", match.end())
+        depth = 0
+        for index in range(start, len(text)):
+            depth += {"{": 1, "}": -1}.get(text[index], 0)
+            if depth == 0:
+                return text[match.start() : index + 1]
+        raise AssertionError(name)
+
+    def test_a_cited_unit_test_drives_the_decision_and_asserts_the_row(self):
+        # Sol round 1, finding 7: a waiver that cites a row-number conversion test or an
+        # allowlist test says nothing about the decision. The cited test names the row's id as
+        # a string and calls a decision (or the family's helper that does), and is not a
+        # registry, ordinal or split-signature test.
+        decides = re.compile(r"\b(decide\w*|d_\d+\w*|start|tail|stop|expect_\w+|assert_pure_refusal)\(")
+        not_a_decision = re.compile(r"ordinal|C3_ROWS|Split::|allowlist")
+        bad = []
+        for family in verdict.FAMILIES:
+            for entry in manifest(family)["not_natively_reachable"]:
+                if entry["kind"] != "unit":
+                    continue
+                body = self.function_body((ROOT / entry["file"]).read_text(), entry["name"])
+                # A status-blind alias (R202.2 is R202.1, R203.10 is R203.9) is never produced as a
+                # decision row; its test asserts the aliased row and names the alias.
+                shown = entry.get("alias_of", entry["id"])
+                if f'"{shown}"' not in body or entry["id"] not in body and entry["id"].lower().replace(".", "_") not in entry["name"]:
+                    bad.append(f"{entry['id']}: {entry['name']} never names the row")
+                elif not decides.search(body):
+                    bad.append(f"{entry['id']}: {entry['name']} calls no decision")
+                elif not_a_decision.search(body):
+                    bad.append(f"{entry['id']}: {entry['name']} is a registry or conversion test")
+        self.assertEqual(bad, [])
+
+    def test_a_cited_golden_is_a_scenario_or_a_pd_witness_test(self):
+        for family in verdict.FAMILIES:
+            for entry in manifest(family)["not_natively_reachable"]:
+                if entry["kind"] == "golden":
+                    self.assertRegex(entry["name"], r"^(golden_s\d+_|pd\d+)", f"{family} {entry['row']}")
+
     def test_a_row_the_native_pass_reached_is_not_on_the_waiver_list(self):
         # The rows pass 1 hit at least five times need their hits, not a waiver.
         hit = {
@@ -472,6 +655,14 @@ class CommandLineTests(unittest.TestCase):
                 path.write_text(json.dumps(summary))
                 paths.append(str(path))
             arguments = [*paths, *extra]
+            if "--expect-sha" not in extra:
+                arguments += ["--expect-sha", SHA]
+            if "--checklist" not in extra:
+                for number, record in enumerate(records(passes)):
+                    record = {k: v for k, v in record.items() if k != "_path"}
+                    path = Path(tmp) / f"checklist{number}.json"
+                    path.write_text(json.dumps(record))
+                    arguments += ["--checklist", str(path)]
             if e7 is not None:
                 path = Path(tmp) / "e7.json"
                 path.write_text(json.dumps(e7))
@@ -495,15 +686,22 @@ class CommandLineTests(unittest.TestCase):
         self.assertRegex(out, r"stop\s+E6\s+FAIL")
         self.assertNotIn("start ", out)
 
-    def test_the_bare_per_row_map_is_accepted_for_e7(self):
-        code, out, _ = self.run_main(three_passes(), {"101.15": 3})
-        self.assertEqual(code, 1)  # no repeat count, so E7 and E8 fail closed
-        self.assertRegex(out, r"start\s+E7\s+FAIL")
+    def test_a_bare_per_row_map_is_not_an_e7_dump(self):
+        code, _, err = self.run_main(three_passes(), {"101.15": 3})
+        self.assertEqual(code, 2)  # no revision, no repeat count: refused
+        self.assertIn("not an E7 dump", err)
+
+    def test_the_expect_sha_is_required_and_binds_the_evidence(self):
+        code, _, err = self.run_main(three_passes(), e7_dump(), "--expect-sha", "f" * 40)
+        self.assertEqual(code, 1)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            verdict.main(["x.json"])
 
     def test_unreadable_input_exits_two(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = verdict.main(["/nonexistent/summary.json"])
+            code = verdict.main(["/nonexistent/summary.json", "--expect-sha", SHA])
         self.assertEqual(code, 2)
         self.assertIn("error:", err.getvalue())
 

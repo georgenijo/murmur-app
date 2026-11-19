@@ -42,23 +42,65 @@ class ScopedCheckTests(unittest.TestCase):
         self.assertIn("(removed)", out)
         self.assertEqual(code, 1, err)
 
-    def test_the_main_thread_watch_allowance_applies_only_to_a_shadow_pr(self):
-        path = "app/src-tauri/src/main_thread_watch.rs"
-        for marker, expected in [("", 0), (SHADOW_MARK, 1)]:
-            root = repo("a();\n", "a();\nb();\n")
-            (root / path).parent.mkdir(parents=True, exist_ok=True)
-            (root / path).write_text("p();\nq();\nr();\ns();\n")
-            git(root, "add", ".")
-            git(root, "commit", "-m", "watch on main")
-            git(root, "checkout", "-q", "main")
-            git(root, "merge", "-q", "--ff-only", "branch")
-            git(root, "checkout", "-q", "-b", "edit")
-            (root / path).write_text(marker + "p();\ns();\n")
-            git(root, "commit", "-am", "remove two lines")
+    WATCH = "app/src-tauri/src/main_thread_watch.rs"
+    EXACT = 'let end = start + lib_rs[start..].find(\']\').expect("handler end");'
+    REPLACED = 'let end = start + lib_rs[start..].find("]))").expect("handler end");'
+
+    def watch_repo(self, branch_text: str):
+        base_text = (
+            "fn instrument_invoke_handler() {\n    inner();\n    more();\n}\n"
+            "#[cfg(test)]\nmod tests {\n    fn parse() {\n        " + self.EXACT + "\n    }\n}\n"
+        )
+        root = repo("a();\n", "a();\nb();\n")
+        git(root, "checkout", "-q", "main")
+        (root / self.WATCH).write_text(base_text)
+        git(root, "add", ".")
+        git(root, "commit", "-m", "watch on main")
+        git(root, "checkout", "-q", "-B", "edit")
+        (root / self.WATCH).write_text(branch_text)
+        git(root, "commit", "-am", "edit the watch")
+        return root
+
+    def watch_text(self, *, inserted: str = "", removed_live: bool = False, replaced: str | None = None) -> str:
+        replaced = self.REPLACED if replaced is None else replaced
+        live = "    more();\n" if removed_live else "    inner();\n    more();\n"
+        return (
+            "fn instrument_invoke_handler() {\n" + inserted + live + "}\n"
+            "#[cfg(test)]\nmod tests {\n    fn parse() {\n        " + replaced + "\n    }\n}\n"
+        )
+
+    def test_the_main_thread_watch_allowance_is_the_one_named_line_and_only_in_a_shadow_pr(self):
+        # The exact parser-test replacement alone: a PR with no shadow line is ordinary, and a
+        # shadow PR (a gated marker elsewhere) may remove that one line.
+        code, out, err = run(self.watch_repo(self.watch_text()))
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+        root = self.watch_repo(self.watch_text() + SHADOW_MARK)
+        code, out, err = run(root)
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: yes", out)
+
+    def test_an_ungated_return_in_the_invoke_handler_instrumentation_fails_in_a_shadow_pr(self):
+        # Sol's plant: the allowance must not exempt the rest of the file.
+        for inserted in ["    return false;\n", "    if flag {\n        return;\n    }\n"]:
+            root = self.watch_repo(self.watch_text(inserted=inserted) + SHADOW_MARK)
             code, _, err = run(root)
-            self.assertEqual(code, expected, f"{marker!r}: {err}")
-            if expected:
-                self.assertIn("removes 2 lines", err)
+            self.assertEqual(code, 1, f"{inserted!r}: {err}")
+            self.assertIn("not behind the dictation-shadow feature", err)
+
+    def test_removing_any_other_line_of_the_watch_file_fails_in_a_shadow_pr(self):
+        root = self.watch_repo(self.watch_text(removed_live=True) + SHADOW_MARK)
+        code, _, err = run(root)
+        self.assertEqual(code, 1, err)
+        self.assertIn("not the line SHADOW_DIFF_ALLOW names", err)
+
+    def test_a_gated_wrapper_around_the_live_code_of_the_watch_file_fails_in_a_shadow_pr(self):
+        # Zero removed live lines, but the base's `inner();` is hidden in the default build.
+        text = self.watch_text().replace(
+            "    inner();\n", '    #[cfg(feature = "dictation-shadow")]\n    {\n        inner();\n    }\n'
+        )
+        code, _, err = run(self.watch_repo(text + SHADOW_MARK))
+        self.assertEqual(code, 1, err)
 
     # ----------------------------------------------------------- feature scoping (C2 i)
 
@@ -278,6 +320,12 @@ class ScopedCheckTests(unittest.TestCase):
                 "note_ticker_started_observed",
                 "ticker_started_observed",
                 "consume_observed",
+                "release_and_reply_observed",
+                "detached_observed",
+                "detached_under_d_observed",
+                "cancel_through_observed",
+                "set_context_observed",
+                "clear_context_observed",
             },
         )
         # Every entry of the table holds against the committed tree.
@@ -291,6 +339,217 @@ class ScopedCheckTests(unittest.TestCase):
         self.assertTrue(twin_table_problems({LIVE: [base]}))
         self.assertEqual(twin_table_problems({LIVE: [{**base, "original": "fn a() {"}]}), [])
         self.assertTrue(twin_table_problems({LIVE: [{**base, "original": "fn a() {", "pair": ""}]}))
+
+
+class HandlerAndBaseTests(unittest.TestCase):
+    """Sol round 1 on #1174: the handler pair, a moving base, and a clean retirement."""
+
+    GATE = '#[cfg(not(feature = "dictation-shadow"))]'
+    FEATURE = '#[cfg(feature = "dictation-shadow")]'
+    ENTRY = {
+        "first": "commands::recording::start_native_recording,",
+        "form": "handler",
+        "twin": "commands::recording::shadow_commands::start_native_recording_witnessed,",
+        "why": "the witnessing wrapper of the command",
+    }
+
+    def handler_text(self, original: str, twin: str) -> str:
+        return f"a,\n{self.GATE}\n{original}\n{self.FEATURE}\n{twin}\nb,\n"
+
+    def test_the_feature_entry_must_be_the_witnessing_wrapper(self):
+        base = "a,\ncommands::recording::start_native_recording,\nb,\n"
+        original = self.ENTRY["first"]
+        good = self.ENTRY["twin"]
+        with allowed({LIVE: [self.ENTRY]}):
+            code, _, err = run(repo(base, self.handler_text(original, good)))
+            self.assertEqual(code, 0, err)
+            # Sol's plant: the feature entry is the ordinary command, so the reply is never
+            # witnessed. The old check read the attribute stack only.
+            code, _, err = run(repo(base, self.handler_text(original, original)))
+            self.assertEqual(code, 1, err)
+            self.assertIn("must register the witnessing wrapper", err)
+            # Another command, another wrapper, or none at all.
+            for twin in [
+                "commands::recording::shadow_commands::stop_native_recording_witnessed,",
+                "commands::recording::shadow_commands::start_native_recording_witnessed",
+            ]:
+                code, _, err = run(repo(base, self.handler_text(original, twin)))
+                self.assertEqual(code, 1, f"{twin}: {err}")
+            code, _, err = run(repo(base, f"a,\n{self.GATE}\n{original}\nb,\n"))
+            self.assertEqual(code, 1, err)
+            self.assertIn("has no feature entry", err)
+            # The entry itself is pinned too.
+            code, _, err = run(repo(base, self.handler_text("commands::recording::other,", good)))
+            self.assertEqual(code, 1, err)
+
+    def test_the_real_handler_entries_name_their_wrappers(self):
+        from scripts.check_shadow_diff import SHADOW_TWINS, twin_table_problems
+
+        entries = [e for e in SHADOW_TWINS["app/src-tauri/src/lib.rs"] if e["form"] == "handler"]
+        self.assertEqual(len(entries), 4)
+        for entry in entries:
+            name = entry["first"].rsplit("::", 1)[1]
+            self.assertEqual(entry["twin"], f"commands::recording::shadow_commands::{name[:-1]}_witnessed,")
+        broken = [{k: v for k, v in e.items() if k != "twin"} for e in entries]
+        self.assertTrue(twin_table_problems({"app/src-tauri/src/lib.rs": broken}))
+
+    def test_a_base_branch_that_advanced_does_not_hide_a_removed_shadow_line(self):
+        base = f"a();\n{self.FEATURE}\nshadow_note();\nb();\n"
+        root = repo(base, f"a();\n{self.FEATURE}\nb();\n")  # the capture call is removed
+        code, out, err = run(root)
+        self.assertEqual(code, 1, err)
+        self.assertIn("shadow change: yes", out)
+        # `main` then gains three unrelated lines above: the removed line's number, looked up in
+        # the new tip, is now another line. The merge base is resolved once.
+        git(root, "checkout", "-q", "main")
+        (root / LIVE).write_text("x1();\nx2();\nx3();\n" + base)
+        git(root, "commit", "-am", "main moves on")
+        git(root, "checkout", "-q", "branch")
+        code, out, err = run(root)
+        self.assertEqual(code, 1, err)
+        self.assertIn("shadow change: yes", out)
+        self.assertIn("removes", err)
+
+    def test_the_diff_reads_the_merge_base_not_the_moved_tip(self):
+        from scripts.check_shadow_diff import resolve_base
+
+        root = repo("a();\nb();\n", "a();\nb();\nc();\n")
+        merge_base = resolve_base(root, "main")
+        git(root, "checkout", "-q", "main")
+        (root / LIVE).write_text("z();\na();\nb();\n")
+        git(root, "commit", "-am", "main moves on")
+        git(root, "checkout", "-q", "branch")
+        self.assertEqual(resolve_base(root, "main"), merge_base)
+
+    # ------------------------------------------------------------------ a clean retirement
+
+    SCRIPT = (
+        "SHADOW_TWINS: dict[str, list[dict]] = {\n"
+        '    "app/src-tauri/src/keyboard.rs": [\n'
+        '        {"first": "fn orig_observed(x: u64) -> (bool, u64) {", "form": "frozen_fn",\n'
+        '         "original": "fn orig(x: u64) -> bool {", "pair": "0000000000000000", "why": "x"},\n'
+        "    ],\n}\n"
+    )
+
+    def retirement_repo(self, base_text: str, branch_text: str):
+        root = repo(base_text, branch_text)
+        git(root, "checkout", "-q", "main")
+        (root / "scripts").mkdir(exist_ok=True)
+        (root / "scripts/check_shadow_diff.py").write_text(self.SCRIPT)
+        git(root, "add", ".")
+        git(root, "commit", "-m", "the reviewed table")
+        git(root, "checkout", "-q", "branch")
+        git(root, "merge", "-q", "main", "-m", "merge main")
+        return root
+
+    BASE = (
+        "fn orig(x: u64) -> bool {\n    x > 1\n}\n"
+        '#[cfg(feature = "dictation-shadow")]\n'
+        "fn orig_observed(x: u64) -> (bool, u64) {\n    (x > 1, x)\n}\n"
+        "fn caller() {\n"
+        '    #[cfg(not(feature = "dictation-shadow"))]\n'
+        "    let a = orig(1);\n"
+        '    #[cfg(feature = "dictation-shadow")]\n'
+        "    let (a, witness) = orig_observed(1);\n"
+        "    use_it(a);\n}\n"
+    )
+
+    def test_a_complete_retirement_of_a_pinned_copy_and_its_call_sites_passes(self):
+        # The cutover removes the observed copy with its feature gate, the call site's gates and
+        # twin, and re-points the original: its table entry goes with it.
+        branch = (
+            "fn orig(x: u64) -> bool {\n    x > 1\n}\n"
+            "fn caller() {\n    let a = decide(1);\n    use_it(a);\n}\n"
+        )
+        with allowed({}):
+            code, out, err = run(self.retirement_repo(self.BASE, branch))
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+
+    def test_removing_the_copy_but_leaving_its_pin_fails(self):
+        branch = self.BASE.replace(
+            '#[cfg(feature = "dictation-shadow")]\nfn orig_observed(x: u64) -> (bool, u64) {\n    (x > 1, x)\n}\n', ""
+        )
+        pin = {
+            "first": "fn orig_observed(x: u64) -> (bool, u64) {",
+            "form": "frozen_fn",
+            "original": "fn orig(x: u64) -> bool {",
+            "pair": "0" * 16,
+            "why": "x",
+        }
+        with allowed({LIVE: [pin]}):
+            code, _, err = run(self.retirement_repo(self.BASE, branch))
+        self.assertEqual(code, 1, err)
+        self.assertIn("is not in the file", err)
+
+    def test_removing_the_pin_but_leaving_a_capture_line_is_still_a_shadow_change(self):
+        # Only the table's own copies are retired: any other shadow line that goes is a removal.
+        base = self.BASE + '#[cfg(feature = "dictation-shadow")]\nfn capture() {}\n'
+        with allowed({}):
+            code, out, err = run(self.retirement_repo(base, self.BASE))
+        self.assertEqual(code, 1, err)
+        self.assertIn("shadow change: yes", out)
+
+
+class PinnedHelperTests(unittest.TestCase):
+    """Sol round 1, finding 4: the live helper copies are pinned, not only their call sites."""
+
+    def test_the_real_refusal_helper_and_the_detached_ready_task_copies_are_pinned(self):
+        from scripts.check_shadow_diff import SHADOW_TWINS
+
+        import re
+
+        def name(line: str) -> str:
+            return re.search(r"fn (\w+)", line).group(1)
+
+        pairs = {
+            (path.rsplit("/", 1)[1], name(entry["original"]), name(entry["first"]))
+            for path, entries in SHADOW_TWINS.items()
+            for entry in entries
+            if entry["form"] == "frozen_fn"
+        }
+        for want in [
+            ("start_ports.rs", "release_and_reply", "release_and_reply_observed"),
+            ("lifecycle_ports.rs", "detached", "detached_observed"),
+            ("ready_ports.rs", "detached_under_d", "detached_under_d_observed"),
+        ]:
+            self.assertIn(want, pairs)
+
+    def test_editing_the_original_refusal_helper_fails_until_it_is_re_pinned(self):
+        original = (
+            "pub(super) fn release_and_reply(a: u64, err: Option<String>) -> Result<u64, String> {\n"
+            "    reply_of(a, err)\n}\n"
+        )
+        copy = (
+            "#[cfg(feature = \"dictation-shadow\")]\n"
+            "pub(super) fn release_and_reply_observed(a: u64, err: Option<String>) -> Result<u64, String> {\n"
+            "    reply_of(a, err)\n}\n"
+        )
+        from scripts.check_shadow_diff import pair_hash, tokenize, function_tokens
+
+        text = original + copy
+        tokens, lines = tokenize(text), text.splitlines()
+        digest = pair_hash(
+            function_tokens(tokens, lines, "pub(super) fn release_and_reply(a: u64, err: Option<String>) -> Result<u64, String> {"),
+            function_tokens(tokens, lines, "pub(super) fn release_and_reply_observed(a: u64, err: Option<String>) -> Result<u64, String> {"),
+        )
+        pin = {
+            "first": "pub(super) fn release_and_reply_observed(a: u64, err: Option<String>) -> Result<u64, String> {",
+            "form": "frozen_fn",
+            "original": "pub(super) fn release_and_reply(a: u64, err: Option<String>) -> Result<u64, String> {",
+            "pair": digest,
+            "why": "the armed refusal helper",
+        }
+        with allowed({LIVE: [pin]}):
+            code, _, err = run(repo(text, text + "fn other() {}\n"))
+            self.assertEqual(code, 0, err)
+            # The armed copy still returns the error, the original no longer does.
+            edited = text.replace("    reply_of(a, err)\n}\n#[cfg", "    reply_of(a, None)\n}\n#[cfg", 1)
+            self.assertNotEqual(edited, text)
+            code, out, err = run(repo(text, edited))
+            self.assertEqual(code, 1, err)
+            self.assertIn("no longer the pinned copy", err)
+            self.assertIn("shadow change: no", out)
 
 
 if __name__ == "__main__":

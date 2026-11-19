@@ -366,6 +366,40 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
+    def test_the_dictation_shadow_steps_cannot_be_weakened_into_passing(self) -> None:
+        # Sol round 1, finding 10: each of these used to pass validation.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        lint_run = "        run: cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings\n"
+        goldens = "          -E 'kind(lib) & test(/golden_tests::golden_/)'\n"
+        tests_run = "-test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/)'\n"
+        for label, old, new in (
+            ("continue-on-error on the lint", lint_run, "        continue-on-error: true\n" + lint_run),
+            ("clippy commented out", lint_run, "        # " + lint_run.strip() + "\n"),
+            ("clippy failure swallowed", lint_run, lint_run.rstrip("\n") + " || true\n"),
+            ("clippy chained after a no-op", lint_run, lint_run.replace("cargo clippy", "true; cargo clippy").replace("-D warnings", "-D warnings; true")),
+            ("continue-on-error on the goldens", "        timeout-minutes: 10\n", "        timeout-minutes: 10\n        continue-on-error: true\n"),
+            ("goldens swallowed", goldens, goldens.rstrip("\n") + " || true\n"),
+            ("goldens shell changed", "        timeout-minutes: 10\n", "        timeout-minutes: 10\n        shell: bash {0} || true\n"),
+            ("continue-on-error on the tests", "        timeout-minutes: 25\n", "        timeout-minutes: 25\n        continue-on-error: true\n"),
+            ("tests timeout raised", "        timeout-minutes: 25\n", "        timeout-minutes: 250\n"),
+            ("the job suppresses failures", "  rust-macos:\n    needs: changes\n", "  rust-macos:\n    continue-on-error: true\n    needs: changes\n"),
+            ("the tests step's if weakened", "      - name: Run dictation shadow tests\n        if: needs.changes.outputs.verified != 'true'\n", "      - name: Run dictation shadow tests\n        if: always()\n"),
+        ):
+            with self.subTest(label=label):
+                self.assertIn(old, workflow, label)
+                # The goldens filter is also in `Run tests`: the shadow step is the last one.
+                at = workflow.rindex(old) if label == "goldens swallowed" else workflow.index(old)
+                mutated = workflow[:at] + new + workflow[at + len(old) :]
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_a_commented_out_run_line_is_a_missing_step_field(self) -> None:
+        from scripts.validate_workflow_policy import step_fields
+
+        block = "      - name: x\n        # run: cargo clippy\n        timeout-minutes: 5\n"
+        self.assertEqual(step_fields(block, 6), {"timeout-minutes": "5"})
+
     def test_the_dictation_shadow_test_step_selects_every_required_group(self) -> None:
         from scripts.validate_workflow_policy import SHADOW_TEST_SELECTIONS
 
