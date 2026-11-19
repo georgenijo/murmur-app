@@ -366,6 +366,8 @@ pub(super) struct World {
     /// How many times the publish asked for its side tasks (`SD`): a counter, not
     /// a trace line, so no recorded golden changes.
     side_task_spawns: std::sync::atomic::AtomicUsize,
+    /// The times the lifecycle bridge's `Ready` handed the side-task pair to its spawner.
+    bridge_side_task_spawns: std::sync::atomic::AtomicUsize,
     /// `core_divergences()` when this run began. The persisted-core invariant
     /// (#1160, Opus seat) is that it never grows during a run: a path that writes
     /// `dictation.status` or the recording id without the `FieldAdapter` would
@@ -402,6 +404,7 @@ impl World {
             delivery: StdMutex::new(None),
             smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
             side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
+            bridge_side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
             divergence_baseline: crate::dictation_executor::adapter::core_divergences(),
         })
     }
@@ -763,6 +766,10 @@ impl World {
         self.side_task_spawns.load(Ordering::SeqCst)
     }
 
+    pub(super) fn bridge_side_task_spawns(&self) -> usize {
+        self.bridge_side_task_spawns.load(Ordering::SeqCst)
+    }
+
     pub(super) fn smart_auto_resolves(&self) -> usize {
         self.smart_auto_resolves.load(Ordering::SeqCst)
     }
@@ -1001,6 +1008,7 @@ impl World {
                     // The two spawns `handle_audio_lifecycle` makes for a `Ready`.
                     // The ticker's own preconditions are production's: a recorded
                     // context and a model that supports a live preview.
+                    world.bridge_side_task_spawns.fetch_add(1, Ordering::SeqCst);
                     let state = app.state::<State>();
                     if !ticker_can_start(&state.app_state, recording_id) {
                         return;
