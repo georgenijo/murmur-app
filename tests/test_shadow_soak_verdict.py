@@ -60,10 +60,16 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
         "outstanding_at_exit": 0,
         "incomplete_closes": {},
         "core_divergences": 0,
-        "conservation": {
-            str(site): {"entries": 8, "headers": 6, "no_decision": 1, "unwound": 1} for site in sorted(sites)
-        }
-        | {"non_family": {"keyboard": 3}},
+        "final": True,
+        "named_no_reply": 2,
+        # The shape PR #1173 writes: per-site objects hold only `headers`; the four books and
+        # `balanced` are in `total`; `non_family` is keyed by file:line.
+        "conservation": {str(site): {"headers": 6} for site in sorted(sites)}
+        | {
+            "total": {"entries": 8, "headers": 6, "no_decision": 1, "unwound": 1, "balanced": True},
+            "non_family": {"app/src-tauri/src/keyboard.rs:120": 3},
+            "unclassified": 0,
+        },
         "per_row": per_row,
     }
     summary.update(overrides)
@@ -299,17 +305,59 @@ class E9Tests(unittest.TestCase):
         self.assertIn("incomplete_closes[flight_dropped_mid_run]=2", result.detail)
         self.assertTrue(self.taint(incomplete_closes={"flight_dropped_mid_run": 0}).passed)
 
-    def test_a_conservation_imbalance_at_a_family_site_taints_that_family(self):
+    def test_a_conservation_imbalance_in_the_total_books_taints_every_family(self):
         passes = three_passes()
-        passes[0]["conservation"]["101"]["entries"] = 9  # one entry never resolved
+        passes[0]["conservation"]["total"]["entries"] = 9  # one entry never resolved
+        passes[0]["conservation"]["total"]["balanced"] = False  # what the build writes then
         verdicts = evaluate(passes)
-        self.assertFalse(by(verdicts, "start", "E9").passed)
-        self.assertIn("conservation[101]", by(verdicts, "start", "E9").detail)
-        self.assertTrue(by(verdicts, "cancel", "E9").passed)
+        for family in verdict.FAMILIES:
+            self.assertFalse(by(verdicts, family, "E9").passed, family)
+        self.assertIn("conservation.total", by(verdicts, "start", "E9").detail)
 
-    def test_non_family_acquisitions_are_reported_not_judged(self):
+    def test_balanced_false_taints_even_when_the_numbers_add_up(self):
         passes = three_passes()
-        passes[0]["conservation"]["non_family"] = {"keyboard": 99}
+        passes[0]["conservation"]["total"]["balanced"] = False
+        result = by(evaluate(passes), "start", "E9")
+        self.assertFalse(result.passed)
+        self.assertIn("balanced=False", result.detail)
+
+    def test_balanced_true_does_not_hide_numbers_that_do_not_add_up(self):
+        passes = three_passes()
+        passes[0]["conservation"]["total"]["entries"] = 9
+        result = by(evaluate(passes), "start", "E9")
+        self.assertFalse(result.passed)
+        self.assertIn("entries=9", result.detail)
+
+    def test_a_summary_without_the_total_books_is_taint(self):
+        passes = three_passes()
+        del passes[0]["conservation"]["total"]
+        self.assertFalse(by(evaluate(passes), "start", "E9").passed)
+
+    def test_unclassified_acquisitions_are_taint(self):
+        passes = three_passes()
+        passes[0]["conservation"]["unclassified"] = 1
+        self.assertFalse(by(evaluate(passes), "start", "E9").passed)
+
+    def test_per_site_entries_are_not_read_and_non_family_is_informational(self):
+        passes = three_passes()
+        passes[0]["conservation"]["101"] = {"headers": 999}
+        passes[0]["conservation"]["non_family"] = {"app/src-tauri/src/keyboard.rs:120": 99}
+        self.assertTrue(by(evaluate(passes), "start", "E9").passed)
+
+    def test_a_summary_that_is_not_final_is_taint(self):
+        for value in (False, None):
+            passes = three_passes()
+            passes[1]["final"] = value
+            result = by(evaluate(passes), "start", "E9")
+            self.assertFalse(result.passed, value)
+            self.assertIn("not a final summary", result.detail)
+        passes = three_passes()
+        del passes[1]["final"]
+        self.assertFalse(by(evaluate(passes), "start", "E9").passed)
+
+    def test_the_named_no_reply_close_is_expected_not_taint(self):
+        passes = three_passes()
+        passes[0]["named_no_reply"] = 40
         self.assertTrue(by(evaluate(passes), "start", "E9").passed)
 
     def test_a_summary_without_the_new_taint_fields_cannot_count(self):

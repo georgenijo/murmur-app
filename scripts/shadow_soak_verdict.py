@@ -17,7 +17,10 @@ The row manifests (docs/testing/shadow-rows/<family>.json) list each family's C3
 rows a native pass cannot produce (with the golden or unit test that drives each), and the
 rows a step of the runbook drives (those count as natively reachable: they need 5 hits). The summary
 fields it reads are the ones the dictation shadow writes: `session`, `outstanding_at_exit`,
-`per_row[..].matched`, `incomplete_closes`, `conservation`, `core_divergences`.
+`per_row[..].matched`, `incomplete_closes`, `conservation` (`total` books with `balanced`,
+headers per site, `non_family` by file:line), `core_divergences`, and `final` (true only on the
+clean-exit write: a summary without it is a crash or a kill and taints the pass).
+`named_no_reply` is an expected close kind and is not taint.
 
 Numbers only: nothing here reads or prints transcript, audio, clipboard or selection content.
 """
@@ -300,15 +303,32 @@ def evaluate_family(
         for reason, count in (summary.get("incomplete_closes") or {}).items():
             if count:
                 taint.append(f"{name}:incomplete_closes[{reason}]={count}")
-        conservation = summary.get("conservation") or {}
-        for site, counts in conservation.items():
-            if site == "non_family" or site not in site_keys:
-                continue
-            entries = counts.get("entries", 0)
-            resolved = counts.get("headers", 0) + counts.get("no_decision", 0) + counts.get("unwound", 0)
-            if entries != resolved:
-                taint.append(f"{name}:conservation[{site}] entries={entries} != headers+no_decision+unwound={resolved}")
-    # A family's imbalance counts for the family, the global counters for every family.
+        # A summary that is not the clean-exit write (`final`) comes from a crash or a kill:
+        # its counters stop at the last periodic write, so the pass is tainted.
+        if summary.get("final") is not True:
+            taint.append(f"{name}: not a final summary (`final` is {summary.get('final')!r}: a crash or a kill)")
+        # The books are kept over all family sites together (`conservation.total`); only the
+        # headers are per site, and `non_family` (keyed by file:line) is informational.
+        total = (summary.get("conservation") or {}).get("total")
+        if not isinstance(total, dict):
+            if "conservation" in summary:
+                taint.append(f"{name}: conservation has no `total` books")
+        else:
+            books = [total.get(k) for k in ("entries", "headers", "no_decision", "unwound")]
+            if not all(isinstance(v, int) and not isinstance(v, bool) for v in books):
+                taint.append(f"{name}: conservation.total lacks integer entries/headers/no_decision/unwound")
+            elif books[0] != books[1] + books[2] + books[3]:
+                taint.append(
+                    f"{name}:conservation.total entries={books[0]} != "
+                    f"headers+no_decision+unwound={books[1] + books[2] + books[3]}"
+                )
+            if total.get("balanced") is not True:
+                taint.append(f"{name}:conservation.total.balanced={total.get('balanced')!r}")
+        unclassified = (summary.get("conservation") or {}).get("unclassified", 0)
+        if unclassified:
+            taint.append(f"{name}:conservation.unclassified={unclassified}")
+    # The books and the global counters are not per family: they taint every family. The
+    # named no-reply close (`named_no_reply`) is an expected kind and is never taint.
     verdicts.append(Verdict(family, "E9", not taint, "tainted: " + "; ".join(taint) if taint else "no taint"))
     return verdicts
 

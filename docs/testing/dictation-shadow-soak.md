@@ -69,7 +69,15 @@ pgrep -fl "Murmur Refactor Test" || echo "none running"     # must print "none r
 open -n --env MURMUR_SHADOW=1 --env MURMUR_LOG=debug --env MURMUR_LOG_SHIPPER=off "$DEV_APP"
 sleep 5; pgrep -f "Murmur Refactor Test.app/Contents/MacOS/ui" | wc -l     # exactly 1
 ls -l "$L/dictation-shadow-events.jsonl"     # exists, 0 bytes: the shadow is armed
+# A first summary is written right after the first drain, so the freshness proof is
+# available straight after launch, before any native step (if it is not there yet, wait
+# a few seconds, then dictate once; the first drain has not run):
+jq '{session, final}' "$L/dictation-shadow-summary.json"     # final is false here
 ```
+
+Check it now: `session.pid` is the process just launched, `session.started_unix_ms` is
+after the `open`, `session.git_sha` is the commit you built. A stale or wrong file is
+found here, not after an hour of native steps.
 
 Run exactly one Murmur process per session (two share one log directory and overwrite
 each other's summary). Quit with Cmd-Q or the menu so the final summary is written;
@@ -78,14 +86,18 @@ then copy it:
 ```bash
 cp "$L/dictation-shadow-summary.json" "$SOAK/session-A-summary.json"
 cp "$L/dictation-shadow-events.jsonl"  "$SOAK/session-A-events.jsonl"
-jq '.session' "$SOAK/session-A-summary.json"
+jq '{final, session, outstanding_at_exit, conservation: .conservation.total}' "$SOAK/session-A-summary.json"
 ```
 
 The `session` block is the freshness proof: `started_unix_ms` is after this launch, `pid` is
 the process you launched, `git_sha` is the commit you built, `armed` is `true` and
 `build_profile` is `shadow-soak`. A summary without it comes from a build before the
-S1-S4 evidence and cannot count (the verdict script fails closed). A kill or a crash
-loses up to five minutes and the final drain, so the session does not count.
+S1-S4 evidence and cannot count (the verdict script fails closed).
+
+**`final` must be `true` in every summary of a pass.** Only the clean-exit write sets it. A
+summary with `final: false` (or none) is a periodic write left by a crash or a kill: its
+counters stop at the last write and the pass is tainted, so repeat the session. The
+verdict script enforces this in E9.
 
 A **non-shadow panic fails the pass**: if `app.log` in the same directory has a
 `panic` line that is not the shadow's own (the shadow's panics are counted as
@@ -223,7 +235,16 @@ moved-aside `before-*` files) are not passed to it. The criteria it applies:
 | **E6** | `shadow_panic` and `witness_overflow` | both `0` |
 | **E7** | the E7 dump: `golden_repeat >= 100` and every row it lists | present, at least 100 |
 | **E8** | the manifest's `pds` for the family all `> 0` in the dump's `pd_witness` | all witnessed |
-| **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, and a conservation imbalance (`entries != headers + no_decision + unwound` for the family's sites; `conservation.non_family` is informational) | all `0`, balanced. Repeat a tainted run. |
+| **E9** | taint counters: `abandoned_by_loss + abandoned_by_panic + skipped_incomplete + late_message_discarded + late_header_discarded + unverifiable + unconsumed + outstanding_at_exit + core_divergences`, a non-empty `incomplete_closes`, a summary that is not `final`, and a conservation imbalance: `conservation.total.balanced` must be `true` (`total.entries == headers + no_decision + unwound`; the books are kept over all family sites together, only `headers` is per site, `non_family` is keyed by `file:line` and informational, and `unclassified` must be `0`). `named_no_reply` is an expected close kind (every effect ran, only the command's reply never came), counted and never taint | all `0`, balanced, every summary `final`. Repeat a tainted run. |
+
+The books and the global counters are not per family, so a taint in one summary taints E9
+for every family.
+
+**What the native pass does not check.** The reply comparison reads the reply `state`
+only. The live `Err` class (the error text discriminant of a failed command) is not
+captured natively yet, so a native pass says nothing about it; the goldens and the unit
+tests that drive the `Err` outcomes (R302.2) are where it is checked. Do not read a clean
+native pass as proof of the error class.
 
 `E3` reads `matched`, not `compared`: a row that compared but never matched is a
 mismatch, not a hit.
