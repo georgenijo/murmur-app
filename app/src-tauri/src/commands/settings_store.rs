@@ -263,7 +263,7 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
 /// The per-bundle app data directory that owns every durable host-written
 /// file. Shared so non-command hosts (the capture backend memo) publish beside
 /// `settings.json` instead of resolving their own directory.
-pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -321,7 +321,9 @@ async fn load_blob_off_main(
 
 /// Synchronous settings read for startup code that already runs before the
 /// first frame is requested (see `launch::prepare`).
-pub(crate) fn read_settings_blob(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+pub(crate) fn read_settings_blob<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<String>, String> {
     read_blob_serialized(&data_dir(app)?, SETTINGS)
 }
 

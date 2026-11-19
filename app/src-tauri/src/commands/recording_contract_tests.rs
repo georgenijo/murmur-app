@@ -1286,8 +1286,10 @@ mod field_adapter_contract {
     /// the legacy way (`project()` from the live M1/M2) and the view built the
     /// cut-over way (the persisted core) hold the same M3/M4 observations, read
     /// from the live slots, and the persisted core does not change when they do.
-    /// (The cut-over entry itself arrives with Stage 2c; the persisted-core
-    /// constructor it will use is exercised here.)
+    /// (The lifecycle family's entries are cut over: they build the persisted-core
+    /// view through `FieldAdapter::lifecycle_view`, covered by
+    /// `lifecycle_cutover_tests`; the persisted-core constructor it uses is exercised
+    /// here.)
     #[test]
     fn m3_m4_observed_before_and_after_cutover() {
         let app = AppState::default();

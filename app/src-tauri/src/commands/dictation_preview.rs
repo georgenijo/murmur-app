@@ -255,7 +255,7 @@ pub(crate) fn reset_ownership_for_test() {
 }
 
 /// The partial ticker's exit: hide unless a stop handed the hide to delivery.
-pub(crate) fn hide_on_ticker_exit(app: &tauri::AppHandle, recording_id: u64) {
+pub(crate) fn hide_on_ticker_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>, recording_id: u64) {
     if OWNERSHIP.ticker_should_hide(recording_id) {
         hide_for_recording(app, recording_id, HideTrigger::RecordingEnded);
     }
@@ -365,7 +365,11 @@ pub async fn show_dictation_preview(
         .map_err(|_| "dictation preview presentation was cancelled".to_string())?
 }
 
-fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64, trigger: HideTrigger) {
+fn hide_for_recording<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    recording_id: u64,
+    trigger: HideTrigger,
+) {
     let dispatch_app = app.clone();
     let _ = app.run_on_main_thread(crate::main_thread_watch::job("preview.hide", move || {
         // A late hide must not hide its successor, including after this
@@ -387,7 +391,7 @@ fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64, trigger: HideTr
     }));
 }
 
-fn apply_initial_size(app: &tauri::AppHandle) {
+fn apply_initial_size<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     POPOVER.apply_initial_size(app, WIDTH, HEIGHT);
 }
 
@@ -434,7 +438,7 @@ fn create_once(
 /// asks the overlay for its current lift on load. Blocking: it waits for the
 /// main thread to build the webview, so run it off the async workers. Builds
 /// only for `recording_id` while that recording is current.
-pub(crate) fn ensure_window(app: &tauri::AppHandle, recording_id: u64) {
+pub(crate) fn ensure_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, recording_id: u64) {
     let label = super::overlay_material::LIVE_WORDS_LABEL;
     create_once(
         &CREATE_GATE,
@@ -450,7 +454,7 @@ pub(crate) fn ensure_window(app: &tauri::AppHandle, recording_id: u64) {
     );
 }
 
-fn build_window(app: &tauri::AppHandle, label: &str) {
+fn build_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
     let Some(config) = app
         .config()
         .app

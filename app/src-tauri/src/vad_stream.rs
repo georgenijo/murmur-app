@@ -884,6 +884,8 @@ pub fn start<R: tauri::Runtime>(
     is_current: impl Fn(&crate::state::AppState, u64) -> bool + Send + 'static,
 ) -> bool {
     use tauri::Manager;
+    #[cfg(test)]
+    test_starts::note(recording_id);
     if !model_installed() {
         return false;
     }
@@ -939,6 +941,30 @@ pub fn start<R: tauri::Runtime>(
         return false;
     }
     true
+}
+
+/// Test builds: the recordings `start` was entered for, so a test can prove the production
+/// VAD spawner reached it (D-S2c-16 amendment 1 c).
+#[cfg(test)]
+pub(crate) mod test_starts {
+    static STARTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn note(recording_id: u64) {
+        STARTED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(recording_id);
+    }
+
+    /// How many times `start` was entered for `recording_id` so far.
+    pub(crate) fn count(recording_id: u64) -> usize {
+        STARTED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|id| **id == recording_id)
+            .count()
+    }
 }
 
 fn emit_outcome(

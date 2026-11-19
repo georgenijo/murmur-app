@@ -37,7 +37,7 @@ const EVENTS: [&str; 8] = [
 type Terminal = Option<(DictationTerminalOutcome, DictationErrorCode)>;
 
 #[derive(Debug, PartialEq)]
-struct Outcome {
+pub(super) struct Outcome {
     /// Event names in emission order; `recording-status-changed` carries its payload.
     events: Vec<String>,
     status: DictationStatus,
@@ -60,9 +60,48 @@ fn run(
     current: u64,
     context: bool,
 ) -> Outcome {
+    run_with_core(event, status, current, context, CoreSeed::Live)
+}
+
+/// What the persisted core holds when the event arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CoreSeed {
+    /// Equal to the live `status` and recording id: how every effect leaves it.
+    Live,
+    /// Different from live in both M1 and M2, as a write that bypassed the adapter (or a
+    /// bug in a commit) would leave it: the C8.6 assertion must count it and re-sync it.
+    Diverged,
+}
+
+/// [`run`] with the persisted core seeded as `seed` says. The core is seeded **before**
+/// the event, from the fixture's live fields, so an entry that reads it reads exactly what
+/// the fixture planted (`recording_lifecycle_cutover_tests`).
+pub(super) fn run_with_core(
+    event: AudioLifecycleEvent,
+    status: DictationStatus,
+    current: u64,
+    context: bool,
+    seed: CoreSeed,
+) -> Outcome {
     let app_state = AppState::default();
     app_state.recording_id.store(current, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = status;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        // The fixture writes the live fields directly, so the persisted core is
+        // seeded to match (the one way to make a core equal to live without an effect).
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+        if seed == CoreSeed::Diverged {
+            // Move both persisted fields off live through the core's own commits.
+            let other = if status == DictationStatus::Recording {
+                murmur_dictation_core::status::Status::Processing
+            } else {
+                murmur_dictation_core::status::Status::Recording
+            };
+            dictation.core.set_status(other);
+            dictation.core.alloc_id();
+        }
+    }
     app_state.dictation_telemetry.accepted(RID);
     let app = tauri::test::mock_builder()
         .manage(test_state(app_state))
@@ -108,6 +147,22 @@ fn run(
             ready_tasks.set(true);
         },
     );
+    {
+        // The C8.6 invariant after the entry, whatever the core held when it arrived: the
+        // persisted M1/M2 equal the live status and recording id (a divergence was
+        // re-synced before the decision, and every effect commits both).
+        let dictation = state.app_state.dictation.lock_or_recover();
+        assert_eq!(
+            (dictation.core.status(), dictation.core.current_id()),
+            (
+                crate::dictation_admission::core_status(dictation.status),
+                murmur_dictation_core::ids::RecordingId(
+                    state.app_state.recording_id.load(Ordering::SeqCst)
+                ),
+            ),
+            "the persisted core equals live after the entry ({seed:?})"
+        );
+    }
     let outcome = Outcome {
         events: events.lock().unwrap().clone(),
         status: state.app_state.dictation.lock_or_recover().status,
