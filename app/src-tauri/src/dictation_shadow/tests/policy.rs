@@ -203,12 +203,65 @@ fn shadow_never_executes() {
     for (name, source) in &files {
         let code = production_source(source);
         for token in forbidden {
+            // `live_counters.rs` is the one file that reads the live side's counters
+            // (D-S2c-15 S3, S4); it is held to loads only, below.
+            if token == "dictation_executor" && name == "live_counters.rs" {
+                continue;
+            }
             assert!(
                 !code.contains(token),
                 "dictation_shadow/{name} names `{token}`: the shadow never executes and never logs"
             );
         }
     }
+    // The counter reader only loads: no lock, store, write or call into the executor
+    // other than the two named reads.
+    let (_, counters) = files
+        .iter()
+        .find(|(name, _)| name == "live_counters.rs")
+        .expect("live_counters.rs is scanned");
+    let counters = production_source(counters);
+    for token in [
+        ".lock(",
+        ".store(",
+        "fetch_add",
+        "swap(",
+        "write",
+        "emit",
+        "spawn",
+    ] {
+        assert!(
+            !counters.contains(token),
+            "live_counters.rs must only read: `{token}`"
+        );
+    }
+    // Exactly these two calls into the live side, by full path (a substitute such as
+    // `dictation_executor::shadow::no_decision()` is a different path and fails here).
+    let mut paths: Vec<String> = counters
+        .match_indices("dictation_executor::")
+        .map(|(at, _)| {
+            let rest = &counters[at..];
+            let end = rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                .unwrap_or(rest.len());
+            // The path and its empty argument list: a call, not a mention.
+            let call = if rest[end..].starts_with("()") {
+                "()"
+            } else {
+                "?"
+            };
+            format!("{}{call}", &rest[..end])
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            "dictation_executor::adapter::core_divergences()",
+            "dictation_executor::shadow::conservation_counts()",
+        ],
+        "live_counters.rs reads exactly the divergence count and the entry/header books"
+    );
     // The only thing the shadow writes is its own two files, through `summary`.
     let mut writers = Vec::new();
     for (name, source) in &files {
@@ -252,15 +305,84 @@ fn shadow_replays_live_op_ids() {
                 "dictation_shadow/{name} names `{token}`: op ids are replayed, never drawn"
             );
         }
-        // `fetch_add(1` is the transport's own seq and recorder counters and the
-        // summary's temporary-file counter, nothing else.
-        if name != "transport.rs" && name != "summary.rs" {
+        // `fetch_add(1` is the transport's own seq and recorder counters, the summary's
+        // temporary-file counter and the acquisition-site table's counts, nothing else.
+        if name != "transport.rs" && name != "summary.rs" && name != "sites.rs" {
             assert!(
                 !code.contains("fetch_add(1"),
                 "dictation_shadow/{name} counts something that looks like an op id"
             );
         }
+        // `sites.rs` may count only its own table: one slot's tally, and the overflow.
+        if name == "sites.rs" {
+            for line in code.lines().filter(|line| line.contains("fetch_add(1")) {
+                assert!(
+                    line.contains("slot.count.fetch_add(1")
+                        || line.contains("OVERFLOW.fetch_add(1"),
+                    "dictation_shadow/sites.rs counts something other than its table: {line}"
+                );
+            }
+        }
     }
+}
+
+/// D-S2c-10: the live side's part of the shutdown accounting never waits, blocks or takes a
+/// lock. A producer counts its attempt and reads `closed`; everything that waits (the
+/// quiesce) is on the comparison thread.
+#[test]
+fn the_live_publish_path_never_waits() {
+    fn body(code: &str, start: &str) -> String {
+        let at = code
+            .find(start)
+            .unwrap_or_else(|| panic!("`{start}` exists"));
+        let rest = &code[at..];
+        let end = rest.find("\n    }\n").expect("the function ends");
+        rest[..end].to_string()
+    }
+    let sources = shadow_sources();
+    let source_of = |file: &str| {
+        production_source(
+            &sources
+                .iter()
+                .find(|(name, _)| name == file)
+                .unwrap_or_else(|| panic!("{file} exists"))
+                .1,
+        )
+    };
+    let transport = source_of("transport.rs");
+    let sites = source_of("sites.rs");
+    for (what, text) in [
+        ("Transport::push", body(&transport, "fn push(&self")),
+        ("sites::note", body(&sites, "pub(crate) fn note(")),
+    ] {
+        for token in [
+            "sleep",
+            "yield_now",
+            "park",
+            "wait",
+            ".lock(",
+            "Mutex",
+            "RwLock",
+            "Condvar",
+            "spin",
+            "loop {",
+            "while ",
+            "join(",
+            "recv(",
+        ] {
+            assert!(
+                !text.contains(token),
+                "{what} (a live thread) names `{token}`: it must never wait or block"
+            );
+        }
+    }
+    // The push counts its attempt once, before it does anything else.
+    let push = body(&transport, "fn push(&self");
+    assert_eq!(push.matches("published_attempts.fetch_add(1").count(), 1);
+    assert!(
+        push.find("published_attempts.fetch_add(1").unwrap()
+            < push.find("self.closed.load").unwrap()
+    );
 }
 
 #[test]

@@ -2028,6 +2028,7 @@ fn ticker_can_start(app_state: &AppState, recording_id: u64) -> bool {
 /// reply the shadow witnesses (CP4, D-S2c-8 f). Without the shadow it is the command.
 pub(super) async fn commanded_reply<T, E, F>(command: F) -> Result<T, E>
 where
+    E: AsRef<str>,
     F: Future<Output = Result<T, E>>,
     T: ReplyValue,
 {

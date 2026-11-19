@@ -16,6 +16,7 @@ mod capture;
 mod closing;
 mod comparison;
 mod conditionals;
+mod evidence;
 mod harness;
 mod history;
 mod loss;

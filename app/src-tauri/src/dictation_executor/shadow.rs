@@ -53,9 +53,9 @@ use murmur_dictation_core::replies::Reply;
 
 use crate::dictation_shadow::transport::{self, Mark, PreCapture, ShadowRecorder, ShadowTicket};
 use crate::dictation_shadow::types::{
-    CondWitness, EffectResult, Inline, LiveOp, MirrorWitness, ObservedFact, PredId, Projection,
-    ReplyKind, ShadowHeader, TickerGate, TickerSkipReason, WitnessedEffect, OBSERVED_CAPACITY,
-    OPS_CAPACITY,
+    CondWitness, EffectResult, Inline, LiveOp, MirrorWitness, NoReplyReason, ObservedFact, PredId,
+    Projection, ReplyKind, ShadowHeader, TickerGate, TickerSkipReason, WitnessedEffect,
+    OBSERVED_CAPACITY, OPS_CAPACITY,
 };
 
 /// Messages a flight can hold until its header is submitted: a prefix that runs ahead
@@ -144,8 +144,14 @@ pub(crate) fn dictation_lock_taken<T>(at: &'static std::panic::Location<'static>
     if crate::dictation_shadow::replay::not_a_decision_section(at) {
         return;
     }
+    // A native build cannot read source files here: the acquisition is counted at its
+    // site in a fixed lock-free table, and the comparison thread classifies the table when
+    // it writes the summary. Entries and the non-family reads they include come from that
+    // one table, so a read the resource monitor makes between two snapshots cannot be in
+    // one count and not the other (`sites::report`).
     #[cfg(not(test))]
-    let _ = at;
+    crate::dictation_shadow::sites::note(at);
+    #[cfg(test)]
     ENTRIES.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -154,7 +160,7 @@ pub(crate) fn dictation_lock_taken<T>(at: &'static std::panic::Location<'static>
 /// implied.
 pub(crate) fn no_decision() {
     if crate::dictation_shadow::enabled() {
-        NO_DECISION.fetch_add(1, Ordering::Relaxed);
+        NO_DECISION.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -170,17 +176,38 @@ static UNRENDERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static NO_REPLY: AtomicU64 = AtomicU64::new(0);
 
+/// The entry/header books so far, as the raw counters (D-S2c-15 S3: read by the comparison
+/// thread for the summary). In a native build `entries` holds the D-less entries only: the
+/// acquisitions of D are counted in the site table (`sites::report`), and the summary adds
+/// its family part. Test builds count every decision section here.
+///
+/// The outcomes are read first (`Acquire`, each written `Release` after its section's
+/// entry), the entries after them: a section that has an outcome here has its entry, so the
+/// books can only show a section still in flight, never an outcome with no entry.
+pub(crate) fn conservation_counts() -> crate::dictation_shadow::summary::ConservationCounts {
+    let headers = HEADERS.load(Ordering::Acquire);
+    let no_decision = NO_DECISION.load(Ordering::Acquire);
+    let unwound = UNWOUND.load(Ordering::Acquire);
+    crate::dictation_shadow::summary::ConservationCounts {
+        entries: ENTRIES.load(Ordering::Acquire),
+        headers,
+        no_decision,
+        unwound,
+    }
+}
+
 /// Test builds: the counters so far; a replay's report takes the difference between
 /// its end and its start.
 #[cfg(test)]
 pub(crate) fn conservation_now() -> crate::dictation_shadow::replay::Conservation {
+    let counts = conservation_counts();
     crate::dictation_shadow::replay::Conservation {
-        entries: ENTRIES.load(Ordering::Relaxed),
-        headers: HEADERS.load(Ordering::Relaxed),
-        no_decision: NO_DECISION.load(Ordering::Relaxed),
+        entries: counts.entries,
+        headers: counts.headers,
+        no_decision: counts.no_decision,
         unrendered: UNRENDERED.load(Ordering::Relaxed),
         no_reply: NO_REPLY.load(Ordering::Relaxed),
-        unwound: UNWOUND.load(Ordering::Relaxed),
+        unwound: counts.unwound,
     }
 }
 
@@ -312,6 +339,9 @@ impl Live {
         if self.delegated.get() {
             #[cfg(test)]
             NO_REPLY.fetch_add(1, Ordering::Relaxed);
+            // The comparator grants the named no-reply close only to a flight that
+            // says why it has none (D-S2c-15 review, major 1).
+            transport::mark(&self.rec, Mark::NoReply(NoReplyReason::Delegated));
             return;
         }
         let live = RefCell::new(Some(self));
@@ -323,6 +353,7 @@ impl Live {
                 if sink.replyless {
                     #[cfg(test)]
                     NO_REPLY.fetch_add(1, Ordering::Relaxed);
+                    transport::mark(&live.rec, Mark::NoReply(NoReplyReason::Deferred));
                     drop(live);
                 } else {
                     sink.flights.borrow_mut().push(live);
@@ -348,7 +379,7 @@ impl Drop for Live {
         if self.in_decision.get() {
             let site = self.header.get_mut().as_ref().map_or(0, |h| h.site_id);
             drop(self.rec.ticket(site));
-            UNWOUND.fetch_add(1, Ordering::Relaxed);
+            UNWOUND.fetch_add(1, Ordering::Release);
         }
     }
 }
@@ -857,6 +888,7 @@ tokio::task_local! {
 pub(crate) async fn commanded<T, E, F>(command: F) -> Result<T, E>
 where
     T: RenderedValue,
+    E: AsRef<str>,
     F: std::future::Future<Output = Result<T, E>>,
 {
     if !crate::dictation_shadow::enabled() {
@@ -912,6 +944,7 @@ impl SeenStatus {
 /// refused as re-entrant before it began (no flight waits for a reply then).
 pub(crate) async fn witnessed_detached<F, E>(task: F) -> Option<Result<serde_json::Value, E>>
 where
+    E: AsRef<str>,
     F: std::future::Future<Output = Option<Result<serde_json::Value, E>>>,
 {
     REPLY_SINK
@@ -924,7 +957,7 @@ where
                 let result = task.await;
                 witness_kind(match &result {
                     None => ReplyKind::Ok,
-                    Some(Err(_)) => ReplyKind::Err,
+                    Some(Err(error)) => err_kind(error.as_ref()),
                     Some(Ok(value)) => value_kind(value),
                 });
                 result
@@ -1010,7 +1043,7 @@ pub(crate) fn reply_sink_visible() -> bool {
     REPLY_SINK.try_with(|_| ()).is_ok()
 }
 
-fn witness_returned<T: RenderedValue, E>(result: &Result<T, E>) {
+fn witness_returned<T: RenderedValue, E: AsRef<str>>(result: &Result<T, E>) {
     witness_kind(rendered_kind(result));
 }
 
@@ -1019,10 +1052,11 @@ fn witness_kind(kind: ReplyKind) {
         let waiting = std::mem::take(&mut *sink.flights.borrow_mut());
         for live in waiting {
             if live.err_outcome.get() {
-                if kind == ReplyKind::Err {
+                if matches!(kind, ReplyKind::Err | ReplyKind::ErrAs(_)) {
                     // The modelled outcome happened: the pipeline's own error is returned.
                     #[cfg(test)]
                     NO_REPLY.fetch_add(1, Ordering::Relaxed);
+                    transport::mark(&live.rec, Mark::NoReply(NoReplyReason::ImportPipelineError));
                     continue;
                 }
                 // The pipeline failed and the command returned something else, whatever it
@@ -1058,11 +1092,20 @@ impl RenderedValue for serde_json::Value {
 }
 
 /// The kind of a returned reply, from the value the command hands to IPC.
-fn rendered_kind<T: RenderedValue, E>(reply: &Result<T, E>) -> ReplyKind {
+fn rendered_kind<T: RenderedValue, E: AsRef<str>>(reply: &Result<T, E>) -> ReplyKind {
     match reply {
-        Err(_) => ReplyKind::Err,
+        Err(error) => err_kind(error.as_ref()),
         Ok(value) => value.rendered_kind(),
     }
+}
+
+/// The kind of an `Err` a command returned (D-S2c-15 review, major 3): the class of its
+/// text from the closed set of fixed texts, else the unclassified class. Only the class
+/// leaves this function; the text is never kept.
+fn err_kind(text: &str) -> ReplyKind {
+    ReplyKind::ErrAs(crate::dictation_shadow::types::ErrClass::classify_live(
+        text,
+    ))
 }
 
 fn value_kind(value: &serde_json::Value) -> ReplyKind {
@@ -1083,15 +1126,30 @@ fn value_kind(value: &serde_json::Value) -> ReplyKind {
         ReplyType::RecordingCancelled,
         ReplyType::RecordingStarting,
     ];
+    // The reply's `state` literal (D-S2c-15 S7), a closed set: never any content.
+    let state = value
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|literal| {
+            murmur_dictation_core::status::Status::ALL
+                .into_iter()
+                .find(|status| status.as_str() == literal)
+        });
     match value.get("type").and_then(serde_json::Value::as_str) {
         None => ReplyKind::Ok,
-        Some("transcription") => ReplyKind::Transcription,
+        // The normal `process_audio` transcription carries no `state`: compared on
+        // the kind alone then, and on the state where the command returned one.
+        Some("transcription") => state.map_or(ReplyKind::Transcription, ReplyKind::TranscriptionAt),
         // A literal no decision names is its own kind: it matches nothing the core can
-        // decide, an `Err` included (D-S2c-8 f).
+        // decide, an `Err` included (D-S2c-8 f). So is a typed reply with no readable
+        // `state`: every typed reply the core decides names one.
         Some(literal) => TYPES
             .into_iter()
             .find(|ty| ty.as_str() == literal)
-            .map_or(ReplyKind::Unrecognized, ReplyKind::Typed),
+            .zip(state)
+            .map_or(ReplyKind::Unrecognized, |(ty, state)| {
+                ReplyKind::TypedAt(ty, state)
+            }),
     }
 }
 
@@ -1153,7 +1211,7 @@ impl Sealed<'_> {
             crate::barrier_hook::at("shadow.submit");
         }
         transport::submit(ticket, header);
-        HEADERS.fetch_add(1, Ordering::Relaxed);
+        HEADERS.fetch_add(1, Ordering::Release);
         live.submitted.set(true);
         let queued = std::mem::take(&mut *live.deferred.borrow_mut());
         for message in queued.iter() {
