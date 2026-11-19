@@ -394,8 +394,9 @@ impl Flight {
         }
     }
 
-    /// The stamp [`Self::stamp`] took: `None` for a disarmed flight.
-    pub(crate) fn at(&self) -> Option<Now> {
+    /// The stamp [`Self::stamp`] took, from one read of the flight: `None` for a disarmed
+    /// flight, which is also what gates the capture (no second look at `live`).
+    pub(crate) fn active_at(&self) -> Option<Now> {
         self.live.as_ref().and_then(|live| live.at.get())
     }
 
@@ -979,10 +980,12 @@ thread_local! {
 /// The skip a spawner lookup took, read from its result: the argument of
 /// [`ticker_outcome`], evaluated by the caller **inside** its enable check (counted in test
 /// builds, so evaluating it before the check fails the disarmed read pin).
-pub(crate) fn ticker_skip_of<T>(started: &Result<T, TickerSkipReason>) -> Option<TickerSkipReason> {
+pub(crate) fn ticker_skip_of<T, K>(
+    started: &Result<T, (TickerSkipReason, K)>,
+) -> Option<TickerSkipReason> {
     #[cfg(test)]
     super::probe::shadow_read();
-    started.as_ref().err().copied()
+    started.as_ref().err().map(|(reason, _)| *reason)
 }
 
 /// The ticker spawner's one lookup is done: `skip` is the skip it takes before it asks for

@@ -357,7 +357,13 @@ pub(crate) fn register_partial_ticker_locked_observed(
 #[cfg(feature = "dictation-shadow")]
 use crate::dictation_shadow::types::TickerSkipReason as SkipReason;
 #[cfg(feature = "dictation-shadow")]
-type TickerStart = Result<(Arc<DictationContextSnapshot>, bool), SkipReason>;
+/// The skip carries the recorded context an unsupported model was found in: the original
+/// spawner holds its `Arc` through the `unsupported_model` emit and releases it when it
+/// returns, so the outcome does too.
+type TickerStart = Result<
+    (Arc<DictationContextSnapshot>, bool),
+    (SkipReason, Option<Arc<DictationContextSnapshot>>),
+>;
 
 /// The ticker spawner's own synchronous preconditions, from its one lookup: the recorded
 /// context and a model that supports a live preview. `Err(reason)` is the skip the spawner
@@ -368,12 +374,12 @@ type TickerStart = Result<(Arc<DictationContextSnapshot>, bool), SkipReason>;
 pub(crate) fn ticker_start_check(app_state: &AppState, recording_id: u64) -> TickerStart {
     use crate::dictation_shadow::types::TickerSkipReason;
     let started = match app_state.active_context(recording_id) {
-        None => Err(TickerSkipReason::NoContext),
+        None => Err((TickerSkipReason::NoContext, None)),
         Some(context) => {
             let model = &context.transcription.model_name;
             let whisper = transcriber::whisper::supports_live_preview(model);
             if !whisper && !transcriber::is_coreml_model(model) {
-                Err(TickerSkipReason::NoLivePreview)
+                Err((TickerSkipReason::NoLivePreview, Some(context)))
             } else {
                 Ok((context, whisper))
             }
@@ -495,7 +501,9 @@ fn spawn_dictation_partial_ticker(
     let (context, whisper) = match ticker_start_check(&app.state::<State>().app_state, recording_id)
     {
         Ok(started) => started,
-        Err(reason) => {
+        // `_context` keeps the unsupported outcome's snapshot until the return, as the
+        // original's `context` does.
+        Err((reason, _context)) => {
             if reason == crate::dictation_shadow::types::TickerSkipReason::NoLivePreview {
                 emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
             }
@@ -1649,7 +1657,7 @@ impl<'a> IdleGuard<'a> {
         #[cfg(feature = "dictation-shadow")]
         flight.history_of(|| owner.as_mut().and_then(PipelineOwner::take_h2_retired));
         #[cfg(feature = "dictation-shadow")]
-        if let (true, Some(at)) = (flight.is_active(), flight.at()) {
+        if let Some(at) = flight.active_at() {
             flight.decided(
                 if origin == GuardOrigin::LegacyParse {
                     murmur_dictation_core::inputs::Input::ProcessAudioFinish(
@@ -2325,7 +2333,7 @@ fn run_pipeline_idle_emit(
     });
     stop_ports::expect_valid(&decision);
     #[cfg(feature = "dictation-shadow")]
-    if let (true, Some(at)) = (flight.is_active(), flight.at()) {
+    if let Some(at) = flight.active_at() {
         flight.decided(
             match kind {
                 PostKind::StopPost => murmur_dictation_core::inputs::Input::PipelineIdleEmit(input),
@@ -9640,7 +9648,7 @@ fn run_stop_capture_rows<'a>(
     if let Some(op_status) = seen_status.get(&flight) {
         flight.history_of(|| capture_stop.take_retired());
         crate::shadow_site!(issue = 1154);
-        if let (true, Some(at)) = (flight.is_active(), flight.at()) {
+        if let Some(at) = flight.active_at() {
             flight.decided(
                 Input::StopCaptureResult(StopCaptureResultInput { op_status, ..probe }),
                 capture::view_projection(&view),

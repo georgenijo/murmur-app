@@ -416,6 +416,71 @@ class ShadowDiffTests(unittest.TestCase):
             self.assertEqual(code, 1, f"{twin!r}: {err}")
             self.assertIn("differs from the original", err, twin)
 
+    def test_another_attribute_stacked_on_a_twin_fails(self):
+        # Round 9 nit 3: `#[cfg(any())]` right after the feature gate switches the twin off
+        # with zero deletions; the attribute stack is part of what is compared.
+        original = "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);\n"
+        attached = "run_phase(&mut executor(&ports, tail).attach_flight(&flight), Placement::PostDT, None, rid);\n"
+        for stack in ["#[cfg(any())]\n", "#[allow(unused)]\n", "#[cfg(test)]\n#[cfg(any())]\n"]:
+            code, _, err = self.closed(original, stack + attached, original.strip())
+            self.assertEqual(code, 1, f"{stack!r}: {err}")
+            self.assertIn("differs from the original", err, stack)
+        code, _, err = self.closed(original, attached, original.strip())
+        self.assertEqual(code, 0, err)
+        # A handler entry may not carry one either.
+        gate = '#[cfg(not(feature = "dictation-shadow"))]'
+        feature = '#[cfg(feature = "dictation-shadow")]'
+        entry = {"first": "handler,", "form": "handler", "why": "wrapper"}
+        with allowed({LIVE: [entry]}):
+            code, _, err = run(
+                repo("a\nhandler,\nb\n", f"a\n{gate}\nhandler,\n{feature}\n#[cfg(any())]\nwrapper,\nb\n")
+            )
+        self.assertEqual(code, 1, err)
+        self.assertIn("carries another attribute", err)
+
+    def test_a_gated_block_around_an_original_statement_fails(self):
+        # Round 9 nit 4: a new gated block that encloses an existing statement removes it
+        # from the default build with zero deleted lines.
+        base = "fn f() {\n    let before = a();\n    counter.fetch_max(id, Ordering::SeqCst);\n    after();\n}\n"
+        wrapped = (
+            "fn f() {\n    let before = a();\n"
+            '    #[cfg(feature = "dictation-shadow")]\n    {\n'
+            "    counter.fetch_max(id, Ordering::SeqCst);\n"
+            "    }\n    after();\n}\n"
+        )
+        code, _, err = run(repo(base, wrapped))
+        self.assertEqual(code, 1, err)
+        self.assertIn("a gated region encloses text the base already had", err)
+        # Any gate shape, and a gated `if` around it, are the same.
+        for gate in ["#[cfg(test)]", "#[cfg(any())]", "#[cfg(not(test))]"]:
+            branch = wrapped.replace('#[cfg(feature = "dictation-shadow")]', gate)
+            code, _, err = run(repo(base, branch))
+            self.assertEqual(code, 1, f"{gate}: {err}")
+        # A new gated statement beside the original, even one that repeats its text, is fine.
+        beside = (
+            "fn f() {\n    let before = a();\n"
+            '    #[cfg(feature = "dictation-shadow")]\n'
+            "    counter.fetch_max(id, Ordering::SeqCst);\n"
+            "    counter.fetch_max(id, Ordering::SeqCst);\n    after();\n}\n"
+        )
+        code, _, err = run(repo(base, beside))
+        self.assertEqual(code, 0, err)
+        # A gated list element and a gated match arm take only themselves out.
+        code, _, err = run(
+            repo(
+                "fn f() {\n    list![\n        a,\n        b,\n    ];\n}\n",
+                'fn f() {\n    list![\n        a,\n        #[cfg(feature = "dictation-shadow")]\n        w,\n        b,\n    ];\n}\n',
+            )
+        )
+        self.assertEqual(code, 0, err)
+        code, _, err = run(
+            repo(
+                "fn f() {\n    match x {\n        A => 1,\n        B => { 2 }\n    }\n}\n",
+                'fn f() {\n    match x {\n        A => 1,\n        #[cfg(feature = "dictation-shadow")]\n        W => { 9 }\n        B => { 2 }\n    }\n}\n',
+            )
+        )
+        self.assertEqual(code, 0, err)
+
     def test_a_missing_twin_fails(self):
         gate = '#[cfg(not(feature = "dictation-shadow"))]'
         entry = {"first": "b();", "form": "closed", "why": "twin"}

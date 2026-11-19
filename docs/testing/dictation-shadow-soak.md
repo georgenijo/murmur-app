@@ -178,7 +178,9 @@ the original discards, or a lock's scope, cannot be expressed in that list: each
 `frozen` entry that pins the digest of the reviewed original and twin token streams, so
 either side changing fails until a reviewer pins the new digest. They are listed in
 `SHADOW_TWINS` by name as debt against D-S2c-12 (b), and the tests keep the seven shapes
-Sol found at `a4bc9d8d` (`tests/fixtures/shadow_twins/`) as fixtures that must fail. Files
+Sol found at `a4bc9d8d` (`tests/fixtures/shadow_twins/`) as fixtures that must fail. The attribute stack on a twin is part of the comparison (a `#[cfg(any())]` stacked on a twin makes it differ), and the
+base's tokens must survive, in order, once every inserted attribute and the statement a gated one governs are taken out, so a
+gated block wrapped around an original statement fails even with zero deleted lines. Files
 are classified from the base revision, so adding `#![cfg(test)]` to a production file does not
 exempt its deletions, and a file-level `#![cfg(..)]` added to a file the base had fails.
 

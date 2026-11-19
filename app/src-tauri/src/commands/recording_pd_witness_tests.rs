@@ -1964,6 +1964,45 @@ mod ticker_skip_notes {
         (totals.ticker_skipped, totals.replays)
     }
 
+    /// The unsupported-model outcome keeps the recorded context's `Arc` for the spawner's
+    /// `unsupported_model` emit, as the original spawner's own binding does (round 9): the
+    /// lookup's clone is not dropped when the check returns `Err`.
+    #[test]
+    fn an_unsupported_model_outcome_holds_the_snapshot_through_the_emit() {
+        let app_state = AppState::default();
+        let destination = select_recording_destination(
+            &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+            crate::smart_destination::Snapshot::Disabled,
+        );
+        let mut context = resolve_recording_context(&app_state, destination);
+        Arc::make_mut(&mut context).transcription.model_name = "small.en".to_string();
+        app_state.set_active_context(1, context);
+        match ticker_start_check(&app_state, 1) {
+            Err((TickerSkipReason::NoLivePreview, Some(held))) => assert_eq!(
+                Arc::strong_count(&held),
+                2,
+                "the app state's reference and the outcome's own"
+            ),
+            other => panic!(
+                "expected the unsupported outcome with its snapshot: {:?}",
+                other.err().map(|(reason, held)| (reason, held.is_some()))
+            ),
+        }
+        // Nothing recorded: no snapshot to hold.
+        let empty = AppState::default();
+        assert!(matches!(
+            ticker_start_check(&empty, 1),
+            Err((TickerSkipReason::NoContext, None))
+        ));
+        // A supported model is the lookup's own pair.
+        let mut context = app_state.active_context(1).unwrap();
+        Arc::make_mut(&mut context).transcription.model_name = "base.en".to_string();
+        app_state.set_active_context(1, context);
+        assert!(matches!(ticker_start_check(&app_state, 1), Ok((_, true))));
+        // The lookups above only wrote the skip mailbox (when armed): leave it empty.
+        let _ = crate::dictation_executor::shadow::take_ticker_skip();
+    }
+
     #[test]
     fn each_skip_reason_is_noted_exactly_once_per_replay() {
         for (reason, title, body) in [

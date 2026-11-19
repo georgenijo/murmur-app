@@ -91,7 +91,7 @@ SHADOW_DIFF_ALLOW: dict[str, tuple[int, str]] = {
 #   debt against D-S2c-12 (b), listed by name so none is added unseen.
 SHADOW_TWINS: dict[str, list[dict]] = {
     "app/src-tauri/src/commands/recording.rs": [
-        {"first": "fn spawn_dictation_partial_ticker(", "form": "frozen", "pair": "51754c8ecf2fce6d", "why": "the shared ticker lookup (`ticker_start_check`) replaces the spawner's head, so the skip taken is the witness of that one lookup (D-S2c-10 R2)"},
+        {"first": "fn spawn_dictation_partial_ticker(", "form": "frozen", "pair": "3ec58dd4b5441fa6", "why": "the shared ticker lookup (`ticker_start_check`) replaces the spawner's head, so the skip taken is the witness of that one lookup (D-S2c-10 R2)"},
         {"first": "self.history.ret_pipeline(self.rid);", "form": "frozen", "pair": "b9e8f6659edbbaf5", "why": "keeps the answer of the H2 retirement, which the original discards, for the flight's H2 witness"},
         {"first": "let pre = stop_ports::try_run_phase(", "form": "closed", "why": 'the original plus `.attach_flight(<flight>)` on its executor, the one insertion of the closed list (D-S2c-12 b)'},
         {"first": "stop_ports::run_phase(", "form": "closed", "why": 'the original plus `.attach_flight(<flight>)` on its executor, the one insertion of the closed list (D-S2c-12 b)'},
@@ -478,6 +478,29 @@ def added_lines_of(root: Path, base: str, path: str) -> set[int]:
     return added_lines(root, base, path)
 
 
+def region_end(tokens: list[tuple[str, int]], start: int) -> int:
+    """The index after the statement, item, list element or match arm at `start`."""
+    end = statement_end(tokens, start)
+    if end == 0 or end > len(tokens) or tokens[end - 1][0] == ";":
+        return end
+    depth = 0
+    arrow = False
+    for k in range(start, min(end, len(tokens))):
+        token = tokens[k][0]
+        if token in _OPEN:
+            depth += 1
+        elif token in _CLOSE:
+            depth -= 1
+        elif depth == 0 and token == "=>":
+            arrow = True
+        elif depth == 0 and token == ",":
+            return k + 1
+        if arrow and depth == 0 and token == "}":
+            more = k + 1 < len(tokens) and tokens[k + 1][0] == ","
+            return k + 2 if more else k + 1
+    return end
+
+
 def twin_regions(tokens: list[tuple[str, int]]) -> dict[int, dict]:
     """Every `#[cfg(not(feature = "dictation-shadow"))]` of the text, by the index of the
     statement it gates: the original statement, the feature twin that follows it (the one
@@ -493,10 +516,13 @@ def twin_regions(tokens: list[tuple[str, int]]) -> dict[int, dict]:
             start = end
             while (nxt := attribute_at(tokens, start)) is not None:
                 start = nxt
-            stop = statement_end(tokens, start)
-            original = normalised([t for t, _ in tokens[start:stop]])
+            stop = region_end(tokens, start)
+            # The attribute stack between the gate and the statement is part of the original
+            # (and of the twin, below): a twin with another attribute stacked on it differs.
+            original = normalised([t for t, _ in tokens[end:stop]])
             twin: list[str] | None = None
             twin_attr: int | None = None
+            twin_stack = 0
             cursor = stop
             twin_end = attribute_at(tokens, cursor)
             if twin_end is not None and "".join(t for t, _ in tokens[cursor:twin_end]) == FEATURE_GATE:
@@ -504,10 +530,64 @@ def twin_regions(tokens: list[tuple[str, int]]) -> dict[int, dict]:
                 begin = twin_end
                 while (nxt := attribute_at(tokens, begin)) is not None:
                     begin = nxt
-                twin = normalised([t for t, _ in tokens[begin : statement_end(tokens, begin)]])
-            found[start] = {"original": original, "twin": twin, "twin_attr": twin_attr}
+                twin = normalised([t for t, _ in tokens[twin_end : region_end(tokens, begin)]])
+                twin_stack = begin - twin_end
+            found[start] = {
+                "original": original,
+                "twin": twin,
+                "twin_attr": twin_attr,
+                "twin_stack": twin_stack,
+                "original_stack": start - end,
+            }
         at = end
     return found
+
+
+def base_survives(
+    root: Path, base: str, path: str, tokens: list[tuple[str, int]], added: set[int]
+) -> list[str]:
+    """D-S2c-10 amendment 3 / round 9 nit 4: take every inserted attribute and the statement a
+    gated one governs out of the branch's tokens (a negated twin gate loses only its
+    attribute, its statement stays): what is left must still hold the base's tokens, in
+    order. A gated block that wraps an original statement removes it from the default
+    build, and the removal shows here as base tokens that are gone."""
+    base_tokens = tokenize(show(root, base, path))
+    if not base_tokens:
+        return []
+    drop: set[int] = set()
+    at = 0
+    while at < len(tokens):
+        first_end = attribute_at(tokens, at)
+        if first_end is None:
+            at += 1
+            continue
+        stack = [(at, first_end)]
+        follow = first_end
+        while (nxt := attribute_at(tokens, follow)) is not None:
+            stack.append((follow, nxt))
+            follow = nxt
+        inserted = [(a, b) for a, b in stack if tokens[a][1] in added]
+        if inserted:
+            compact = ["".join(t for t, _ in tokens[a:b]) for a, b in inserted]
+            for a, b in inserted:
+                drop.update(range(a, b))
+            gates = any(re.match(r"#!?\[(cfg|cfg_attr)\b", c) for c in compact)
+            inner = any(c.startswith("#!") for c in compact)
+            if gates and not inner and NEGATED_GATE not in compact and follow < len(tokens):
+                drop.update(range(follow, region_end(tokens, follow)))
+        at = follow
+    kept = [text for k, (text, _) in enumerate(tokens) if k not in drop]
+    cursor = 0
+    for text, line in base_tokens:
+        while cursor < len(kept) and kept[cursor] != text:
+            cursor += 1
+        if cursor == len(kept):
+            return [
+                f"{path}:{line}: the base's `{text}` is gone from the branch once its gated "
+                "insertions are taken out: a gated region encloses text the base already had"
+            ]
+        cursor += 1
+    return []
 
 
 def first_line_of(text_lines: list[str], line: int) -> str:
@@ -614,7 +694,10 @@ def gated_originals(
         entry["used"] = True
         form = entry["form"]
         if form == "handler":
-            pass
+            if region["twin_stack"] or region["original_stack"]:
+                found.append(
+                    f"{path}:{line}: the handler entry at line {target} carries another attribute"
+                )
         elif region["twin"] is None:
             found.append(f"{path}:{line}: the twin of the statement at line {target} is missing")
         elif form == "frozen":
@@ -632,6 +715,9 @@ def gated_originals(
                     f"differs from the original: {difference}"
                 )
         at = end
+    # A file with a named removal (`SHADOW_DIFF_ALLOW`) has base tokens that are meant to go.
+    if in_base and path not in SHADOW_DIFF_ALLOW:
+        found.extend(base_survives(root, base, path, tokens, added))
     return found
 
 
