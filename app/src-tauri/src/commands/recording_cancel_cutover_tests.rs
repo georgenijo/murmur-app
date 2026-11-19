@@ -479,8 +479,8 @@ fn the_r205_5_tail_order_holds_through_the_switched_entry() {
 /// #1170's independent-start barrier (a processing cancel keeps T through its trailing
 /// `idle`, so a newer start cannot publish `starting` and then be overwritten by the old
 /// `idle`), run again through the switched entry. The cancel's entries are exact; the start
-/// that is polled from an independent task is the start family's and still projects, which
-/// the sites prove is not the cancel.
+/// that is polled from an independent task is the start family's, switched with the start
+/// cutover, so no function projects.
 #[test]
 fn the_independent_start_barrier_holds_through_the_switched_entry() {
     let _gate = serialized();
@@ -492,16 +492,12 @@ fn the_independent_start_barrier_holds_through_the_switched_entry() {
         [E205],
         "the switched entries that ran"
     );
+    // The start that is polled from an independent task is the start family's, switched
+    // with the start cutover: nothing projects any more, the cancel included.
     let projecting = projecting_functions();
     assert!(
-        !projecting.is_empty(),
-        "the start ran, and the start family still projects (the probe sees it)"
-    );
-    assert!(
-        !projecting
-            .iter()
-            .any(|function| function == "cancel_native_recording_inner"),
-        "the cancel projected: {projecting:?}"
+        projecting.is_empty(),
+        "a command still reaches `DictationCore::project`: {projecting:?}"
     );
 }
 

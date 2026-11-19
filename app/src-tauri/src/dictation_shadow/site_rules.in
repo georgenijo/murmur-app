@@ -26,8 +26,8 @@ pub(crate) const NON_FAMILY: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "src/commands/recording.rs",
-        "let dictation = state.app_state.dictation.lock_or_recover();",
-        "project_lifecycle_view(&state.app_state, &dictation)",
+        "let mut held = state.app_state.dictation.lock_or_recover();",
+        "start_view(&state.app_state, &mut held)",
         "query 402, the short read after a smart-destination capture (D-S2-3)",
     ),
     (

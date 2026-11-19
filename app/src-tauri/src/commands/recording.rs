@@ -213,6 +213,10 @@ mod stop_cutover_tests;
 mod cancel_cutover_tests;
 
 #[cfg(test)]
+#[path = "recording_start_cutover_tests.rs"]
+mod start_cutover_tests;
+
+#[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
 
@@ -339,7 +343,7 @@ fn register_partial_ticker_locked(
 ) -> bool {
     // Query 401 (`q_is_recording_current`: id > 0, current, `Recording`, not
     // cancelled), then the ticker claim, in today's short-circuit order.
-    crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation)
+    crate::dictation_executor::FieldAdapter::start_query_view(app_state, dictation)
         .q_is_recording_current(murmur_dictation_core::ids::RecordingId(recording_id))
         && crate::commands::dictation_preview::note_ticker_started(recording_id)
 }
@@ -355,8 +359,7 @@ pub(crate) fn register_partial_ticker_locked_observed(
     gate: &std::cell::Cell<Option<crate::dictation_shadow::types::TickerGate>>,
 ) -> bool {
     use murmur_dictation_core::ids::RecordingId;
-    let view =
-        crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation);
+    let view = crate::dictation_executor::FieldAdapter::start_query_view(app_state, dictation);
     let id = RecordingId(recording_id);
     let (registered, before) = if view.q_is_recording_current(id) {
         crate::commands::dictation_preview::note_ticker_started_observed(recording_id)
@@ -2962,7 +2965,7 @@ fn owns_delivery(
     dictation: &crate::state::DictationState,
     recording_id: u64,
 ) -> bool {
-    crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation)
+    crate::dictation_executor::FieldAdapter::start_query_view(app_state, dictation)
         .q_owns_delivery(murmur_dictation_core::ids::RecordingId(recording_id))
 }
 
@@ -5296,9 +5299,8 @@ async fn process_audio_inner(
     // Query 402 (`q_capture_current`): a short D read after the capture picks the
     // destination. The emit's own ownership recheck is the section below.
     let capture_is_current = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
-            .q_capture_current(RecordingId(rid))
+        let mut held = state.app_state.dictation.lock_or_recover();
+        FieldAdapter::start_view(&state.app_state, &mut held).q_capture_current(RecordingId(rid))
     };
     if !capture_is_current {
         tracing::info!(
@@ -7254,7 +7256,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     #[cfg(feature = "dictation-shadow")]
     let after_d = AfterD::new();
     let mut dictation = state.app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
     let decision = ready_op.consume(|op_status| {
         input.op_status = op_status;
         let mut rounds = 0_u8;
@@ -7591,7 +7593,7 @@ async fn start_native_recording_inner(
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         let current = view.current_id.0;
         input.occupancy =
             crate::dictation_admission::dictation_start_occupancy(state, dictation.status);
@@ -7994,7 +7996,7 @@ async fn start_native_recording_inner(
                 rid,
             );
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
             #[cfg(feature = "dictation-shadow")]
             let seen_status = capture::SeenStatus::new();
             #[cfg(feature = "dictation-shadow")]
@@ -8106,9 +8108,8 @@ async fn start_after_capture(
     // destination. The emit's own ownership recheck is R103.0, below.
     let capture_is_current = {
         let _stretch = flight.stretch();
-        let dictation = state.app_state.dictation.lock_or_recover();
-        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
-            .q_capture_current(recording)
+        let mut held = state.app_state.dictation.lock_or_recover();
+        FieldAdapter::start_view(&state.app_state, &mut held).q_capture_current(recording)
     };
     let smart_destination = if capture_is_current {
         captured_smart_destination
@@ -8149,7 +8150,7 @@ async fn start_after_capture(
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         let decision =
             decide(|| core_start::decide_start_destination(&view, recording, smart_enabled, now));
         expect_valid(&decision);
@@ -8191,7 +8192,7 @@ async fn start_after_capture(
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         #[cfg(feature = "dictation-shadow")]
         let seen_status = capture::SeenStatus::new();
         let decision = context_guard.consume(|op_status| {

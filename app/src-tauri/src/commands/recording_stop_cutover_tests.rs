@@ -13,9 +13,9 @@
 //! | `process_audio_inner#1` | 301.6 | the legacy import's destination row |
 //!
 //! Sites 202.1/202.2 (context present), the stale stop (R201.1) and 206 are D-less: their
-//! lock-free reads stay. The delivery and capture queries (402, 403) are shared with the
-//! start family and move with the **start** cutover, so the import still reads `project()`
-//! once, for query 402 (counted below, by name).
+//! lock-free reads stay. The delivery and capture queries (402, 403) were shared with the
+//! start family and moved with the **start** cutover, so the import's capture check (402) no
+//! longer reaches `project()` either: no fixture below reaches it at all.
 //!
 //! What each test proves, and why the golden invariant alone is not enough:
 //!
@@ -241,8 +241,8 @@ struct Case {
     body: fn(&Arc<World>),
     /// The stop entries the run reads, in order.
     entries: &'static [&'static str],
-    /// `DictationCore::project` entries the run is still expected to make: the other
-    /// families' queries that stay on `project()` until their own cutover.
+    /// `DictationCore::project` entries the run is expected to make: none, since the start
+    /// cutover moved the queries the import shared with start (402) too.
     queries: u64,
     /// Where a divergence is planted so that `entries[planted_entry]` is the first read
     /// after it: `(plant, index into entries)`.
@@ -466,7 +466,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_accepted,
             entries: &[E301, E204A, E204B],
-            queries: 1,
+            queries: 0,
             plant: Some((Plant::Now, 0)),
         },
         Case {
@@ -474,7 +474,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_accepted,
             entries: &[E301, E204A, E204B],
-            queries: 1,
+            queries: 0,
             plant: Some((Plant::AtBarrier("process_audio.accepted"), 1)),
         },
         Case {
@@ -482,7 +482,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_accepted,
             entries: &[E301, E204A, E204B],
-            queries: 1,
+            queries: 0,
             plant: Some((Plant::AtBarrier("pipeline_idle_emit"), 2)),
         },
         Case {
@@ -490,7 +490,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_with_destination,
             entries: &[E301, E3016, E204A, E204B],
-            queries: 1,
+            queries: 0,
             plant: Some((Plant::AtPort("import.capture"), 1)),
         },
         Case {
@@ -498,7 +498,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_parse_failure,
             entries: &[E301, E204A],
-            queries: 1,
+            queries: 0,
             plant: Some((Plant::AtBarrier("process_audio.accepted"), 1)),
         },
     ]
@@ -563,14 +563,14 @@ fn no_stop_entry_projects() {
     let spans = fn_spans(&source);
 
     // By source: none of the stop entries names the `project()` entry; each names the
-    // persisted one once per D entry it holds. `process_audio_inner` keeps exactly one
-    // `project_lifecycle_view`: query 402, shared with the start family.
+    // persisted one once per D entry it holds. `process_audio_inner`'s query 402 moved with
+    // the start cutover, so none of them names `project_lifecycle_view` any more.
     for (function, views, projections) in [
         ("stop_native_recording_admitted", 2, 0),
         ("run_stop_capture_rows", 1, 0),
         ("finish_section", 1, 0),
         ("run_pipeline_idle_emit", 1, 0),
-        ("process_audio_inner", 2, 1),
+        ("process_audio_inner", 2, 0),
     ] {
         assert_eq!(
             lines_with(&source, &spans, function, "FieldAdapter::stop_view(").len(),
@@ -601,7 +601,7 @@ fn no_stop_entry_projects() {
         );
         assert_eq!(
             run.projections, case.queries,
-            "{}: `DictationCore::project` was reached beyond the shared query",
+            "{}: `DictationCore::project` was reached",
             case.name
         );
         assert_eq!(

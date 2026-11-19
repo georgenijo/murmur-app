@@ -241,7 +241,7 @@ fn a_start_nested_in_a_port_emit_is_refused_before_any_lock() {
 /// Dropping R104.5's `status == Starting` guard makes it publish `Recording` over
 /// `Recovering`: this test fails (the mutation check in the PR).
 #[test]
-fn a_late_ready_publish_after_a_runtime_failure_publishes_nothing() {
+pub(super) fn a_late_ready_publish_after_a_runtime_failure_publishes_nothing() {
     let lines = run_sub_run(&SubRun {
         title: "late publish",
         setup: Setup::idle(),
@@ -1439,7 +1439,7 @@ const STARTING_EMIT: &str = "emit recording-status-changed \"starting\"";
 /// event, the capture start, the `recording` publish) is unchanged. The speculative
 /// branch is outside the seeded model (#1160, start).
 #[test]
-fn a_flowing_speculative_capture_suppresses_the_redundant_starting_event() {
+pub(super) fn a_flowing_speculative_capture_suppresses_the_redundant_starting_event() {
     let control = run_sub_run(&SubRun {
         title: "speculative capture not flowing",
         setup: Setup::idle(),

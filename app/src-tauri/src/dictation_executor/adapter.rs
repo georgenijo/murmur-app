@@ -279,6 +279,61 @@ impl FieldAdapter {
         )
     }
 
+    /// The decision view of the start family's D entries after the cutover (C9.7 b, C8.6):
+    /// site 101 (R101.3-.15, `decide_start_request`), 102 (the capture-failure section), 103.0
+    /// (`decide_start_destination`), 103 (the context install) and 104 (the ready publish,
+    /// R104.2-.7).
+    /// Exactly [`Self::lifecycle_view`] for the start family: the same persisted M1/M2, the same
+    /// M3 atomic, M4 left `None` (no start decide reads it; the context presence is a
+    /// `NeedObservation`), the same C8.6 count-and-re-sync. A test build records its reads
+    /// apart, with the caller (`probe::start_entry`), so a start test sees only start entries
+    /// and which one.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn start_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            super::probe::start_entry,
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
+    /// The view the queries that hold only `&DictationState` read after the cutover: 401/404
+    /// (the ticker registration, `register_partial_ticker_locked`, whose caller under the ready
+    /// entry's D hold is handed the shared reference by the `Ports` trait) and 403 (the
+    /// delivery ownership fence, held across a paste, not a decision). They read the persisted
+    /// M1/M2, not `DictationCore::project` over the live fields, and the same M3 atomic. A query is
+    /// not a decision entry, so it **counts** a persisted/live difference (`core_divergences`)
+    /// but cannot re-sync: the next entry does, under its own D hold (and R104.2's `SD` runs right
+    /// after the ready entry's own [`Self::start_view`] re-synced). The query that owns a D guard
+    /// of its own (402, after the destination capture) takes [`Self::start_view`] and re-syncs
+    /// like an entry.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn start_query_view(app: &AppState, dictation: &DictationState) -> DictationCore {
+        #[cfg(test)]
+        super::probe::view();
+        let live_status = core_status(dictation.status);
+        let live_id = RecordingId(app.recording_id.load(Ordering::SeqCst));
+        #[cfg(test)]
+        super::probe::start_query(
+            (dictation.core.status(), dictation.core.current_id()),
+            (live_status, live_id),
+            std::panic::Location::caller(),
+        );
+        if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
+            CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
+        }
+        DictationCore::new(
+            dictation.core,
+            LiveObs {
+                cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
+                context_for: None,
+            },
+        )
+    }
+
     /// The one body of the cut-over views (see [`Self::lifecycle_view`]). `record` and
     /// `caller` are the family's probe and the entry's call site in a test build.
     fn persisted_view(

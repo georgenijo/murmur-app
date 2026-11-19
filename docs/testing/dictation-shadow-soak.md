@@ -414,7 +414,7 @@ cargo test --lib --features dictation-shadow headers_leave_d -- --test-threads=1
 
 # The rest of the shadow tests, as CI runs them.
 cargo nextest run --lib --features dictation-shadow \
-  -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/) | test(/lifecycle_cutover_tests::/) | test(/stop_cutover_tests::/) | test(/cancel_cutover_tests::/)'
+  -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/) | test(/lifecycle_cutover_tests::/) | test(/stop_cutover_tests::/) | test(/cancel_cutover_tests::/) | test(/start_cutover_tests::/)'
 ```
 
 CI also runs clippy with the feature (`cargo clippy --all-targets --features
