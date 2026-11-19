@@ -147,6 +147,7 @@ pub(super) fn serialized() -> Probes {
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let gate = GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     probe::take_stop_entries();
+    crate::commands::settings_store::test_data_dir::take_returned();
     probe::record_stop_entries(true);
     Probes(gate)
 }
@@ -510,6 +511,7 @@ fn run_case(case: &Case, plan: Plant) -> Run {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     probe::take_stop_entries();
+    crate::commands::settings_store::test_data_dir::take_returned();
     let projections = probe::projections();
     let divergences = core_divergences();
     let sub_run = SubRun {
@@ -519,12 +521,30 @@ fn run_case(case: &Case, plan: Plant) -> Run {
     };
     let trace = run_sub_run(&sub_run);
     PLAN.with(|slot| *slot.borrow_mut() = Plant::Nowhere);
+    // The stop fixtures read no store and no data directory (the harness's pipeline, ticker
+    // and VAD are stand-ins): `data_dir` returned nothing, sandboxed or real. A fixture
+    // that needed one would take `vad_stream::StoreOverride` and a sandbox first.
+    assert_eq!(
+        crate::commands::settings_store::test_data_dir::take_returned(),
+        Vec::<std::path::PathBuf>::new(),
+        "{}: a stop fixture resolved the data directory",
+        case.name
+    );
     Run {
         entries: labelled(probe::take_stop_entries()),
         projections: probe::projections() - projections,
         divergences: core_divergences() - divergences,
         trace,
     }
+}
+
+/// Nothing since the last drain resolved the data directory (sandboxed or real).
+fn assert_no_data_dir(name: &str) {
+    assert_eq!(
+        crate::commands::settings_store::test_data_dir::take_returned(),
+        Vec::<std::path::PathBuf>::new(),
+        "{name}: a stop fixture resolved the data directory"
+    );
 }
 
 fn names(run: &Run) -> Vec<&str> {
@@ -952,6 +972,7 @@ fn bug_216_a_stop_queued_behind_a_start_runs_the_switched_entries_on_the_started
         ],
         "the stop's entries read the core the start published"
     );
+    assert_no_data_dir("216");
 }
 
 /// The late-idle fence (R204b.4, C3.5) through the switched entries: a newer start lands
@@ -1027,4 +1048,5 @@ fn the_late_idle_fence_holds_through_the_switched_entries() {
         ],
         "204b read the newer generation"
     );
+    assert_no_data_dir("late idle fence");
 }
