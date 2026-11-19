@@ -98,15 +98,26 @@ pub(crate) struct Transport {
     seq: AtomicU64,
     /// Next recorder id.
     rec: AtomicU64,
-    /// Shutdown has begun (D-S2c-15 review, major 2): a push after it is refused and
-    /// counted in `after_close`, so nothing can enter the queue behind the final drain.
-    closing: AtomicBool,
-    /// Pushes between their entry and their end. Shutdown waits for it to reach 0
-    /// after it sets `closing`, so a push that passed the check is queued before the
-    /// final drain looks.
-    inflight: AtomicU64,
-    /// Messages refused because shutdown had begun.
-    after_close: AtomicU64,
+    /// Shutdown has begun (D-S2c-15 review, round 3): a publish after it is refused and
+    /// counted in `rejected_after_close`, so nothing enters the queue behind the final
+    /// snapshot.
+    closed: AtomicBool,
+    /// Every publish attempt, counted **before** the attempt: one `SeqCst` increment, the
+    /// whole of the live side's cost. Each attempt ends as exactly one of: queued (and so
+    /// popped), rejected by the queue (`push_lost`), or refused by the close
+    /// (`rejected_after_close`). Shutdown waits, on the comparison thread, until the three
+    /// add up to this ([`Transport::settled`]); a live thread never waits for it.
+    published_attempts: AtomicU64,
+    /// Messages the consumer took off the queue (written by the comparison thread only).
+    popped: AtomicU64,
+    /// Attempts the queue rejected (full or contended); a part of `lost`.
+    push_lost: AtomicU64,
+    /// Attempts refused because shutdown had begun.
+    rejected_after_close: AtomicU64,
+    /// Test seam: runs on the comparison thread once, after the final drain and before the
+    /// final snapshot is written (a producer resuming at the boundary).
+    #[cfg(test)]
+    boundary_hook: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
     sync: AtomicBool,
     #[cfg(test)]
@@ -124,9 +135,13 @@ impl Transport {
             overflow: AtomicU64::new(0),
             seq: AtomicU64::new(1),
             rec: AtomicU64::new(REC_BASE),
-            closing: AtomicBool::new(false),
-            inflight: AtomicU64::new(0),
-            after_close: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+            published_attempts: AtomicU64::new(0),
+            popped: AtomicU64::new(0),
+            push_lost: AtomicU64::new(0),
+            rejected_after_close: AtomicU64::new(0),
+            #[cfg(test)]
+            boundary_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             sync: AtomicBool::new(false),
             #[cfg(test)]
@@ -136,7 +151,12 @@ impl Transport {
 
     /// The consumer's side: the next queued message.
     pub(crate) fn pop(&self) -> Option<ShadowMsg> {
-        self.queue.pop()
+        let msg = self.queue.pop();
+        if msg.is_some() {
+            // Only the comparison thread pops, so this is a plain count.
+            self.popped.fetch_add(1, Ordering::SeqCst);
+        }
+        msg
     }
 
     /// The ring's capacity.
@@ -243,52 +263,79 @@ impl Transport {
 
     /// The live path: one `try_push`, one attempt. A rejected message is counted
     /// against its flight's site and nothing else is done with it.
+    ///
+    /// The attempt is counted first, then `closed` is read (both `SeqCst`): either shutdown
+    /// sees the attempt and waits for it to settle, or the attempt sees `closed` and is
+    /// refused (and counted). Nothing here waits, blocks or takes a lock.
     fn push(&self, msg: ShadowMsg, site: u16) {
-        // Enter, then check `closing` (both `SeqCst`): either shutdown sees this push
-        // in `inflight` and waits for it, or this push sees `closing` and refuses.
-        self.inflight.fetch_add(1, Ordering::SeqCst);
-        if self.closing.load(Ordering::SeqCst) {
-            self.after_close.fetch_add(1, Ordering::Relaxed);
+        self.published_attempts.fetch_add(1, Ordering::SeqCst);
+        if self.closed.load(Ordering::SeqCst) {
+            self.rejected_after_close.fetch_add(1, Ordering::SeqCst);
         } else if let Err(rejected) = self.queue.try_push(msg) {
             if rejected.reason == Rejection::Contention {
                 self.contended.fetch_add(1, Ordering::Relaxed);
             }
             self.lose(site);
+            self.push_lost.fetch_add(1, Ordering::SeqCst);
         }
-        self.inflight.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// Shutdown, the consumer's side: refuse every later push, then wait (up to `limit`)
-    /// for the pushes already past the check to finish. Returns whether the producers
-    /// were quiet in time. After `true`, the queue holds every message that will ever
-    /// be published; after `false` the summary says a push may still land.
-    pub(crate) fn close_and_quiesce(&self, limit: std::time::Duration) -> bool {
-        self.closing.store(true, Ordering::SeqCst);
-        let deadline = std::time::Instant::now() + limit;
-        while self.inflight.load(Ordering::SeqCst) > 0 {
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::yield_now();
+    /// Shutdown, the comparison thread's side: refuse every later publish.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    /// Attempts not yet accounted for: queued and not popped, still inside the push, or
+    /// rejected and not yet counted. `0` means the queue holds every message that will
+    /// ever be published, and the consumer has them all. The settled count is read first
+    /// and the attempts after it, so an attempt that is still under way can only show as
+    /// unsettled, never as settled.
+    pub(crate) fn unsettled(&self) -> u64 {
+        let settled = self
+            .popped
+            .load(Ordering::SeqCst)
+            .saturating_add(self.push_lost.load(Ordering::SeqCst))
+            .saturating_add(self.rejected_after_close.load(Ordering::SeqCst));
+        self.published_attempts
+            .load(Ordering::SeqCst)
+            .saturating_sub(settled)
+    }
+
+    /// Every publish attempt so far.
+    pub(crate) fn published_attempts(&self) -> u64 {
+        self.published_attempts.load(Ordering::SeqCst)
+    }
+
+    /// Attempts refused because shutdown had begun.
+    pub(crate) fn rejected_after_close(&self) -> u64 {
+        self.rejected_after_close.load(Ordering::SeqCst)
+    }
+
+    /// Test seam: an attempt counted and paused before it was queued or refused.
+    #[cfg(test)]
+    pub(crate) fn attempt_for_test(&self) {
+        self.published_attempts.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Test seam: the paused attempt was refused.
+    #[cfg(test)]
+    pub(crate) fn settle_for_test(&self) {
+        self.rejected_after_close.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Test seam: what runs on the comparison thread after the final drain.
+    #[cfg(test)]
+    pub(crate) fn set_boundary_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.boundary_hook.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    /// Test seam: run the boundary hook, if one was set.
+    #[cfg(test)]
+    pub(crate) fn run_boundary_hook(&self) {
+        let hook = self.boundary_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
         }
-        true
-    }
-
-    /// Messages refused because shutdown had begun.
-    pub(crate) fn after_close(&self) -> u64 {
-        self.after_close.load(Ordering::Relaxed)
-    }
-
-    /// Test seam: a push paused between its entry and its end.
-    #[cfg(test)]
-    pub(crate) fn hold_inflight_for_test(&self) {
-        self.inflight.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Test seam: the paused push ends.
-    #[cfg(test)]
-    pub(crate) fn release_inflight_for_test(&self) {
-        self.inflight.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// One message lost: the site's counter, then the global one (`Release`), so a

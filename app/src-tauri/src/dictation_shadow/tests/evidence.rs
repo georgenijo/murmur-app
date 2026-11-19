@@ -3,6 +3,7 @@
 //! persisted-core divergence count, and the reply's `state` and error class.
 
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::Duration;
 
 use murmur_dictation_core::replies::{ErrText, ProcessAudioRefusal, Reply, ReplyType};
@@ -570,35 +571,76 @@ fn reply_kinds_carry_closed_content_free_discriminants() {
     assert!(!fixed.agrees(unclassified) && !fixed.is_unclassified_agreement(unclassified));
 }
 
-// ------------------------------------------------- major 2: shutdown quiesces the producers
+// ------------------------------------- major 2: shutdown accounts for every publish attempt
 
-/// After shutdown begins, a push is refused and counted, never queued behind the final
-/// drain; nothing is lost or abandoned by it.
+/// After shutdown begins, a publish is refused and counted, never queued behind the final
+/// drain; nothing is lost or abandoned by it, and it is in the books as an attempt.
 #[test]
 fn a_push_after_shutdown_began_is_refused_and_counted() {
     let transport = local_transport(8);
     let recorder = transport.recorder();
-    assert!(transport.close_and_quiesce(Duration::from_millis(50)));
+    transport.close();
     crate::dictation_shadow::transport::mark(
         &recorder,
         crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
     );
     assert_eq!(transport.unconsumed(), 0, "nothing entered the queue");
-    assert_eq!(transport.after_close(), 1);
+    assert_eq!(transport.published_attempts(), 1);
+    assert_eq!(transport.rejected_after_close(), 1);
+    assert_eq!(transport.unsettled(), 0);
     assert_eq!(transport.lost(), 0, "a refused push is not a loss");
 }
 
-/// The final summary names every message the producers published after shutdown began:
-/// a complete flight with a wrong reply that arrives at the boundary is not silently
-/// absent from a summary that says it is final and clean.
+/// An attempt that is counted and not yet queued, rejected or consumed is unsettled; a
+/// queued message is unsettled until the consumer takes it.
 #[test]
-fn a_flight_published_at_the_shutdown_boundary_is_reported_never_silently_absent() {
+fn an_attempt_is_unsettled_until_it_is_queued_and_consumed_or_refused() {
+    let transport = local_transport(8);
+    let recorder = transport.recorder();
+    assert_eq!(transport.unsettled(), 0);
+    crate::dictation_shadow::transport::mark(
+        &recorder,
+        crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+    );
+    assert_eq!(transport.published_attempts(), 1);
+    assert_eq!(transport.unsettled(), 1, "queued, not consumed");
+    assert!(transport.pop().is_some());
+    assert_eq!(transport.unsettled(), 0);
+    transport.attempt_for_test();
+    assert_eq!(
+        transport.unsettled(),
+        1,
+        "counted, not yet queued or refused"
+    );
+    transport.settle_for_test();
+    assert_eq!(transport.unsettled(), 0);
+}
+
+/// A rejected push (the queue is full) is settled by the loss count.
+#[test]
+fn a_push_the_queue_rejected_is_settled_as_lost() {
+    let transport = local_transport(2);
+    let recorder = transport.recorder();
+    for _ in 0..8 {
+        crate::dictation_shadow::transport::mark(
+            &recorder,
+            crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+        );
+    }
+    assert!(transport.lost() > 0);
+    while transport.pop().is_some() {}
+    assert_eq!(transport.published_attempts(), 8);
+    assert_eq!(transport.unsettled(), 0);
+}
+
+/// The Sol round-3 scenario: a producer resumes after the final drain, and its wrong
+/// reply is refused. The final file must say so, whatever it said at the drain: the
+/// shutdown accounting is sampled last.
+#[test]
+fn a_flight_published_after_the_final_drain_is_reported_never_silently_absent() {
     let dir = scratch("boundary");
     let transport = default_transport();
     let control = Control::new();
-    // Shutdown has begun (the producers see it) ...
-    assert!(transport.close_and_quiesce(Duration::from_millis(50)));
-    // ... and a whole flight, its reply wrong, is published behind it.
     let recorder = transport.recorder();
     let mut flight = stale_stop(0, 0);
     *flight
@@ -609,13 +651,10 @@ fn a_flight_published_at_the_shutdown_boundary_is_reported_never_silently_absent
             _ => None,
         })
         .unwrap() = ReplyKind::Err;
-    submit_header(&recorder, &flight);
-    send_later(&recorder, &flight);
-    let sent = transport.after_close();
-    assert!(
-        sent >= 3,
-        "header, effects, reply and close were refused: {sent}"
-    );
+    transport.set_boundary_hook(move || {
+        submit_header(&recorder, &flight);
+        send_later(&recorder, &flight);
+    });
     control.request_shutdown();
     crate::dictation_shadow::run(
         &transport,
@@ -626,19 +665,21 @@ fn a_flight_published_at_the_shutdown_boundary_is_reported_never_silently_absent
     );
     let summary = read_summary(&dir);
     assert_eq!(summary["final"], true);
-    assert_eq!(summary["dropped_after_shutdown"], sent, "{summary}");
-    assert!(summary["dropped_after_shutdown"].as_u64().unwrap() > 0);
+    let dropped = summary["dropped_after_shutdown"].as_u64().unwrap();
+    assert!(dropped >= 3, "header, effects, reply and close: {summary}");
+    assert_eq!(summary["published_attempts"], dropped, "{summary}");
+    assert_eq!(summary["shutdown_quiesced"], false, "{summary}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A push still under way when the deadline passes is reported: `shutdown_quiesced`
-/// is false, and the pass is tainted by it.
+/// An attempt that does not settle by the deadline is reported: `shutdown_quiesced` is
+/// false and the count of what was unaccounted for is in the file.
 #[test]
-fn a_producer_that_does_not_go_quiet_by_the_deadline_is_reported() {
+fn an_attempt_that_does_not_settle_by_the_deadline_is_reported() {
     let dir = scratch("quiesce-fail");
     let transport = default_transport();
     let control = Control::new();
-    transport.hold_inflight_for_test();
+    transport.attempt_for_test();
     control.request_shutdown();
     crate::dictation_shadow::run(
         &transport,
@@ -647,9 +688,46 @@ fn a_producer_that_does_not_go_quiet_by_the_deadline_is_reported() {
         &control,
         Duration::from_millis(1),
     );
-    transport.release_inflight_for_test();
     let summary = read_summary(&dir);
     assert_eq!(summary["shutdown_quiesced"], false, "{summary}");
+    assert_eq!(summary["shutdown_unsettled"], 1, "{summary}");
+    assert_eq!(summary["published_attempts"], 1, "{summary}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The comparison thread waits for an attempt in progress: it is settled by the producer a
+/// moment later, the wait ends, and the file says what happened (a refusal is a taint).
+#[test]
+fn shutdown_waits_for_an_attempt_in_progress() {
+    let dir = scratch("quiesce-wait");
+    let transport = default_transport();
+    let control = Control::new();
+    transport.attempt_for_test();
+    let producer = {
+        let transport = Arc::clone(&transport);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            transport.settle_for_test();
+        })
+    };
+    control.request_shutdown();
+    let started = std::time::Instant::now();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    producer.join().unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(30), "it waited");
+    let summary = read_summary(&dir);
+    assert_eq!(summary["shutdown_unsettled"], 0, "{summary}");
+    assert_eq!(summary["dropped_after_shutdown"], 1, "{summary}");
+    assert_eq!(
+        summary["shutdown_quiesced"], false,
+        "a refusal taints: {summary}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -658,6 +736,12 @@ fn a_quiet_shutdown_says_so() {
     let dir = scratch("quiesce-ok");
     let transport = default_transport();
     let control = Control::new();
+    // A message published before shutdown is queued, consumed and accounted for.
+    let recorder = transport.recorder();
+    crate::dictation_shadow::transport::mark(
+        &recorder,
+        crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+    );
     control.request_shutdown();
     crate::dictation_shadow::run(
         &transport,
@@ -669,11 +753,17 @@ fn a_quiet_shutdown_says_so() {
     let summary = read_summary(&dir);
     assert_eq!(summary["shutdown_quiesced"], true, "{summary}");
     assert_eq!(summary["dropped_after_shutdown"], 0);
+    assert_eq!(summary["shutdown_unsettled"], 0);
+    assert_eq!(summary["published_attempts"], 1);
     // A periodic summary has no such claim.
-    assert!(Stats::default()
-        .to_json()
-        .get("shutdown_quiesced")
-        .is_none());
+    let periodic = Stats::default().to_json();
+    for key in [
+        "shutdown_quiesced",
+        "published_attempts",
+        "shutdown_unsettled",
+    ] {
+        assert!(periodic.get(key).is_none(), "{key}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -729,15 +819,48 @@ fn the_generated_site_map_agrees_with_the_rules_and_names_get_status_non_family(
 }
 
 /// A location the map does not name is reported as unclassified, never assumed to be a
-/// non-family read.
+/// non-family read; it stays in the entries.
 #[test]
 fn a_location_outside_the_map_is_counted_unclassified() {
-    use crate::dictation_shadow::sites::{lookup, non_family_counts, note, Site};
+    use crate::dictation_shadow::sites::{lookup, note, report, Site};
     let at = here();
     assert_eq!(lookup(at), Site::Unmapped);
-    let (_, before) = non_family_counts();
+    let before = report();
     note(at);
     note(at);
-    let (_, after) = non_family_counts();
-    assert_eq!(after - before, 2);
+    let after = report();
+    assert_eq!(after.unclassified - before.unclassified, 2);
+    assert_eq!(after.noted - before.noted, 2);
+    assert_eq!(after.family_entries() - before.family_entries(), 2);
+}
+
+/// The entries' family part comes from one snapshot: the total less the named non-family
+/// part, so it cannot fall below what the snapshot holds, whatever lands meanwhile.
+#[test]
+fn the_family_entries_come_from_one_snapshot() {
+    use crate::dictation_shadow::sites::Report;
+    let report = Report {
+        noted: 5,
+        non_family: [("a:1".to_string(), 2)].into_iter().collect(),
+        unclassified: 0,
+    };
+    assert_eq!(report.family_entries(), 3);
+    // A writer noting while snapshots are taken: each snapshot is self-consistent.
+    use crate::dictation_shadow::sites::{note, report as snapshot};
+    let at = here();
+    let writer = std::thread::spawn(move || {
+        for _ in 0..20_000 {
+            note(at);
+        }
+    });
+    let mut last = 0;
+    for _ in 0..200 {
+        let now = snapshot();
+        assert!(now.noted >= last, "noted never goes back");
+        assert!(
+            now.noted >= now.non_family.values().sum::<u64>() + now.unclassified.min(now.noted)
+        );
+        last = now.noted;
+    }
+    writer.join().unwrap();
 }

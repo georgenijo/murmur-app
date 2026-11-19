@@ -15,18 +15,21 @@ pub(crate) fn core_divergences() -> u64 {
     crate::dictation_executor::adapter::core_divergences()
 }
 
-/// The live shell's entry/header books: the raw counters less the named non-family
-/// acquisitions of D, which are reported on their own.
+/// The live shell's entry/header books (D-S2c-15 S3). The shell's outcome counters are read
+/// first and its D-less entries next; the acquisitions of D come from one snapshot of the
+/// site table, read last, and the entries are that snapshot's total less its named
+/// non-family part. A non-family read (the resource monitor's, say) that lands while the
+/// summary is written is in the snapshot's total and its non-family part, or in neither:
+/// it can never subtract from entries something the entries did not count.
 pub(crate) fn conservation() -> ConservationReport {
     let raw: ConservationCounts = crate::dictation_executor::shadow::conservation_counts();
-    let (non_family, unclassified) = sites::non_family_counts();
-    let named: u64 = non_family.values().sum();
+    let sites = sites::report();
     ConservationReport {
         total: ConservationCounts {
-            entries: raw.entries.saturating_sub(named),
+            entries: raw.entries.saturating_add(sites.family_entries()),
             ..raw
         },
-        non_family,
-        unclassified,
+        non_family: sites.non_family,
+        unclassified: sites.unclassified,
     }
 }

@@ -144,11 +144,14 @@ pub(crate) fn dictation_lock_taken<T>(at: &'static std::panic::Location<'static>
     if crate::dictation_shadow::replay::not_a_decision_section(at) {
         return;
     }
-    // A native build cannot read source files here: the acquisition's site is noted in
-    // a fixed lock-free table and classified by the comparison thread when it writes
-    // the summary (`sites::non_family_counts`).
+    // A native build cannot read source files here: the acquisition is counted at its
+    // site in a fixed lock-free table, and the comparison thread classifies the table when
+    // it writes the summary. Entries and the non-family reads they include come from that
+    // one table, so a read the resource monitor makes between two snapshots cannot be in
+    // one count and not the other (`sites::report`).
     #[cfg(not(test))]
     crate::dictation_shadow::sites::note(at);
+    #[cfg(test)]
     ENTRIES.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -157,7 +160,7 @@ pub(crate) fn dictation_lock_taken<T>(at: &'static std::panic::Location<'static>
 /// implied.
 pub(crate) fn no_decision() {
     if crate::dictation_shadow::enabled() {
-        NO_DECISION.fetch_add(1, Ordering::Relaxed);
+        NO_DECISION.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -174,14 +177,22 @@ static UNRENDERED: AtomicU64 = AtomicU64::new(0);
 static NO_REPLY: AtomicU64 = AtomicU64::new(0);
 
 /// The entry/header books so far, as the raw counters (D-S2c-15 S3: read by the comparison
-/// thread for the summary). In a native build `entries` still holds the named non-family
-/// acquisitions of D (`sites::non_family_counts` names them); test builds never count them.
+/// thread for the summary). In a native build `entries` holds the D-less entries only: the
+/// acquisitions of D are counted in the site table (`sites::report`), and the summary adds
+/// its family part. Test builds count every decision section here.
+///
+/// The outcomes are read first (`Acquire`, each written `Release` after its section's
+/// entry), the entries after them: a section that has an outcome here has its entry, so the
+/// books can only show a section still in flight, never an outcome with no entry.
 pub(crate) fn conservation_counts() -> crate::dictation_shadow::summary::ConservationCounts {
+    let headers = HEADERS.load(Ordering::Acquire);
+    let no_decision = NO_DECISION.load(Ordering::Acquire);
+    let unwound = UNWOUND.load(Ordering::Acquire);
     crate::dictation_shadow::summary::ConservationCounts {
-        entries: ENTRIES.load(Ordering::Relaxed),
-        headers: HEADERS.load(Ordering::Relaxed),
-        no_decision: NO_DECISION.load(Ordering::Relaxed),
-        unwound: UNWOUND.load(Ordering::Relaxed),
+        entries: ENTRIES.load(Ordering::Acquire),
+        headers,
+        no_decision,
+        unwound,
     }
 }
 
@@ -368,7 +379,7 @@ impl Drop for Live {
         if self.in_decision.get() {
             let site = self.header.get_mut().as_ref().map_or(0, |h| h.site_id);
             drop(self.rec.ticket(site));
-            UNWOUND.fetch_add(1, Ordering::Relaxed);
+            UNWOUND.fetch_add(1, Ordering::Release);
         }
     }
 }
@@ -1200,7 +1211,7 @@ impl Sealed<'_> {
             crate::barrier_hook::at("shadow.submit");
         }
         transport::submit(ticket, header);
-        HEADERS.fetch_add(1, Ordering::Relaxed);
+        HEADERS.fetch_add(1, Ordering::Release);
         live.submitted.set(true);
         let queued = std::mem::take(&mut *live.deferred.borrow_mut());
         for message in queued.iter() {

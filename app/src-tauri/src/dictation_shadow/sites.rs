@@ -10,12 +10,13 @@
 //!
 //! * Test builds apply the rules in the guard ([`classify`] reads the source), so a named
 //!   or test site is not counted at all.
-//! * A native build notes each acquisition's location in a fixed lock-free table
+//! * A native build counts each acquisition at its location in a fixed lock-free table
 //!   ([`note`]: a few atomics, no allocation, no lock, no wait) and the comparison thread
-//!   looks the table up in the map when it writes the summary ([`non_family_counts`]).
-//!   `conservation.non_family` is its non-family part, by `file:line`; the entries
-//!   reported are the raw count minus those. A location the map does not name stays in
-//!   the entries and is counted as unclassified, so it unbalances the books instead of
+//!   looks the table up in the map when it writes the summary ([`report`]). The entries
+//!   reported are the table's total less its non-family part (`conservation.non_family`,
+//!   by `file:line`), both from the one snapshot: a read another thread makes while the
+//!   summary is written is in both or in neither. A location the map does not name stays
+//!   in the entries and is counted as unclassified, so it unbalances the books instead of
 //!   hiding.
 //!
 //! The books are reconciled in total, not by site: the entry, the header and the outcome
@@ -139,34 +140,74 @@ pub(crate) fn overflow() -> u64 {
     OVERFLOW.load(Ordering::Relaxed)
 }
 
-/// Every site noted so far with its count. A slot claimed a moment ago whose location
-/// is not published yet is skipped: its count appears at the next write.
-pub(crate) fn snapshot() -> Vec<(&'static Location<'static>, u64)> {
-    TABLE
-        .iter()
-        .filter_map(|slot| {
-            let at = slot.at.get()?;
-            Some((*at, slot.count.load(Ordering::Relaxed)))
-        })
-        .collect()
+/// Every site noted so far with its count. A slot claimed a moment ago has its location
+/// published a few instructions later: this thread (never a live one) waits a bounded time
+/// for it, and returns the count of a slot whose location never shows separately, so no
+/// acquisition is left out of the snapshot.
+pub(crate) fn snapshot() -> (Vec<(&'static Location<'static>, u64)>, u64) {
+    let mut sites = Vec::new();
+    let mut unpublished = 0_u64;
+    for slot in TABLE.iter() {
+        if slot.key.load(Ordering::Acquire) == 0 {
+            continue;
+        }
+        let mut at = slot.at.get();
+        for _ in 0..1000 {
+            if at.is_some() {
+                break;
+            }
+            std::thread::yield_now();
+            at = slot.at.get();
+        }
+        match at {
+            Some(at) => sites.push((*at, slot.count.load(Ordering::Acquire))),
+            None => unpublished += slot.count.load(Ordering::Acquire),
+        }
+    }
+    (sites, unpublished)
 }
 
-/// The non-family acquisitions noted so far, by `file:line`, and the count of those the
-/// build's map does not name. Looks each noted site up once (the comparison thread calls
-/// this at each summary write; it reads no file).
-pub(crate) fn non_family_counts() -> (BTreeMap<String, u64>, u64) {
-    let mut named = BTreeMap::new();
-    let mut unclassified = overflow();
-    for (at, count) in snapshot() {
+/// One snapshot of the table (D-S2c-15 review, round 3).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Report {
+    /// Every acquisition noted, in the table or past its end.
+    pub noted: u64,
+    /// The non-family part of `noted`, by `file:line`.
+    pub non_family: BTreeMap<String, u64>,
+    /// The part of `noted` the build's map does not name (or the table could not hold).
+    pub unclassified: u64,
+}
+
+impl Report {
+    /// Acquisitions that are decision-section entries: all but the named non-family reads.
+    /// From one snapshot, so it never falls below the entries' share of it.
+    pub(crate) fn family_entries(&self) -> u64 {
+        self.noted
+            .saturating_sub(self.non_family.values().sum::<u64>())
+    }
+}
+
+/// Look every noted site up once (the comparison thread calls this at each summary write;
+/// it reads no file).
+pub(crate) fn report() -> Report {
+    let (sites, unpublished) = snapshot();
+    let mut report = Report {
+        noted: overflow() + unpublished,
+        unclassified: overflow() + unpublished,
+        ..Report::default()
+    };
+    for (at, count) in sites {
+        report.noted += count;
         match lookup(at) {
             Site::NonFamily => {
-                *named
+                *report
+                    .non_family
                     .entry(format!("{}:{}", at.file(), at.line()))
                     .or_default() += count;
             }
-            Site::Unmapped => unclassified += count,
+            Site::Unmapped => report.unclassified += count,
             Site::Test | Site::Family => {}
         }
     }
-    (named, unclassified)
+    report
 }
