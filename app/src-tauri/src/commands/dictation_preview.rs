@@ -195,7 +195,6 @@ impl HideOwnership {
     /// Record the ticker's generation. Recording ids only grow, so a stale
     /// generation resuming late is refused atomically instead of replacing
     /// its successor's registration.
-    #[cfg_attr(feature = "dictation-shadow", allow(dead_code))]
     pub(crate) fn ticker_started(&self, recording_id: u64) -> bool {
         recording_id > 0 && self.ticker.fetch_max(recording_id, Ordering::SeqCst) <= recording_id
     }
@@ -237,7 +236,6 @@ static OWNERSHIP: HideOwnership = HideOwnership::new();
 
 /// Register the ticker for `recording_id`; `false` for an older generation.
 /// Called under the dictation lock (see `register_partial_ticker_locked`).
-#[cfg_attr(feature = "dictation-shadow", allow(dead_code))]
 pub(crate) fn note_ticker_started(recording_id: u64) -> bool {
     OWNERSHIP.ticker_started(recording_id)
 }

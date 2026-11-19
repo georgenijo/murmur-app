@@ -184,7 +184,7 @@ use tauri::{Emitter, Manager};
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
-    #[cfg_attr(feature = "dictation-shadow", track_caller)]
+    #[track_caller]
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
 
     /// Non-blocking sibling of [`MutexExt::lock_or_recover`]: recovers from
@@ -196,7 +196,7 @@ pub(crate) trait MutexExt<T> {
 }
 
 impl<T> MutexExt<T> for Mutex<T> {
-    #[cfg_attr(feature = "dictation-shadow", track_caller)]
+    #[track_caller]
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
         // The shadow counts every acquisition of the dictation lock D here, in the guard
         // function itself, so a site cannot take D without being counted (D-S2c-9 a).

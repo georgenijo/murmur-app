@@ -161,12 +161,26 @@ the diff adds lines and removes none, and every added line is behind
 **any** changed production path under `app/src-tauri/src` and `crates/*/src` (test files and
 the named shadow-only modules excluded; a rename counts as a delete plus an add) unless
 `SHADOW_DIFF_ALLOW` names it (one test-only entry today, `main_thread_watch.rs`, with its
-reason). Comments are stripped before attributes are matched, and a gate that holds only in
-a test build, or a file-level `#![cfg(..)]` added to a file the base had, fails like an
-always-false one. Files are classified from the base revision, so adding `#![cfg(test)]` to a
-production file does not exempt its deletions, and a gate that is always false
-(`cfg(any())`, `cfg(not(all()))`, ...) on a statement that exists in the base fails as
-disabling it.
+reason). The check is token based, so comments, whitespace and a spelling that hides a gate
+in a string do not change what it sees. An attribute inserted on a statement or item the base
+already had is a **closed list** (D-S2c-12 c), and nothing there is evaluated: the one `cfg`
+accepted is exactly `#[cfg(not(feature = "dictation-shadow"))]` on a statement named in
+`SHADOW_TWINS`; every other inserted `cfg` or `cfg_attr` on an existing statement is
+rejected, however it is spelled (`not (`, a raw string, `any(not(..), ..)`,
+`cfg_attr(.., cfg(..))`), as is any other attribute but the named `SHADOW_ATTR_ALLOW` entries
+(`#[track_caller]` on the dictation-lock guard function). A named statement's feature twin
+must, after token normalisation, be its original plus at most **one** insertion of a closed
+list (D-S2c-12 b): a trailing `.attach_flight(<ident>)` or one extra trailing `<ident>`
+argument, so argument order, `?`, block boundaries, `let` order and a clock read's place are
+the original's (`closed` entries). A `generate_handler!` entry of `lib.rs` is a `handler`
+entry (its wrapper command is inserted with the opposite gate). The twins that observe a value
+the original discards, or a lock's scope, cannot be expressed in that list: each is a
+`frozen` entry that pins the digest of the reviewed original and twin token streams, so
+either side changing fails until a reviewer pins the new digest. They are listed in
+`SHADOW_TWINS` by name as debt against D-S2c-12 (b), and the tests keep the seven shapes
+Sol found at `a4bc9d8d` (`tests/fixtures/shadow_twins/`) as fixtures that must fail. Files
+are classified from the base revision, so adding `#![cfg(test)]` to a production file does not
+exempt its deletions, and a file-level `#![cfg(..)]` added to a file the base had fails.
 
 How E7 counts, so a missed site cannot hide:
 

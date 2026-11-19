@@ -492,12 +492,18 @@ impl AppState {
     ) -> crate::dictation_shadow::types::MirrorWitness {
         use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
         use murmur_dictation_core::ids::RecordingId;
-        let mut active = self.active_context.lock_or_recover();
-        let before = active.as_ref().map(|context| context.recording_id);
-        *active = Some(ActiveDictationContext {
-            recording_id,
-            snapshot,
-        });
+        // The leaf guard is held exactly as long as the original holds it: only the scalar
+        // inputs of the witness leave the block, and the witness is built after the release
+        // (D-S2c-12 a).
+        let before = {
+            let mut active = self.active_context.lock_or_recover();
+            let before = active.as_ref().map(|context| context.recording_id);
+            *active = Some(ActiveDictationContext {
+                recording_id,
+                snapshot,
+            });
+            before
+        };
         MirrorWitness {
             field: MirrorField::ActiveContext,
             before: MirrorValue::Slot(before.map(RecordingId)),
@@ -551,14 +557,19 @@ impl AppState {
     ) -> (bool, crate::dictation_shadow::types::MirrorWitness) {
         use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
         use murmur_dictation_core::ids::RecordingId;
-        let mut active = self.active_context.lock_or_recover();
-        let before = active.as_ref().map(|context| context.recording_id);
-        let cleared = before == Some(recording_id);
-        if cleared {
-            *active = None;
-            self.vad_stream.clear(recording_id);
-            self.stream_reuse.lock_or_recover().clear(recording_id);
-        }
+        // As the original: the guard is held across the two clears, and only the scalars
+        // leave it; the witness is built after the release (D-S2c-12 a).
+        let (before, cleared) = {
+            let mut active = self.active_context.lock_or_recover();
+            let before = active.as_ref().map(|context| context.recording_id);
+            let cleared = before == Some(recording_id);
+            if cleared {
+                *active = None;
+                self.vad_stream.clear(recording_id);
+                self.stream_reuse.lock_or_recover().clear(recording_id);
+            }
+            (before, cleared)
+        };
         (
             cleared,
             MirrorWitness {

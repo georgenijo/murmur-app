@@ -1710,16 +1710,16 @@ pub(super) mod under_d {
     const GATES: [(&str, Gates, Gates); 17] = [
         (
             "start refused before D (Smart Auto with a fixed device)",
-            (0, 3),
-            (0, 2),
+            (0, 6),
+            (1, 5),
         ),
         (
             "start refused under D (a meeting is active)",
-            (0, 3),
-            (0, 2),
+            (0, 6),
+            (1, 5),
         ),
-        ("start refused under D (already recording)", (0, 3), (0, 2)),
-        ("stop refused (stale, R201.1)", (0, 3), (0, 2)),
+        ("start refused under D (already recording)", (0, 6), (1, 5)),
+        ("stop refused (stale, R201.1)", (0, 6), (1, 5)),
         ("stop refused (processing, R201.2)", (0, 3), (0, 2)),
         ("stop refused (idle, R201.3)", (0, 3), (0, 2)),
         (
@@ -1730,28 +1730,28 @@ pub(super) mod under_d {
         ("cancel refused (stale, R205.1)", (0, 3), (0, 2)),
         ("cancel no-op (idle, R205.2)", (0, 3), (0, 2)),
         ("cancel no-op (recovering, R205.3)", (0, 3), (0, 2)),
-        ("bridge Ready while starting (R207)", (0, 3), (2, 2)),
+        ("bridge Ready while starting (R207)", (0, 7), (3, 6)),
         (
             "bridge StillConnecting while starting (R208)",
-            (0, 2),
-            (0, 1),
+            (0, 5),
+            (1, 4),
         ),
-        ("bridge Recovering while recording (R209)", (0, 2), (0, 1)),
+        ("bridge Recovering while recording (R209)", (0, 18), (1, 17)),
         (
             "bridge CleanupFinished while recovering (R210)",
-            (0, 2),
-            (0, 1),
+            (0, 9),
+            (1, 8),
         ),
-        ("bridge Idle while recording (R211)", (0, 3), (2, 2)),
+        ("bridge Idle while recording (R211)", (0, 16), (3, 15)),
         (
             "bridge Idle while idle (short idle, R215.3/R216)",
-            (0, 2),
-            (0, 1),
+            (0, 5),
+            (1, 4),
         ),
         (
             "start accepted (R104.2, the ticker spawner under D)",
-            (0, 23),
-            (14, 16),
+            (0, 75),
+            (21, 68),
         ),
     ];
 

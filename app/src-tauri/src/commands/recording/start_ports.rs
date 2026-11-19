@@ -618,7 +618,6 @@ impl Ports for StartPorts<'_> {
 /// The command's return after a refusal: T was released by the caller, so the
 /// `PT:REL` effect now drops the claims (today's reverse-declaration drop order),
 /// then the reply.
-#[cfg_attr(feature = "dictation-shadow", allow(dead_code))]
 pub(super) fn release_and_reply(
     host: &dyn DictationHost,
     state: &State,
@@ -638,7 +637,8 @@ pub(super) fn release_and_reply(
 }
 
 /// [`release_and_reply`] with the flight whose decision the refusal's `PT:REL` runs for:
-/// the executor carries it (D-S2c-9 c).
+/// the executor carries it (D-S2c-9 c). Called only for an **active** flight: a disarmed
+/// run takes the original helper.
 #[cfg(feature = "dictation-shadow")]
 pub(super) fn release_and_reply_observed(
     host: &dyn DictationHost,
@@ -650,8 +650,12 @@ pub(super) fn release_and_reply_observed(
     flight: &crate::dictation_executor::shadow::Flight,
 ) -> Result<serde_json::Value, String> {
     let ports = StartPorts::new(host, state, slots, Some(recording_id));
-    let mut exec = executor(&ports, decision.clone(), false);
-    exec.attach_flight(flight);
-    run_phase(&mut exec, Placement::PostT, None, recording_id);
+    // The executor, with its clone of the decision, is gone before the reply is rendered,
+    // as the original helper's temporary is (D-S2c-12 a).
+    {
+        let mut exec = executor(&ports, decision.clone(), false);
+        exec.bind_flight(flight);
+        run_phase(&mut exec, Placement::PostT, None, recording_id);
+    }
     reply_of(&decision, smart_auto_error)
 }

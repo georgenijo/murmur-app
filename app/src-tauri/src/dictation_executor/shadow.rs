@@ -192,6 +192,8 @@ struct Live {
     /// prefix of `after_pre` / `after_prefix`): a witness keeps the index it has in
     /// the **full** decided list (C8.2).
     base: Cell<u16>,
+    /// The decision's recorded stamp ([`Flight::stamp`]).
+    at: Cell<Option<Now>>,
     /// History operations and observed facts recorded before the header exists.
     ops: RefCell<Inline<LiveOp, OPS_CAPACITY>>,
     observed: RefCell<Inline<ObservedFact, OBSERVED_CAPACITY>>,
@@ -229,6 +231,7 @@ impl Live {
             rec,
             pre: RefCell::new(PreCapture::default()),
             base: Cell::new(0),
+            at: Cell::new(None),
             ops: RefCell::new(Inline::default()),
             observed: RefCell::new(Inline::default()),
             ops_overflowed: Cell::new(false),
@@ -379,6 +382,21 @@ impl Flight {
 
     pub(crate) fn is_active(&self) -> bool {
         self.live.is_some()
+    }
+
+    /// Take the clock stamp the flight's decision is recorded with, once, **before** the
+    /// section takes D (an active flight only: a disarmed one reads nothing). Decisions do
+    /// not branch on the stamp, so the live decision keeps reading its own clock exactly
+    /// where it did, and nothing reads the clock again under D (D-S2c-12 a).
+    pub(crate) fn stamp(&self) {
+        if let Some(live) = &self.live {
+            live.at.set(Some(super::executor::core_now()));
+        }
+    }
+
+    /// The stamp [`Self::stamp`] took: `None` for a disarmed flight.
+    pub(crate) fn at(&self) -> Option<Now> {
+        self.live.as_ref().and_then(|live| live.at.get())
     }
 
     /// `run(Pre)` begins: a flight dropped from here until its decision was taken is

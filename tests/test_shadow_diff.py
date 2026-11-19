@@ -19,6 +19,18 @@ from scripts.check_shadow_diff import (
 )
 
 LIVE = "app/src-tauri/src/keyboard.rs"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "shadow_twins"
+
+
+@contextlib.contextmanager
+def allowed(twins: dict):
+    """Run with `SHADOW_TWINS` replaced by `twins` (the real table names the real tree)."""
+    from unittest import mock
+
+    import scripts.check_shadow_diff as module
+
+    with mock.patch.dict(module.SHADOW_TWINS, twins, clear=True):
+        yield
 
 
 def git(root: Path, *args: str) -> None:
@@ -215,48 +227,69 @@ class ShadowDiffTests(unittest.TestCase):
             root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate}: {err}")
-            self.assertIn("disables the existing statement", err)
+            self.assertIn("is not the one permitted gate", err)
 
     def test_an_always_false_gate_on_a_new_statement_is_harmless(self):
         root = repo("a\nb\n", "a\n#[cfg(any())]\nnew();\nb\n")
         code, _, err = run(root)
         self.assertEqual(code, 0, err)
 
-    def test_a_gate_that_holds_in_the_feature_build_on_an_existing_statement_passes(self):
+    def test_every_inserted_cfg_on_an_existing_statement_is_rejected_unevaluated(self):
+        # D-S2c-12 c: nothing but the negated twin gate is accepted on an existing statement,
+        # whatever it evaluates to, so a gate that merely holds is rejected as well.
         for gate in [
             '#[cfg(feature = "dictation-shadow")]',
             "#[cfg(not(test))]",
+            "#[cfg(test)]",
+            "#[cfg(all(test, unix))]",
             '#[cfg(any(not(feature = "dictation-shadow"), unix))]',
+            '#[cfg_attr(feature = "dictation-shadow", inline)]',
+            '#[cfg_attr(test, allow(dead_code))]',
         ]:
-            root = repo("a\nb\n", f"a\n{gate}\nb\n")
+            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
-            self.assertEqual(code, 0, f"{gate}: {err}")
+            self.assertEqual(code, 1, f"{gate}: {err}")
+            self.assertIn("is not the one permitted gate", err, gate)
 
-    def test_the_shadow_feature_is_a_constant_for_the_feature_build(self):
+    def test_sols_four_spellings_of_the_negated_gate_fail(self):
         feature = 'feature = "dictation-shadow"'
-        for predicate in [
-            f"not({feature})",
-            f"all(not({feature}), unix)",
-            f"all(unix, not({feature}))",
-            f"any(not({feature}), not({feature}))",
+        for gate in [
+            f"#[cfg(not ({feature}))]",
+            '#[cfg(not(feature = r"dictation-shadow"))]',
+            f'#[cfg(any(not({feature}), target_os = "linux"))]',
+            f"#[cfg_attr({feature}, cfg(any()))]",
         ]:
-            self.assertIs(_cfg_value(predicate, shadow=True), False, predicate)
-            self.assertIsNot(_cfg_value(predicate), False, predicate)
-        for predicate in [feature, f"not(not({feature}))", f"any(not({feature}), unix)", "not(test)"]:
-            self.assertIsNot(_cfg_value(predicate, shadow=True), False, predicate)
+            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 1, f"{gate}: {err}")
+        # Even on an allowlisted twin, only the exact attribute is accepted: the raw string,
+        # the `any(..)` and the `cfg_attr` spellings are not it.
+        twin = '#[cfg(feature = "dictation-shadow")]'
+        for gate in [
+            '#[cfg(not(feature = r"dictation-shadow"))]',
+            f'#[cfg(any(not({feature}), target_os = "linux"))]',
+            f"#[cfg_attr({feature}, cfg(any()))]",
+        ]:
+            with allowed({LIVE: [{"first": "b();", "form": "closed", "why": "twin"}]}):
+                code, _, err = run(repo("a();\nb();\n", f"a();\n{gate}\nb();\n{twin}\nb();\n"))
+            self.assertEqual(code, 1, f"{gate}: {err}")
+            self.assertIn("is not the one permitted gate", err, gate)
 
-    def test_a_negated_shadow_gate_on_an_existing_statement_fails(self):
+    def test_a_negated_shadow_gate_on_an_unlisted_statement_fails(self):
         feature = 'feature = "dictation-shadow"'
         for gate in [
             f"#[cfg(not({feature}))]",
-            f"#[cfg(all(not({feature}), unix))]",
             f"#[cfg(not({feature}))] // keep",
             f"#[cfg(\n    not({feature})\n)]",
+            f"#[cfg(not ({feature}))]",
         ]:
             root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate!r}: {err}")
-            self.assertIn("in the feature build", err)
+            self.assertIn("is not in SHADOW_TWINS", err)
+        for gate in [f"#[cfg(all(not({feature}), unix))]"]:
+            code, _, err = run(repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n"))
+            self.assertEqual(code, 1, f"{gate!r}: {err}")
 
     def test_the_auto_stop_pattern_of_dca44211_fails(self):
         # The original await and its diagnostic switched off in the feature build, a twin
@@ -264,7 +297,7 @@ class ShadowDiffTests(unittest.TestCase):
         base = (
             "async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {\n"
             "    if let Some(Err(_)) = stop.await {\n"
-            "        tracing::error!(recording_id, \"failed\");\n"
+            '        tracing::error!(recording_id, "failed");\n'
             "    }\n"
             "}\n"
         )
@@ -272,41 +305,37 @@ class ShadowDiffTests(unittest.TestCase):
             "async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {\n"
             '    #[cfg(not(feature = "dictation-shadow"))]\n'
             "    if let Some(Err(_)) = stop.await {\n"
-            "        tracing::error!(recording_id, \"failed\");\n"
+            '        tracing::error!(recording_id, "failed");\n'
             "    }\n"
             '    #[cfg(feature = "dictation-shadow")]\n'
             "    if let Some(Err(_)) = witnessed_auto_stop(stop).await {\n"
-            "        tracing::error!(recording_id, \"failed\");\n"
+            '        tracing::error!(recording_id, "failed");\n'
             "    };\n"
             "}\n"
         )
         code, _, err = run(repo(base, branch))
         self.assertEqual(code, 1, err)
-        self.assertIn("in the feature build", err)
+        self.assertIn("is not in SHADOW_TWINS", err)
         # The accepted shape: the original kept in both builds, one gated rebinding before it.
         branch = (
             "async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {\n"
             '    #[cfg(feature = "dictation-shadow")]\n'
             "    let stop = witness_detached(stop);\n"
             "    if let Some(Err(_)) = stop.await {\n"
-            "        tracing::error!(recording_id, \"failed\");\n"
+            '        tracing::error!(recording_id, "failed");\n'
             "    }\n"
             "}\n"
         )
         code, _, err = run(repo(base, branch))
         self.assertEqual(code, 0, err)
 
-    def test_only_a_named_statement_may_be_gated_off_and_only_that_many_times(self):
-        from unittest import mock
-
-        import scripts.check_shadow_diff as module
-
+    def test_a_handler_entry_passes_and_only_a_named_statement_may_be_gated_off(self):
         gate = '#[cfg(not(feature = "dictation-shadow"))]'
         twin = '#[cfg(feature = "dictation-shadow")]'
         branch = f"a\n{gate}\nhandler,\n{twin}\nwrapper,\nb\n"
         base = "a\nhandler,\nb\n"
-        allow = {LIVE: {"handler,": (1, "wrapper of the same name")}}
-        with mock.patch.dict(module.SHADOW_GATED_OFF_ALLOW, allow, clear=True):
+        entry = {"first": "handler,", "form": "handler", "why": "wrapper of the same name"}
+        with allowed({LIVE: [entry]}):
             code, _, err = run(repo(base, branch))
             self.assertEqual(code, 0, err)
             # A second statement of the same text, or any other statement, is not named.
@@ -316,16 +345,172 @@ class ShadowDiffTests(unittest.TestCase):
             code, _, err = run(repo("a\nb\n", f"{gate}\na\n{twin}\nx,\nb\n"))
             self.assertEqual(code, 1, err)
 
-    def test_the_gated_off_allow_list_names_a_production_file_a_count_and_a_reason(self):
-        from scripts.check_shadow_diff import SHADOW_GATED_OFF_ALLOW
+    def test_the_twin_table_names_a_production_file_a_form_and_a_reason(self):
+        from scripts.check_shadow_diff import SHADOW_TWINS, twin_table_problems
 
-        for path, statements in SHADOW_GATED_OFF_ALLOW.items():
+        self.assertEqual(twin_table_problems(), [])
+        for path in SHADOW_TWINS:
             self.assertTrue(is_production_path(path), path)
-            for statement, (count, reason) in statements.items():
-                self.assertGreaterEqual(count, 1, statement)
-                self.assertTrue(reason.strip(), statement)
         # D-S2c-8 amendment 1: the generate_handler! entries are the named exceptions.
-        self.assertEqual(len(SHADOW_GATED_OFF_ALLOW["app/src-tauri/src/lib.rs"]), 4)
+        handlers = [e for e in SHADOW_TWINS["app/src-tauri/src/lib.rs"] if e["form"] == "handler"]
+        self.assertEqual(len(handlers), 4)
+        for entry in SHADOW_TWINS["app/src-tauri/src/commands/recording.rs"]:
+            self.assertIn(entry["form"], ("closed", "frozen"))
+        self.assertTrue(twin_table_problems({"app/other.rs": []}))
+        self.assertTrue(twin_table_problems({LIVE: [{"first": "a", "form": "closed", "why": " "}]}))
+        self.assertTrue(twin_table_problems({LIVE: [{"first": "a", "form": "loose", "why": "x"}]}))
+        self.assertTrue(twin_table_problems({LIVE: [{"first": "a", "form": "frozen", "why": "x"}]}))
+
+    # ------------------------------------------------- twin equivalence (D-S2c-12 b)
+
+    def closed(self, base: str, twin: str, first: str):
+        gate = '#[cfg(not(feature = "dictation-shadow"))]'
+        feature = '#[cfg(feature = "dictation-shadow")]'
+        branch = f"fn f() {{\n{gate}\n{base}{feature}\n{twin}}}\n"
+        entry = {"first": first, "form": "closed", "why": "twin"}
+        with allowed({LIVE: [entry]}):
+            return run(repo(f"fn f() {{\n{base}}}\n", branch))
+
+    def test_a_twin_that_is_the_original_or_one_permitted_insertion_passes(self):
+        original = "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);\n"
+        for twin in [
+            original,
+            "run_phase(&mut executor(&ports, tail).attach_flight(&flight), Placement::PostDT, None, rid);\n",
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid, flight);\n",
+        ]:
+            code, _, err = self.closed(original, twin, original.strip())
+            self.assertEqual(code, 0, f"{twin!r}: {err}")
+
+    def test_a_shadow_statement_beside_a_twin_is_a_plain_insertion(self):
+        original = "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);\n"
+        feature = '#[cfg(feature = "dictation-shadow")]'
+        branch = f"fn f() {{\n{feature}\nshadow::note(&flight);\n{original}}}\n"
+        code, _, err = run(repo(f"fn f() {{\n{original}}}\n", branch))
+        self.assertEqual(code, 0, err)
+
+    def test_a_twin_that_differs_by_anything_else_fails(self):
+        original = "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);\n"
+        for twin in [
+            # argument order
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, rid, None);\n",
+            # `?`
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid)?;\n",
+            # a block boundary
+            "{ run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid); }\n",
+            # a `let` ordering
+            "let at = core_now();\n" + original,
+            # a clock read moved into the call
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid, core_now());\n",
+            # two insertions
+            "run_phase(&mut executor(&ports, tail).attach_flight(&flight), Placement::PostDT, None, rid, f2);\n",
+            # an inserted call that is not a `shadow::` statement
+            "other::note(&flight);\n" + original,
+            # an inserted attach that does not end an expression
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, None.attach_flight(&flight), rid);\n",
+            # an extra argument that is a call
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid, flight());\n",
+            # a shorter twin
+            "run_phase(&mut executor(&ports, tail), Placement::PostDT, None);\n",
+        ]:
+            code, _, err = self.closed(original, twin, original.strip())
+            self.assertEqual(code, 1, f"{twin!r}: {err}")
+            self.assertIn("differs from the original", err, twin)
+
+    def test_a_missing_twin_fails(self):
+        gate = '#[cfg(not(feature = "dictation-shadow"))]'
+        entry = {"first": "b();", "form": "closed", "why": "twin"}
+        with allowed({LIVE: [entry]}):
+            code, _, err = run(repo("a();\nb();\n", f"a();\n{gate}\nb();\n"))
+        self.assertEqual(code, 1, err)
+        self.assertIn("twin of the statement", err)
+
+    def test_the_seven_round_8_twins_fail(self):
+        # The shapes Sol found at a4bc9d8d (D-S2c-12): each differs from its original by a
+        # clock placement and an ungated cell, a reply rendered while the executor lives, or
+        # a leaf guard held over a witness's construction.
+        names = [
+            "guard_finish_clock",
+            "pipeline_idle_clock",
+            "stop_capture_clock",
+            "start_refusal_pre",
+            "start_refusal_decision",
+            "clear_context_scope",
+            "set_context_scope",
+        ]
+        for name in names:
+            original = (FIXTURES / f"{name}.orig.rs").read_text()
+            twin = (FIXTURES / f"{name}.twin.rs").read_text()
+            first = original.splitlines()[0].strip()
+            code, _, err = self.closed(original, twin, first)
+            self.assertEqual(code, 1, f"{name}: {err}")
+            self.assertIn("differs from the original", err, name)
+
+    def test_the_seven_round_8_twins_fail_even_when_frozen_to_a_stale_digest(self):
+        for name in ["guard_finish_clock", "set_context_scope"]:
+            original = (FIXTURES / f"{name}.orig.rs").read_text()
+            twin = (FIXTURES / f"{name}.twin.rs").read_text()
+            gate = '#[cfg(not(feature = "dictation-shadow"))]'
+            branch = f"fn f() {{\n{gate}\n{original}{twin}}}\n"
+            entry = {
+                "first": original.splitlines()[0].strip(),
+                "form": "frozen",
+                "pair": "0" * 16,
+                "why": "x",
+            }
+            with allowed({LIVE: [entry]}):
+                code, _, err = run(repo(f"fn f() {{\n{original}}}\n", branch))
+            self.assertEqual(code, 1, f"{name}: {err}")
+            self.assertIn("is not the pair a reviewer accepted", err)
+
+    def test_a_frozen_pair_passes_only_with_its_own_digest(self):
+        from scripts.check_shadow_diff import normalised, pair_hash, tokenize
+
+        original = "x();\n"
+        twin = "y();\n"
+        digest = pair_hash(
+            normalised([t for t, _ in tokenize(original)]),
+            normalised([t for t, _ in tokenize(twin)]),
+        )
+        gate = '#[cfg(not(feature = "dictation-shadow"))]'
+        feature = '#[cfg(feature = "dictation-shadow")]'
+        branch = f"fn f() {{\n{gate}\n{original}{feature}\n{twin}}}\n"
+        for pair, expected in [(digest, 0), ("f" * 16, 1)]:
+            entry = {"first": "x();", "form": "frozen", "pair": pair, "why": "x"}
+            with allowed({LIVE: [entry]}):
+                code, _, err = run(repo(f"fn f() {{\n{original}}}\n", branch))
+            self.assertEqual(code, expected, err)
+        # A trailing comma is rustfmt's, not a change of the pair.
+        twin_comma = "y(a,);\n"
+        twin_plain = "y(a);\n"
+        self.assertEqual(
+            pair_hash(["x"], normalised([t for t, _ in tokenize(twin_comma)])),
+            pair_hash(["x"], normalised([t for t, _ in tokenize(twin_plain)])),
+        )
+
+    def test_the_named_attribute_is_accepted_once_and_no_other_is(self):
+        from scripts.check_shadow_diff import SHADOW_ATTR_ALLOW
+
+        self.assertEqual(
+            [e["attr"] for entries in SHADOW_ATTR_ALLOW.values() for e in entries],
+            ["#[track_caller]", "#[track_caller]"],
+        )
+        item = "fn lock(&self);\n"
+        entry = {"attr": "#[track_caller]", "first": "fn lock(&self);", "why": "caller location"}
+        from unittest import mock
+
+        import scripts.check_shadow_diff as module
+
+        with mock.patch.dict(module.SHADOW_ATTR_ALLOW, {LIVE: [entry]}, clear=True):
+            code, _, err = run(repo(item, f"#[track_caller]\n{item}"))
+            self.assertEqual(code, 0, err)
+            for other in ["#[inline]", "#[must_use]", "#[track_caller] #[inline]"]:
+                code, _, err = run(repo(item, f"{other}\n{item}"))
+                self.assertEqual(code, 1, f"{other}: {err}")
+            # The same attribute twice, or on a statement that is not named.
+            code, _, err = run(repo(item, f"#[track_caller]\n#[track_caller]\n{item}"))
+            self.assertEqual(code, 1, err)
+            code, _, err = run(repo("fn other(&self);\n", "#[track_caller]\nfn other(&self);\n"))
+            self.assertEqual(code, 1, err)
 
     def test_adding_cfg_test_to_an_existing_production_file_does_not_exempt_it(self):
         root = repo("fn a() {}\nfn b() {}\n", "#![cfg(test)]\nfn a() {}\n")
@@ -343,7 +528,7 @@ class ShadowDiffTests(unittest.TestCase):
             root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
             code, _, err = run(root)
             self.assertEqual(code, 1, f"{gate!r}: {err}")
-            self.assertIn("disables the existing statement", err)
+            self.assertIn("is not the one permitted gate", err)
 
     def test_a_gate_that_holds_only_in_a_test_build_disables_the_existing_statement(self):
         for gate in ["#[cfg(test)]", "#[cfg(all(test, unix))]"]:
@@ -352,12 +537,15 @@ class ShadowDiffTests(unittest.TestCase):
             self.assertEqual(code, 1, f"{gate}: {err}")
 
     def test_a_string_with_slashes_is_not_a_comment(self):
+        # The `//` inside the string must not swallow the rest of the attribute: the gate is
+        # seen, and it is not the permitted one.
         root = repo(
             "a\nb\n",
             'a\n#[cfg(feature = "x//y")]\nnew();\n#[cfg(not(feature = "x//y"))]\nb\n',
         )
         code, _, err = run(root)
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 1, err)
+        self.assertIn('feature="x//y"', err)
 
     def test_a_file_level_gate_added_to_a_production_file_fails_by_itself(self):
         for gate in ["#![cfg(test)]", "#![cfg(feature = \"dictation-shadow\")]", "#![cfg(any())]"]:

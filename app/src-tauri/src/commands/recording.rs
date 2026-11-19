@@ -1566,6 +1566,8 @@ impl<'a> IdleGuard<'a> {
         #[cfg(feature = "dictation-shadow")]
         let flight = Flight::begin();
         #[cfg(feature = "dictation-shadow")]
+        flight.stamp();
+        #[cfg(feature = "dictation-shadow")]
         flight.enter_pre();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
@@ -1581,14 +1583,16 @@ impl<'a> IdleGuard<'a> {
             recording_id,
         );
         #[cfg(feature = "dictation-shadow")]
-        let pre = {
-            let mut flight_exec = stop_ports::executor(
+        let pre = stop_ports::try_run_phase(
+            &mut stop_ports::executor(
                 &ports,
                 Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
-            );
-            flight_exec.attach_flight(&flight);
-            stop_ports::try_run_phase(&mut flight_exec, Placement::Pre, None, recording_id)
-        };
+            )
+            .attach_flight(&flight),
+            Placement::Pre,
+            None,
+            recording_id,
+        );
         // Nothing ran: never carry on with D as if it had. A refusal as re-entrant
         // is not expected here: `run_finish` queues the finish when it is reached
         // inside a span, and the drain runs only outside one, so the Pre phase is
@@ -1612,7 +1616,6 @@ impl<'a> IdleGuard<'a> {
         let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
         // R302.1: the legacy parse failure is exactly the 204a `LegacyParse` rows,
         // decided by site 302; every other origin is 204a.
-        #[cfg(not(feature = "dictation-shadow"))]
         let decide = || {
             stop_ports::decide(|| match origin {
                 GuardOrigin::LegacyParse => core_process_audio::decide_process_audio_finish(
@@ -1626,32 +1629,6 @@ impl<'a> IdleGuard<'a> {
                 ),
                 GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::Dropped => {
                     core_stop::decide_guard_finish(&view, input, core_now())
-                }
-            })
-        };
-        // With the shadow compiled in: the same decision, whose own timestamp (read once,
-        // where the original reads it) is kept for the flight, so nothing reads the clock
-        // again under D (D-S2c-9 e).
-        #[cfg(feature = "dictation-shadow")]
-        let decided_at = std::cell::Cell::new(None);
-        #[cfg(feature = "dictation-shadow")]
-        let decide = || {
-            stop_ports::decide(|| {
-                let at = core_now();
-                decided_at.set(Some(at));
-                match origin {
-                    GuardOrigin::LegacyParse => core_process_audio::decide_process_audio_finish(
-                        &view,
-                        ProcessAudioFinishInput {
-                            rid: input.rid,
-                            kind: ProcessAudioFinishKind::ParseFailed,
-                            closure_emit: input.closure_emit,
-                        },
-                        at,
-                    ),
-                    GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::Dropped => {
-                        core_stop::decide_guard_finish(&view, input, at)
-                    }
                 }
             })
         };
@@ -1672,7 +1649,7 @@ impl<'a> IdleGuard<'a> {
         #[cfg(feature = "dictation-shadow")]
         flight.history_of(|| owner.as_mut().and_then(PipelineOwner::take_h2_retired));
         #[cfg(feature = "dictation-shadow")]
-        if let (true, Some(at)) = (flight.is_active(), decided_at.get()) {
+        if let (true, Some(at)) = (flight.is_active(), flight.at()) {
             flight.decided(
                 if origin == GuardOrigin::LegacyParse {
                     murmur_dictation_core::inputs::Input::ProcessAudioFinish(
@@ -1700,16 +1677,12 @@ impl<'a> IdleGuard<'a> {
             recording_id,
         );
         #[cfg(feature = "dictation-shadow")]
-        {
-            let mut flight_exec = stop_ports::executor(&ports, decision);
-            flight_exec.attach_flight(&flight);
-            stop_ports::run_phase(
-                &mut flight_exec,
-                Placement::In,
-                Some(&mut dictation),
-                recording_id,
-            );
-        }
+        stop_ports::run_phase(
+            &mut stop_ports::executor(&ports, decision).attach_flight(&flight),
+            Placement::In,
+            Some(&mut dictation),
+            recording_id,
+        );
         #[cfg(feature = "dictation-shadow")]
         after_d.hold(flight.seal_d(app_state, &dictation));
     }
@@ -2323,6 +2296,8 @@ fn run_pipeline_idle_emit(
     #[cfg(feature = "dictation-shadow")]
     let flight = Flight::begin();
     #[cfg(feature = "dictation-shadow")]
+    flight.stamp();
+    #[cfg(feature = "dictation-shadow")]
     let after_d = AfterD::new();
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
@@ -2336,7 +2311,6 @@ fn run_pipeline_idle_emit(
     };
     // R302.2: the legacy tail is exactly the 204b `LegacyPost` rows, decided by
     // site 302; the stop command's tail is 204b.
-    #[cfg(not(feature = "dictation-shadow"))]
     let decision = stop_ports::decide(|| match kind {
         PostKind::StopPost => core_stop::decide_pipeline_idle_emit(&view, input, core_now()),
         PostKind::LegacyPost => core_process_audio::decide_process_audio_finish(
@@ -2349,30 +2323,9 @@ fn run_pipeline_idle_emit(
             core_now(),
         ),
     });
-    // With the shadow compiled in: the same decision, keeping its own timestamp for the
-    // flight (D-S2c-9 e).
-    #[cfg(feature = "dictation-shadow")]
-    let decided_at = std::cell::Cell::new(None);
-    #[cfg(feature = "dictation-shadow")]
-    let decision = stop_ports::decide(|| {
-        let at = core_now();
-        decided_at.set(Some(at));
-        match kind {
-            PostKind::StopPost => core_stop::decide_pipeline_idle_emit(&view, input, at),
-            PostKind::LegacyPost => core_process_audio::decide_process_audio_finish(
-                &view,
-                ProcessAudioFinishInput {
-                    rid: input.rid,
-                    kind: ProcessAudioFinishKind::PipelineDone,
-                    closure_emit: true,
-                },
-                at,
-            ),
-        }
-    });
     stop_ports::expect_valid(&decision);
     #[cfg(feature = "dictation-shadow")]
-    if let (true, Some(at)) = (flight.is_active(), decided_at.get()) {
+    if let (true, Some(at)) = (flight.is_active(), flight.at()) {
         flight.decided(
             match kind {
                 PostKind::StopPost => murmur_dictation_core::inputs::Input::PipelineIdleEmit(input),
@@ -2399,16 +2352,12 @@ fn run_pipeline_idle_emit(
         recording_id,
     );
     #[cfg(feature = "dictation-shadow")]
-    {
-        let mut flight_exec = stop_ports::executor(&ports, decision);
-        flight_exec.attach_flight(&flight);
-        stop_ports::run_phase(
-            &mut flight_exec,
-            Placement::In,
-            Some(&mut dictation),
-            recording_id,
-        );
-    }
+    stop_ports::run_phase(
+        &mut stop_ports::executor(&ports, decision).attach_flight(&flight),
+        Placement::In,
+        Some(&mut dictation),
+        recording_id,
+    );
     #[cfg(feature = "dictation-shadow")]
     after_d.hold(flight.seal_d(app_state, &dictation));
     drop(dictation);
@@ -5287,7 +5236,7 @@ async fn process_audio_inner(
         let mut exec = executor(&ports, decision);
         // `In`: `ID+`, `ST→Processing`, `AX(s)`, in that order, under D and T.
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight);
+        exec.bind_flight(&flight);
         run_phase(&mut exec, Placement::In, Some(&mut dictation), 0);
         let recording_id = exec
             .bound_recording_id()
@@ -5388,7 +5337,7 @@ async fn process_audio_inner(
         ports.bind_recording_id(rid);
         let mut exec = executor(&ports, decision);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight);
+        exec.bind_flight(&flight);
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
         #[cfg(feature = "dictation-shadow")]
         after_d.hold(flight.seal_d(app_state, &dictation));
@@ -6625,7 +6574,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
         let mut exec = lifecycle_ports::executor(&ports, decision);
         #[cfg(feature = "dictation-shadow")]
         if let Some(flight) = current_flight.get() {
-            exec.attach_flight(flight);
+            exec.bind_flight(flight);
         }
         lifecycle_ports::run_phase(&mut exec, phase, dictation, recording_id);
     };
@@ -6753,7 +6702,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             }
             let mut exec = lifecycle_ports::executor(&ports, decision);
             #[cfg(feature = "dictation-shadow")]
-            exec.attach_flight(&flight);
+            exec.bind_flight(&flight);
             lifecycle_ports::run_phase(
                 &mut exec,
                 Placement::In,
@@ -6844,7 +6793,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             }
             let mut exec = lifecycle_ports::executor(&ports, decision);
             #[cfg(feature = "dictation-shadow")]
-            exec.attach_flight(&flight);
+            exec.bind_flight(&flight);
             lifecycle_ports::run_phase(
                 &mut exec,
                 Placement::In,
@@ -7085,7 +7034,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
                 }
                 let mut exec = lifecycle_ports::executor(&ports, decision);
                 #[cfg(feature = "dictation-shadow")]
-                exec.attach_flight(&flight_216);
+                exec.bind_flight(&flight_216);
                 lifecycle_ports::run_phase(
                     &mut exec,
                     Placement::In,
@@ -7332,7 +7281,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
         );
         let mut exec = executor(&ports, decision.clone(), false);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight);
+        exec.bind_flight(&flight);
         run_phase(&mut exec, Placement::In, Some(&mut dictation), recording_id);
     }
     // R104.3-.6 decide no effect: the decision alone is the header, which goes out once
@@ -7579,15 +7528,26 @@ async fn start_native_recording_inner(
             None,
         );
         #[cfg(feature = "dictation-shadow")]
-        return start_ports::release_and_reply_observed(
-            host,
-            state,
-            &slots,
-            pre,
-            state.app_state.recording_id.load(Ordering::SeqCst),
-            None,
-            &flight_101,
-        );
+        return if flight_101.is_active() {
+            start_ports::release_and_reply_observed(
+                host,
+                state,
+                &slots,
+                pre,
+                state.app_state.recording_id.load(Ordering::SeqCst),
+                None,
+                &flight_101,
+            )
+        } else {
+            start_ports::release_and_reply(
+                host,
+                state,
+                &slots,
+                pre,
+                state.app_state.recording_id.load(Ordering::SeqCst),
+                None,
+            )
+        };
     }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
@@ -7696,15 +7656,26 @@ async fn start_native_recording_inner(
                     smart_auto_error,
                 );
                 #[cfg(feature = "dictation-shadow")]
-                return start_ports::release_and_reply_observed(
-                    host,
-                    state,
-                    &slots,
-                    decision,
-                    current,
-                    smart_auto_error,
-                    &flight_101,
-                );
+                return if flight_101.is_active() {
+                    start_ports::release_and_reply_observed(
+                        host,
+                        state,
+                        &slots,
+                        decision,
+                        current,
+                        smart_auto_error,
+                        &flight_101,
+                    )
+                } else {
+                    start_ports::release_and_reply(
+                        host,
+                        state,
+                        &slots,
+                        decision,
+                        current,
+                        smart_auto_error,
+                    )
+                };
             }
             Verdict::Applied => {}
             Verdict::Continue | Verdict::Stale(_) | Verdict::NeedObservation(_) => {
@@ -7718,7 +7689,7 @@ async fn start_native_recording_inner(
             let ports = StartPorts::new(host, state, &slots, Some(current));
             let mut exec = executor(&ports, decision.clone(), false);
             #[cfg(feature = "dictation-shadow")]
-            exec.attach_flight(&flight_101);
+            exec.bind_flight(&flight_101);
             run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
             #[cfg(feature = "dictation-shadow")]
             after_d.hold(flight_101.seal_d(&state.app_state, &dictation));
@@ -7779,7 +7750,7 @@ async fn start_native_recording_inner(
         // The scope ends with this section, before the `.await` below; the flight itself
         // lives in the shell's local across it.
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_101);
+        exec.bind_flight(&flight_101);
         // `In:ID+, GA, PCC, TRQ, ST→Starting, AX(a)`, under D.
         run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
         let rid = exec
@@ -7841,7 +7812,7 @@ async fn start_native_recording_inner(
         let ports = StartPorts::new(host, state, &slots, Some(rid));
         let mut exec = parked.reattach(&ports);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_101);
+        exec.bind_flight(&flight_101);
         let report = exec.resume(if completed {
             AwaitedOutcome::Completed
         } else {
@@ -7980,18 +7951,20 @@ async fn start_native_recording_inner(
                 rid,
             );
             #[cfg(feature = "dictation-shadow")]
-            {
-                let mut flight_exec = executor(
+            run_phase(
+                &mut executor(
                     &ports,
                     murmur_dictation_core::decision::Decision::pre_only(
                         core_start::start_capture_failure_pre_effects(RecordingId(rid)),
                         RowId("R102.pre"),
                     ),
                     false,
-                );
-                flight_exec.attach_flight(&flight_102);
-                run_phase(&mut flight_exec, Placement::Pre, None, rid);
-            }
+                )
+                .attach_flight(&flight_102),
+                Placement::Pre,
+                None,
+                rid,
+            );
             let mut dictation = state.app_state.dictation.lock_or_recover();
             let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
             #[cfg(feature = "dictation-shadow")]
@@ -8040,7 +8013,7 @@ async fn start_native_recording_inner(
             // PD-3) and `In:TERM`, under D and T.
             let mut exec = executor(&ports, decision.clone(), false);
             #[cfg(feature = "dictation-shadow")]
-            exec.attach_flight(&flight_102);
+            exec.bind_flight(&flight_102);
             run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
             #[cfg(feature = "dictation-shadow")]
             after_d.hold(flight_102.seal_d(&state.app_state, &dictation));
@@ -8172,7 +8145,7 @@ async fn start_after_capture(
         let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
         let mut exec = executor(&ports, decision, false);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_dest);
+        exec.bind_flight(&flight_dest);
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
         #[cfg(test)]
         start_ports::DESTINATION.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
@@ -8239,7 +8212,7 @@ async fn start_after_capture(
         let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
         let mut exec = executor(&ports, decision.clone(), false);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_103);
+        exec.bind_flight(&flight_103);
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
         let status = view.status;
         #[cfg(feature = "dictation-shadow")]
@@ -8350,7 +8323,7 @@ async fn start_after_capture(
     let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
     let mut exec = executor(&ports, flight_end.clone(), false);
     #[cfg(feature = "dictation-shadow")]
-    exec.attach_flight(&flight_end_cap);
+    exec.bind_flight(&flight_end_cap);
     run_phase(&mut exec, Placement::PostDT, None, rid);
     drop(transition);
     run_phase(&mut exec, Placement::PostT, None, rid);
@@ -8692,7 +8665,7 @@ async fn stop_native_recording_admitted(
             }
         }
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_stale);
+        exec.bind_flight(&flight_stale);
         run_phase(&mut exec, Placement::Pre, None, stale_recording_id);
         #[cfg(feature = "dictation-shadow")]
         flight_stale.seal(None).submit();
@@ -8773,7 +8746,7 @@ async fn stop_native_recording_admitted(
             let ports = StopPorts::new(host, state, rid, stop_entered_at);
             let mut exec = executor(&ports, decision.clone());
             #[cfg(feature = "dictation-shadow")]
-            exec.attach_flight(&flight_201);
+            exec.bind_flight(&flight_201);
             run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
             #[cfg(feature = "dictation-shadow")]
             after_d.hold(flight_201.seal_d(&state.app_state, &dictation));
@@ -8857,7 +8830,7 @@ async fn stop_native_recording_admitted(
                     flight_201.delegated_reply();
                 }
                 #[cfg(feature = "dictation-shadow")]
-                finish_exec.attach_flight(&flight_206);
+                finish_exec.bind_flight(&flight_206);
                 run_phase(&mut finish_exec, Placement::PostT, None, rid);
                 #[cfg(test)]
                 cancel_ports::LAST_206_WITNESS
@@ -8912,14 +8885,16 @@ async fn stop_native_recording_admitted(
             rid,
         );
         #[cfg(feature = "dictation-shadow")]
-        {
-            let mut flight_exec = executor(
+        run_phase(
+            &mut executor(
                 &ports,
                 Decision::pre_only(core_stop::stop_context_pre_effects(), RowId("R202.pre")),
-            );
-            flight_exec.attach_flight(&flight_202);
-            run_phase(&mut flight_exec, Placement::Pre, None, rid);
-        }
+            )
+            .attach_flight(&flight_202),
+            Placement::Pre,
+            None,
+            rid,
+        );
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         #[cfg(feature = "dictation-shadow")]
@@ -8971,11 +8946,12 @@ async fn stop_native_recording_admitted(
             rid,
         );
         #[cfg(feature = "dictation-shadow")]
-        {
-            let mut flight_exec = executor(&ports, decision.clone().after_pre());
-            flight_exec.attach_flight(&flight_202);
-            run_phase(&mut flight_exec, Placement::In, Some(&mut dictation), rid);
-        }
+        run_phase(
+            &mut executor(&ports, decision.clone().after_pre()).attach_flight(&flight_202),
+            Placement::In,
+            Some(&mut dictation),
+            rid,
+        );
         // The reply is rendered under D, as the default build does; the header follows
         // D's release.
         #[cfg(feature = "dictation-shadow")]
@@ -9052,7 +9028,7 @@ async fn stop_native_recording_admitted(
         }
         let mut exec = executor(&ports, decision);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_202n);
+        exec.bind_flight(&flight_202n);
         run_phase(&mut exec, Placement::PostDT, None, rid);
         guard = IdleGuard::new(&state.app_state, rid);
 
@@ -9261,7 +9237,7 @@ async fn stop_native_recording_admitted(
         }
         let mut exec = executor(&ports, decision);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_203n);
+        exec.bind_flight(&flight_203n);
         let report = stop_ports::try_run_phase(&mut exec, Placement::PostDT, None, rid);
         if let Err(error) = stop_ports::pipeline_start(report) {
             // The pipeline never started: the stop's guard resets the status.
@@ -9298,7 +9274,7 @@ async fn stop_native_recording_admitted(
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
         let mut exec = parked.reattach(&ports);
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&flight_203n);
+        exec.bind_flight(&flight_203n);
         let report = exec.resume(if pipeline_result.is_ok() {
             AwaitedOutcome::Completed
         } else {
@@ -9374,11 +9350,12 @@ async fn stop_native_recording_admitted(
                 #[cfg(not(feature = "dictation-shadow"))]
                 run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);
                 #[cfg(feature = "dictation-shadow")]
-                {
-                    let mut flight_exec = executor(&ports, tail);
-                    flight_exec.attach_flight(&flight_204b);
-                    run_phase(&mut flight_exec, Placement::PostDT, None, rid);
-                }
+                run_phase(
+                    &mut executor(&ports, tail).attach_flight(&flight_204b),
+                    Placement::PostDT,
+                    None,
+                    rid,
+                );
             }
             tracing::error!(
                 target: "pipeline",
@@ -9565,7 +9542,7 @@ async fn stop_native_recording_admitted(
         }
         let mut exec = executor(&ports, tail.clone());
         #[cfg(feature = "dictation-shadow")]
-        exec.attach_flight(&tail_flight);
+        exec.bind_flight(&tail_flight);
         run_phase(&mut exec, Placement::PostDT, None, rid);
         #[cfg(test)]
         stop_ports::TAIL.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
@@ -9610,6 +9587,8 @@ fn run_stop_capture_rows<'a>(
     #[cfg(feature = "dictation-shadow")]
     let flight = Flight::begin();
     #[cfg(feature = "dictation-shadow")]
+    flight.stamp();
+    #[cfg(feature = "dictation-shadow")]
     flight.enter_pre();
     #[cfg(feature = "dictation-shadow")]
     let after_d = AfterD::new();
@@ -9627,25 +9606,28 @@ fn run_stop_capture_rows<'a>(
         rid,
     );
     #[cfg(feature = "dictation-shadow")]
-    {
-        let mut flight_exec = executor(
+    run_phase(
+        &mut executor(
             &ports,
             Decision::pre_only(
                 core_stop::stop_capture_pre_effects(&probe),
                 RowId("R203.pre"),
             ),
-        );
-        flight_exec.attach_flight(&flight);
-        run_phase(&mut flight_exec, Placement::Pre, None, rid);
-    }
+        )
+        .attach_flight(&flight),
+        Placement::Pre,
+        None,
+        rid,
+    );
     // The decision's `In` effects are the guard's D section: it must not run again.
     guard.disarm();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
     #[cfg(feature = "dictation-shadow")]
     let seen_status = capture::SeenStatus::new();
-    #[cfg(not(feature = "dictation-shadow"))]
     let decision = capture_stop.consume(|op_status| {
+        #[cfg(feature = "dictation-shadow")]
+        seen_status.set(&flight, op_status);
         stop_ports::decide(|| {
             core_stop::decide_stop_capture_result(
                 &view,
@@ -9655,25 +9637,10 @@ fn run_stop_capture_rows<'a>(
         })
     });
     #[cfg(feature = "dictation-shadow")]
-    let decided_at = std::cell::Cell::new(None);
-    #[cfg(feature = "dictation-shadow")]
-    let decision = capture_stop.consume(|op_status| {
-        seen_status.set(&flight, op_status);
-        stop_ports::decide(|| {
-            let at = core_now();
-            decided_at.set(Some(at));
-            core_stop::decide_stop_capture_result(
-                &view,
-                StopCaptureResultInput { op_status, ..probe },
-                at,
-            )
-        })
-    });
-    #[cfg(feature = "dictation-shadow")]
     if let Some(op_status) = seen_status.get(&flight) {
         flight.history_of(|| capture_stop.take_retired());
         crate::shadow_site!(issue = 1154);
-        if let (true, Some(at)) = (flight.is_active(), decided_at.get()) {
+        if let (true, Some(at)) = (flight.is_active(), flight.at()) {
             flight.decided(
                 Input::StopCaptureResult(StopCaptureResultInput { op_status, ..probe }),
                 capture::view_projection(&view),
@@ -9686,7 +9653,7 @@ fn run_stop_capture_rows<'a>(
     }
     let mut exec = executor(&ports, decision.clone().after_pre());
     #[cfg(feature = "dictation-shadow")]
-    exec.attach_flight(&flight);
+    exec.bind_flight(&flight);
     run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
     #[cfg(feature = "dictation-shadow")]
     after_d.hold(flight.seal_d(&state.app_state, &dictation));
@@ -9845,7 +9812,7 @@ async fn cancel_native_recording_inner(
     let ports = CancelPorts::new(host, state, rid);
     let mut exec = executor(&ports, decision.clone());
     #[cfg(feature = "dictation-shadow")]
-    exec.attach_flight(&flight_205);
+    exec.bind_flight(&flight_205);
     // R205.5 `In:ST→Idle` under D; R205.4 has no `In` effect.
     run_phase(&mut exec, Placement::In, Some(&mut dictation), rid).map_err(cancel_refused)?;
     #[cfg(feature = "dictation-shadow")]
@@ -9925,7 +9892,7 @@ async fn cancel_native_recording_inner(
     }
     let mut finish_exec = executor(&ports, decision.clone());
     #[cfg(feature = "dictation-shadow")]
-    finish_exec.attach_flight(&flight_206);
+    finish_exec.bind_flight(&flight_206);
     let finished = run_phase(&mut finish_exec, Placement::PostT, None, rid);
     #[cfg(test)]
     cancel_ports::LAST_206_WITNESS.with(|slot| *slot.borrow_mut() = finish_exec.witness().to_vec());
