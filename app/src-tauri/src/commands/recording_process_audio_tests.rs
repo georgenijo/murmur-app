@@ -408,7 +408,10 @@ impl Run {
             .app_state
             .recording_id
             .store(id, Ordering::SeqCst);
-        self.state.app_state.dictation.lock_or_recover().status = status;
+        let mut dictation = self.state.app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        // Live is written directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&self.state.app_state, &mut dictation);
     }
 
     fn history(&self) -> (usize, usize) {
@@ -1360,7 +1363,8 @@ fn the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal() {
             assert!(run.state.benchmark.try_start());
         }),
         ("a live dictation (under D)", |run| {
-            run.state.app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+            // Seeds the persisted core with the live write.
+            run.set_status(DictationStatus::Recording, 0);
         }),
     ];
     const DEFAULT_BUILD_ALLOCATIONS: [(&str, u64); 4] = [

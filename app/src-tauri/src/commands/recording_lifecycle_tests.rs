@@ -746,7 +746,12 @@ type MockApp = tauri::App<tauri::test::MockRuntime>;
 fn mock_app(status: DictationStatus, current: u64) -> MockApp {
     let app_state = AppState::default();
     app_state.recording_id.store(current, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = status;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        // Live is written directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     tauri::test::mock_builder()
         .manage(test_state(app_state))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -996,7 +1001,11 @@ fn the_auto_stop_op_is_retired_at_admission_not_held_through_the_stop() {
 fn witness_of_a_stale_ready(claim_first: bool) -> Vec<(&'static str, WitnessOutcome)> {
     let app_state = AppState::default();
     app_state.recording_id.store(NEWER, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = Recording;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = Recording;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     app_state.dictation_telemetry.accepted(RID);
     if claim_first {
         // Another sink already claimed this id's terminal.

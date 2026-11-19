@@ -30,30 +30,96 @@
 
 use super::golden_harness::*;
 use super::golden_tests::{recording, started, stopped};
-use super::pd25_tests::terminal;
-use super::stop_cutover_tests::{fn_spans, lines_with, recording_source, Pair};
 use super::*;
 use crate::core_history::ContinuationGuard;
-use crate::dictation_executor::adapter::core_divergences;
+use crate::dictation_executor::adapter::{core_divergences_counted, forgive_planted_divergences};
 use crate::dictation_executor::probe;
 use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
 use murmur_dictation_core::ids::RecordingId;
+use murmur_dictation_core::status::Status;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex as StdMutex;
 
 const E205: &str = "cancel_native_recording_inner#0";
-const STOP_E201: &str = "stop_native_recording_admitted#0";
+
+/// A `(status, recording id)` pair: M1 and M2.
+type Pair = (Status, RecordingId);
+
+// ------------------------------------------------------------------------ source helpers
+//
+// Owned by this module (D-S2c-18 amendment 1: a cutover's tests import nothing from another
+// cutover's test code), so reverting any one cutover leaves the others' tests compiling.
+
+fn recording_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/recording.rs");
+    std::fs::read_to_string(path).expect("recording.rs")
+}
+
+/// Every free function and method of `recording.rs` (not those of its test modules), as
+/// `(name, first line, last line)`.
+fn fn_spans(source: &str) -> Vec<(String, usize, usize)> {
+    use syn::spanned::Spanned;
+    let file = syn::parse_file(source).expect("recording.rs parses");
+    let mut spans = Vec::new();
+    for item in &file.items {
+        match item {
+            syn::Item::Fn(function) => spans.push((
+                function.sig.ident.to_string(),
+                function.span().start().line,
+                function.span().end().line,
+            )),
+            syn::Item::Impl(implementation) => {
+                for member in &implementation.items {
+                    if let syn::ImplItem::Fn(function) = member {
+                        spans.push((
+                            function.sig.ident.to_string(),
+                            function.span().start().line,
+                            function.span().end().line,
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// The lines of `source` (1-based) that hold `needle`, inside the function `name`.
+fn lines_with(
+    source: &str,
+    spans: &[(String, usize, usize)],
+    name: &str,
+    needle: &str,
+) -> Vec<usize> {
+    let (_, first, last) = spans
+        .iter()
+        .find(|(candidate, _, _)| candidate == name)
+        .unwrap_or_else(|| panic!("`{name}` is in recording.rs"));
+    source
+        .lines()
+        .enumerate()
+        .filter(|(at, line)| (*first..=*last).contains(&(at + 1)) && line.contains(needle))
+        .map(|(at, _)| at + 1)
+        .collect()
+}
+
+/// Generation `id`'s terminal winner in the telemetry ledger.
+fn terminal(world: &Arc<World>, id: u64) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
+    world
+        .state()
+        .app_state
+        .dictation_telemetry
+        .terminal_for_test(id)
+}
 
 // ------------------------------------------------------------------------ probes
 
-/// Tests share the process-global probes; one cutover test at a time. The stop family's
-/// gate is the one gate (a stop-caller fixture reads the stop entries too), so this module
-/// and the stop cutover's never interleave. The cancel entries are remembered only while
-/// the guard lives (remembering allocates, which the allocation pins under D must not see).
-struct Probes {
-    _stop: super::stop_cutover_tests::Probes,
-}
+/// Tests share the process-global probes; one cutover test at a time. The cancel entries are
+/// remembered only while the guard lives (remembering allocates, which the allocation pins
+/// under D must not see).
+struct Probes(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 impl Drop for Probes {
     fn drop(&mut self) {
@@ -61,15 +127,17 @@ impl Drop for Probes {
         probe::take_cancel_entries();
         probe::record_projections(false);
         probe::take_projection_sites();
+        forgive_planted_divergences(0);
     }
 }
 
 fn serialized() -> Probes {
-    let stop = super::stop_cutover_tests::serialized();
+    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let gate = GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     probe::take_cancel_entries();
     crate::commands::settings_store::test_data_dir::take_returned();
     probe::record_cancel_entries(true);
-    Probes { _stop: stop }
+    Probes(gate)
 }
 
 /// The label of a `cancel_view` call at `line`: the enclosing function and the call's
@@ -94,7 +162,7 @@ fn enclosing(spans: &[(String, usize, usize)], line: usize) -> String {
         .clone()
 }
 
-fn cancel_labelled(reads: Vec<probe::StopEntryRead>) -> Vec<(String, Pair, Pair)> {
+fn cancel_labelled(reads: Vec<probe::CancelEntryRead>) -> Vec<(String, Pair, Pair)> {
     let source = recording_source();
     let spans = fn_spans(&source);
     reads
@@ -110,11 +178,11 @@ fn cancel_labelled(reads: Vec<probe::StopEntryRead>) -> Vec<(String, Pair, Pair)
 }
 
 /// The functions the `DictationCore::project` entries since the last
-/// `take_projection_sites` were made in.
+/// `take_projection_sites` were made in, sorted.
 fn projecting_functions() -> Vec<String> {
     let source = recording_source();
     let spans = fn_spans(&source);
-    probe::take_projection_sites()
+    let mut functions: Vec<String> = probe::take_projection_sites()
         .into_iter()
         .map(|(file, line)| {
             assert!(
@@ -123,7 +191,9 @@ fn projecting_functions() -> Vec<String> {
             );
             enclosing(&spans, line as usize)
         })
-        .collect()
+        .collect();
+    functions.sort();
+    functions
 }
 
 // ------------------------------------------------------------------------ the plants
@@ -138,11 +208,40 @@ static PLANTED: StdMutex<Option<(Pair, Pair)>> = StdMutex::new(None);
 /// `DictationCore::project` entries made while the command under test ran.
 static COMMAND_PROJECTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Plants a divergence (the persisted core put off live) when the run asks for one: right
-/// before the command, so the entry is the first read after it.
+/// A **planted** C8.6 divergence: put both persisted fields off live, as a write that
+/// bypassed the adapter would, and allow the run's golden invariant exactly one counted
+/// divergence (`forgive_planted_divergences`). The entry that next reads the persisted core
+/// must count it and re-sync it; the test asserts that it did. The persisted fields are
+/// checked equal to live first, so a plant never forgives an earlier violation. Returns the
+/// planted pair and live's.
+fn plant_core_divergence(world: &Arc<World>) -> (Pair, Pair) {
+    let state = world.state();
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    let live = (
+        crate::dictation_admission::core_status(dictation.status),
+        RecordingId(state.app_state.recording_id.load(AtomicOrdering::SeqCst)),
+    );
+    assert_eq!(
+        (dictation.core.status(), dictation.core.current_id()),
+        live,
+        "the persisted core equalled live before it was planted off"
+    );
+    let other = if live.0 == Status::Recording {
+        Status::Processing
+    } else {
+        Status::Recording
+    };
+    dictation.core.set_status(other);
+    let id = dictation.core.alloc_id();
+    forgive_planted_divergences(1);
+    ((other, id), live)
+}
+
+/// Plants a divergence when the run asks for one: right before the command, so the entry is
+/// the first read after it.
 fn arm(world: &Arc<World>) {
     if PLANT.with(|plant| *plant.borrow()) {
-        let pair = world.plant_core_divergence();
+        let pair = plant_core_divergence(world);
         *PLANTED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pair);
@@ -152,8 +251,10 @@ fn arm(world: &Arc<World>) {
 /// The cancel command, announced by a marker line, with the `project()` entries it made
 /// counted.
 fn cancel_command(world: &Arc<World>, expected: Option<u64>) {
-    arm(world);
+    // The marker first: a trace line samples the harness's persisted-core invariant, and the
+    // plant must be followed by the entry that reads it with nothing sampled in between.
     world.note("cancel requested");
+    arm(world);
     let before = probe::projections();
     let mut cancel = world.cancel(expected);
     let reply = complete(&mut cancel);
@@ -161,13 +262,10 @@ fn cancel_command(world: &Arc<World>, expected: Option<u64>) {
     world.reply_unit("cancel", &reply);
 }
 
-/// The stop command (the other caller of site 206), counted the same way.
+/// The stop command (the other caller of site 206).
 fn stop_command(world: &Arc<World>) {
-    arm(world);
     world.note("stop requested");
-    let before = probe::projections();
     stopped(world, "stop", None);
-    COMMAND_PROJECTIONS.store(probe::projections() - before, AtomicOrdering::SeqCst);
 }
 
 // ------------------------------------------------------------------------ the fixtures
@@ -302,18 +400,19 @@ fn run_case(case: &Case, plant: bool) -> Run {
     probe::take_cancel_entries();
     crate::commands::settings_store::test_data_dir::take_returned();
     COMMAND_PROJECTIONS.store(u64::MAX, AtomicOrdering::SeqCst);
-    let divergences = core_divergences();
+    let divergences = core_divergences_counted();
     let trace = run_sub_run(&SubRun {
         title: case.name,
         setup: (case.setup)(),
         body: case.body,
     });
     PLANT.with(|slot| *slot.borrow_mut() = false);
+    forgive_planted_divergences(0);
     assert_no_data_dir(case.name);
     Run {
         entries: cancel_labelled(probe::take_cancel_entries()),
         projections: COMMAND_PROJECTIONS.load(AtomicOrdering::SeqCst),
-        divergences: core_divergences() - divergences,
+        divergences: core_divergences_counted() - divergences,
         trace,
     }
 }
@@ -448,57 +547,75 @@ fn every_cancel_row_reads_the_persisted_fields_and_resyncs_a_divergence() {
 
 // ------------------------------------------------- R205.5: the tail's order and fence
 
+/// The cancel entry read `(Processing, 3)` for both the persisted core and live, the one
+/// entry of a processing cancel.
+fn assert_read_processing_3(entries: &[(String, Pair, Pair)], what: &str) {
+    let processing_3 = (Status::Processing, RecordingId(3));
+    assert_eq!(
+        entries,
+        [(E205.to_string(), processing_3, processing_3)],
+        "{what}: the one switched entry, reading (Processing, 3) as persisted and as live"
+    );
+}
+
 /// #1170's exact tail-order test (R205.5: `In:ST→Idle`; `PDT:CX-, MC, TERM, KB, EM, EV`;
 /// `PT:PC`, T held from `ST` through `EV` and released only before `PC`), run again through
-/// the switched entry. The entries that ran are exact: the cancel's one D entry, once.
+/// the switched entry. The entries that ran are exact: the cancel's one D entry, once, reading
+/// the persisted core, and the run reaches `project()` not at all (a processing cancel starts
+/// nothing).
 #[test]
 fn the_r205_5_tail_order_holds_through_the_switched_entry() {
     let _gate = serialized();
     probe::record_projections(true);
     probe::take_projection_sites();
-    let divergences = core_divergences();
+    let projections = probe::projections();
+    let divergences = core_divergences_counted();
     super::cancel_tests::processing_cancel_tail_runs_in_r205_5_order();
-    assert_eq!(
-        names_of(cancel_labelled(probe::take_cancel_entries())),
-        [E205],
-        "the switched entries that ran"
-    );
-    assert!(
-        !projecting_functions()
-            .iter()
-            .any(|function| function == "cancel_native_recording_inner"),
-        "the cancel projected"
+    assert_read_processing_3(
+        &cancel_labelled(probe::take_cancel_entries()),
+        "the tail-order run",
     );
     assert_eq!(
-        core_divergences(),
+        probe::projections() - projections,
+        0,
+        "the tail-order run reached `DictationCore::project`: {:?}",
+        projecting_functions()
+    );
+    assert_eq!(
+        core_divergences_counted(),
         divergences,
         "an equal core is never counted"
     );
+    assert_no_data_dir("the tail-order run");
 }
 
 /// #1170's independent-start barrier (a processing cancel keeps T through its trailing
 /// `idle`, so a newer start cannot publish `starting` and then be overwritten by the old
-/// `idle`), run again through the switched entry. The cancel's entries are exact; the start
-/// that is polled from an independent task is the start family's, switched with the start
-/// cutover, so no function projects.
+/// `idle`), run again through the switched entry. The cancel's entry is exact and reads the
+/// persisted core. The start that is polled from an independent task is the start family's,
+/// switched with the start cutover: no function reaches `DictationCore::project` any more.
 #[test]
 fn the_independent_start_barrier_holds_through_the_switched_entry() {
     let _gate = serialized();
     probe::record_projections(true);
     probe::take_projection_sites();
+    let divergences = core_divergences_counted();
     super::cancel_tests::a_new_start_stays_blocked_until_the_trailing_idle();
+    assert_read_processing_3(
+        &cancel_labelled(probe::take_cancel_entries()),
+        "the independent-start run",
+    );
     assert_eq!(
-        names_of(cancel_labelled(probe::take_cancel_entries())),
-        [E205],
-        "the switched entries that ran"
+        projecting_functions(),
+        Vec::<String>::new(),
+        "the functions that reached `DictationCore::project`: none, the start is switched too"
     );
-    // The start that is polled from an independent task is the start family's, switched
-    // with the start cutover: nothing projects any more, the cancel included.
-    let projecting = projecting_functions();
-    assert!(
-        projecting.is_empty(),
-        "a command still reaches `DictationCore::project`: {projecting:?}"
+    assert_eq!(
+        core_divergences_counted(),
+        divergences,
+        "an equal core is never counted"
     );
+    assert_no_data_dir("the independent-start run");
 }
 
 fn names_of(entries: Vec<(String, Pair, Pair)>) -> Vec<String> {
@@ -599,11 +716,40 @@ thread_local! {
     static DELEGATION: RefCell<Option<Delegation>> = const { RefCell::new(None) };
 }
 
-/// Outstanding history operations seen while the capture cancel (`PT:CC`) was in flight.
-static OUTSTANDING_IN_CC: AtomicUsize = AtomicUsize::new(usize::MAX);
+type Ops = Vec<(RecordingId, ContKind)>;
 
-/// Outstanding history operations seen at site 206's `TERM` barrier (R206.2's effect).
-static OUTSTANDING_AT_TERM: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// The outstanding operations seen while the capture cancel (`PT:CC`) was in flight.
+static OPS_IN_CC: StdMutex<Option<Ops>> = StdMutex::new(None);
+
+/// The outstanding operations seen at site 206's `TERM` barrier (R206.2's effect).
+static OPS_AT_TERM: StdMutex<Option<Ops>> = StdMutex::new(None);
+
+fn stash(slot: &StdMutex<Option<Ops>>, ops: Option<Ops>) {
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = ops;
+}
+
+fn stashed(slot: &StdMutex<Option<Ops>>, what: &str) -> Ops {
+    slot.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_else(|| panic!("{what} was never reached"))
+}
+
+/// `all` without one occurrence of each of `taken` (a multiset difference), and what of
+/// `taken` was not in `all`.
+fn without(all: &Ops, taken: &Ops) -> (Ops, Ops) {
+    let mut rest = all.clone();
+    let mut missing = Vec::new();
+    for op in taken {
+        match rest.iter().position(|candidate| candidate == op) {
+            Some(at) => {
+                rest.remove(at);
+            }
+            None => missing.push(*op),
+        }
+    }
+    (rest, missing)
+}
 
 /// The body of a delegation fixture: a start in flight (`Starting`), a decoy continuation
 /// another owner holds, then the caller's command with the supervisor's answer. Everything
@@ -626,7 +772,11 @@ fn delegated_body(world: &Arc<World>) {
             kind: ContKind::CaptureCancel,
         },
     );
-    let before = history.outstanding_ops();
+    let before = history.outstanding_for_test();
+    assert!(
+        before.contains(&(RecordingId(99), ContKind::CaptureCancel)),
+        "the decoy is outstanding: {before:?}"
+    );
     world.knobs().cancel_result = delegation.result;
     let claim = delegation
         .supervisor_first
@@ -636,14 +786,14 @@ fn delegated_body(world: &Arc<World>) {
         if let Some(claim) = claim {
             claim();
         }
-        OUTSTANDING_IN_CC.store(during.outstanding_ops(), AtomicOrdering::SeqCst);
+        stash(&OPS_IN_CC, Some(during.outstanding_for_test()));
     });
     // Site 206's `TERM` runs after the site consumed its operation: the history is read
     // there, just before the effect.
     let at_term = history.clone();
     let _barrier = crate::barrier_hook::install(move |point| {
         if point == "TERM" {
-            OUTSTANDING_AT_TERM.store(at_term.outstanding_ops(), AtomicOrdering::SeqCst);
+            stash(&OPS_AT_TERM, Some(at_term.outstanding_for_test()));
         }
     });
     super::cancel_tests::forget_206_witness();
@@ -652,30 +802,33 @@ fn delegated_body(world: &Arc<World>) {
         Caller::Stop => stop_command(world),
     }
     super::cancel_tests::note_206_witness(world);
+
+    // The owner. While the capture cancel ran, the one new outstanding operation was the
+    // command's own `K:CaptureCancel` for generation 1, and nothing that was outstanding had
+    // gone (the owner is identified, not counted).
+    let (new_in_cc, gone_in_cc) = without(&stashed(&OPS_IN_CC, "`PT:CC`"), &before);
+    assert_eq!(
+        new_in_cc,
+        [(RecordingId(1), ContKind::CaptureCancel)],
+        "{}: the operation the command registered during `PT:CC`",
+        delegation.name
+    );
+    assert!(gone_in_cc.is_empty(), "{}: {gone_in_cc:?}", delegation.name);
     if delegation.result.is_err() {
         // R206.2 has an effect, so the owner's consumption is observable before it: the
-        // command's own `K:CaptureCancel` is already gone, the other owner's still there.
+        // command's own `K:CaptureCancel` is already gone and everything else is there.
         assert_eq!(
-            OUTSTANDING_AT_TERM.load(AtomicOrdering::SeqCst),
-            before,
-            "{}: site 206 consumed the command's own operation before its effect",
+            without(&stashed(&OPS_AT_TERM, "site 206's `TERM`"), &before),
+            (Vec::new(), Vec::new()),
+            "{}: site 206 consumed exactly the command's own operation before its effect",
             delegation.name
         );
     }
-
-    // The owner: the operation the command registered for its own capture cancel was
-    // outstanding while the capture cancel ran, and was consumed once site 206 had decided;
-    // the other owner's was neither.
+    // Once the command returned: the same operations as before it, the decoy among them.
     assert_eq!(
-        OUTSTANDING_IN_CC.load(AtomicOrdering::SeqCst),
-        before + 1,
-        "{}: the command's own `K:CaptureCancel` was outstanding during `PT:CC`",
-        delegation.name
-    );
-    assert_eq!(
-        history.outstanding_ops(),
-        before,
-        "{}: site 206 consumed the command's own operation",
+        without(&history.outstanding_for_test(), &before),
+        (Vec::new(), Vec::new()),
+        "{}: site 206 consumed exactly the command's own operation",
         delegation.name
     );
     assert!(
@@ -702,10 +855,11 @@ fn delegated_body(world: &Arc<World>) {
     world.release_ready();
 }
 
-fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>, Vec<String>) {
+/// Runs one delegation fixture; its trace and the cancel entries it read.
+fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>) {
     DELEGATION.with(|slot| *slot.borrow_mut() = Some(delegation));
-    OUTSTANDING_IN_CC.store(usize::MAX, AtomicOrdering::SeqCst);
-    OUTSTANDING_AT_TERM.store(usize::MAX, AtomicOrdering::SeqCst);
+    stash(&OPS_IN_CC, None);
+    stash(&OPS_AT_TERM, None);
     probe::take_cancel_entries();
     crate::commands::settings_store::test_data_dir::take_returned();
     COMMAND_PROJECTIONS.store(u64::MAX, AtomicOrdering::SeqCst);
@@ -717,18 +871,14 @@ fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>, Vec<Stri
     DELEGATION.with(|slot| *slot.borrow_mut() = None);
     assert_no_data_dir(delegation.name);
     let cancel = names_of(cancel_labelled(probe::take_cancel_entries()));
-    let stop = names_of(super::stop_cutover_tests::labelled(
-        probe::take_stop_entries(),
-    ));
-    (trace, cancel, stop)
+    (trace, cancel)
 }
 
 #[test]
 fn r206_preserves_the_delegated_result_and_consumes_its_owner_for_both_callers() {
     let _gate = serialized();
     for delegation in delegations() {
-        // Take what the setup (the start) read, so only the command's entries remain.
-        let (trace, cancel, stop) = run_delegation(delegation);
+        let (trace, cancel) = run_delegation(delegation);
         let want_reply = delegation.reply;
         let command = if delegation.caller == Caller::Cancel {
             "reply cancel "
@@ -756,24 +906,21 @@ fn r206_preserves_the_delegated_result_and_consumes_its_owner_for_both_callers()
             "{}: site 206's real effect result: {trace:#?}",
             delegation.name
         );
-        // The entries that ran, exact. The cancel command crosses its own entry; the stop
-        // caller crosses the stop family's 201 and no cancel entry (206 is D-less).
+        // The cancel entries that ran, exact. The cancel command crosses its own entry and
+        // reaches `project()` not at all. The stop caller crosses none: 206 is D-less, and
+        // the stop's own entry is the stop family's.
         match delegation.caller {
             Caller::Cancel => {
                 assert_eq!(cancel, [E205], "{}", delegation.name);
-                assert!(stop.is_empty(), "{}: {stop:?}", delegation.name);
+                assert_eq!(
+                    COMMAND_PROJECTIONS.load(AtomicOrdering::SeqCst),
+                    0,
+                    "{}: the cancel command reached `DictationCore::project`",
+                    delegation.name
+                );
             }
-            Caller::Stop => {
-                assert!(cancel.is_empty(), "{}: {cancel:?}", delegation.name);
-                assert_eq!(stop, [STOP_E201], "{}", delegation.name);
-            }
+            Caller::Stop => assert!(cancel.is_empty(), "{}: {cancel:?}", delegation.name),
         }
-        assert_eq!(
-            COMMAND_PROJECTIONS.load(AtomicOrdering::SeqCst),
-            0,
-            "{}: the command reached `DictationCore::project`",
-            delegation.name
-        );
     }
 }
 
@@ -838,8 +985,11 @@ fn the_shadow_credits_r205_4_as_delegated_through_the_switched_entry() {
     assert_eq!(totals.row_matched.get(&(206, 1)), Some(&1), "{totals:?}");
     assert_eq!(totals.row_matched.get(&(206, 2)), Some(&1), "{totals:?}");
     assert_eq!(totals.row_matched.get(&(205, 5)), Some(&1), "{totals:?}");
-    // No flight diverged. (`abandoned` is not asserted: the cancelled start's own flights
-    // are left open by these fixtures, identically before and after the switch.)
+    // No flight diverged. The two abandoned flights are the two R205.4 flights themselves:
+    // each closes as the announced no-reply close (its reply is site 206's), which the
+    // comparator counts as abandoned and credits as delegated above, identically before and
+    // after the switch.
+    assert_eq!(totals.abandoned, 2, "{totals:?}");
     assert_eq!(totals.mismatched_root, 0, "{totals:?}");
     assert_eq!(totals.unverifiable, 0, "{totals:?}");
 }

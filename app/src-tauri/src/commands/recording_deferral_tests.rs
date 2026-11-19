@@ -35,7 +35,12 @@ fn queued() -> Vec<(u64, bool)> {
 fn a_deferred_explicit_finish_delivers_its_idle_emit_at_the_drain() {
     let app_state = AppState::default();
     let rid = app_state.next_recording_id();
-    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+        // The fixture writes live directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let emitted = Arc::new(AtomicBool::new(false));
     let mut guard = IdleGuard::for_legacy_parse(&app_state, rid, None);
     let drain = DrainDeferredFinishes::new(&app_state);
@@ -77,7 +82,12 @@ fn a_deferred_explicit_finish_delivers_its_idle_emit_at_the_drain() {
 fn a_deferred_finish_for_a_superseded_recording_makes_no_idle_emit() {
     let app_state = AppState::default();
     let rid = app_state.next_recording_id();
-    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+        // The fixture writes live directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let emitted = Arc::new(AtomicBool::new(false));
     let mut guard = IdleGuard::for_legacy_parse(&app_state, rid, None);
     let drain = DrainDeferredFinishes::new(&app_state);
@@ -89,8 +99,8 @@ fn a_deferred_finish_for_a_superseded_recording_makes_no_idle_emit() {
             true
         });
         // A newer recording starts before the drain.
-        let newer = app_state.next_recording_id();
         let mut dictation = app_state.dictation.lock_or_recover();
+        let newer = crate::dictation_executor::FieldAdapter::alloc_id(&app_state, &mut dictation);
         crate::dictation_executor::FieldAdapter::set_status(
             newer,
             &mut dictation,
@@ -128,7 +138,12 @@ fn every_owner_dropped_in_a_span_retires_in_fifo_order_at_the_drain() {
     // at that moment the two retirements queued behind it must still be registered
     // (a newest-first drain would already have retired them).
     app_state.recording_id.store(2, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+        // The fixture writes live directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let idle_ran = Arc::new(AtomicBool::new(false));
     let drain = DrainDeferredFinishes::new(&app_state);
     {
@@ -184,7 +199,12 @@ fn a_finish_run_by_the_drain_drains_what_its_own_emit_queues() {
     );
     let counters = history.counters();
     app_state.recording_id.store(2, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+        // The fixture writes live directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let slot = Arc::new(std::sync::Mutex::new(Some(later)));
     let listener_ran = Arc::new(AtomicBool::new(false));
     let drain = DrainDeferredFinishes::new(&app_state);
@@ -269,7 +289,12 @@ fn the_idle_measurement_ends_before_the_deferred_drain() {
     use murmur_dictation_core::inputs::PostKind;
     let app_state = AppState::default();
     let rid = app_state.next_recording_id();
-    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+        // The fixture writes live directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let mut earlier = IdleGuard::for_legacy_parse(&app_state, rid, None);
     {
         let outer = DrainDeferredFinishes::new(&app_state);

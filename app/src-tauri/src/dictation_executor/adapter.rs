@@ -38,9 +38,31 @@ use std::sync::Arc;
 /// the live fields directly.
 static CORE_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
-/// The divergences counted so far.
+/// The divergences counted so far (in a test build, less the ones a test planted on purpose:
+/// [`forgive_planted_divergences`]).
 pub(crate) fn core_divergences() -> u64 {
+    let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
+    #[cfg(test)]
+    let counted = counted.saturating_sub(FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
+    counted
+}
+
+/// Divergences a test planted on purpose, which the golden harness's invariant
+/// (`core_divergences() <= baseline`) must not count (cancel cutover tests).
+#[cfg(test)]
+static FORGIVEN_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
+
+/// Test builds: every divergence counted, planted ones included.
+#[cfg(test)]
+pub(crate) fn core_divergences_counted() -> u64 {
     CORE_DIVERGENCES.load(Ordering::SeqCst)
+}
+
+/// Test builds: allow `planted` more divergences to be counted without the harness's
+/// invariant seeing them; `0` clears the allowance.
+#[cfg(test)]
+pub(crate) fn forgive_planted_divergences(planted: u64) {
+    FORGIVEN_DIVERGENCES.store(planted, Ordering::SeqCst);
 }
 
 /// The app's status for a core status (the inverse of [`core_status`]): how the
@@ -240,13 +262,56 @@ impl FieldAdapter {
         )
     }
 
+    /// The one body of the cut-over views (see [`Self::lifecycle_view`]). `record` and
+    /// `caller` are the family's probe and the entry's call site in a test build.
+    fn persisted_view(
+        app: &AppState,
+        dictation: &mut DictationState,
+        #[cfg(test)] record: fn(
+            (
+                murmur_dictation_core::status::Status,
+                murmur_dictation_core::ids::RecordingId,
+            ),
+            (
+                murmur_dictation_core::status::Status,
+                murmur_dictation_core::ids::RecordingId,
+            ),
+            &'static std::panic::Location<'static>,
+        ),
+        #[cfg(test)] caller: &'static std::panic::Location<'static>,
+    ) -> DictationCore {
+        #[cfg(test)]
+        super::probe::view();
+        let live_status = core_status(dictation.status);
+        let live_id = RecordingId(app.recording_id.load(Ordering::SeqCst));
+        #[cfg(test)]
+        record(
+            (dictation.core.status(), dictation.core.current_id()),
+            (live_status, live_id),
+            caller,
+        );
+        if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
+            CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
+            // Re-sync through the one seeder: no other method builds a core.
+            Self::seed_core(app, dictation);
+        }
+        DictationCore::new(
+            dictation.core,
+            LiveObs {
+                cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
+                context_for: None,
+            },
+        )
+    }
+
     /// The decision view of the stop family's entries after the cutover (C9.7 b, C8.6):
-    /// sites 201, 202, 203, 204a, 204b and the legacy import's 301 (and its destination
-    /// row 301.6), whose finish sections 204a and 204b also serve site 302 and all four
-    /// `IdleGuard` origins. Exactly [`Self::lifecycle_view`] for the stop family: the same
-    /// persisted M1/M2, the same M3 atomic, M4 left `None` for the same reason, the same
-    /// C8.6 count-and-re-sync. A test build records its reads apart, with the caller
-    /// (`probe::stop_entry`), so a stop test sees only stop entries and which one.
+    /// sites 201, 202 (no context), 203, 204a, 204b and the legacy import's 301 (and its
+    /// destination row 301.6), whose finish sections 204a and 204b also serve site 302 and
+    /// all four `IdleGuard` origins. Only the stop family's own wrapper over
+    /// [`Self::persisted_view`] (D-S2c-18): the same persisted M1/M2, the same M3 atomic, M4
+    /// `None` for the same reason, the same C8.6 count-and-re-sync. A test build records
+    /// its reads apart, with the caller (`probe::stop_entry`), so a stop test sees only stop
+    /// entries and which one.
     #[cfg_attr(test, track_caller)]
     pub(crate) fn stop_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
         Self::persisted_view(
@@ -262,9 +327,10 @@ impl FieldAdapter {
     /// The decision view of the cancel family's one D entry after the cutover (C9.7 b,
     /// C8.6): site 205 (`decide_cancel_request`, R205.1-.5), decided under the D hold the
     /// section already takes with T held. Site 206 (the capture-cancel result, shared by the
-    /// cancel command and the stop's R201.4) is D-less and keeps its lock-free reads. Exactly
-    /// [`Self::lifecycle_view`] for the cancel family: the same persisted M1/M2, the same M3
-    /// atomic, M4 left `None` (no cancel decide reads it), the same C8.6 count-and-re-sync.
+    /// cancel command and the stop's R201.4) is D-less and keeps its lock-free reads. Only
+    /// the cancel family's own wrapper over [`Self::persisted_view`] (D-S2c-18): the same
+    /// persisted M1/M2, the same M3 atomic, M4 left `None` (no cancel decide reads it), the
+    /// same C8.6 count-and-re-sync.
     /// A test build records its reads apart, with the caller (`probe::cancel_entry`), so a
     /// cancel test sees only cancel entries and which one.
     #[cfg_attr(test, track_caller)]
@@ -324,48 +390,6 @@ impl FieldAdapter {
         );
         if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
             CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
-        }
-        DictationCore::new(
-            dictation.core,
-            LiveObs {
-                cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
-                context_for: None,
-            },
-        )
-    }
-
-    /// The one body of the cut-over views (see [`Self::lifecycle_view`]). `record` and
-    /// `caller` are the family's probe and the entry's call site in a test build.
-    fn persisted_view(
-        app: &AppState,
-        dictation: &mut DictationState,
-        #[cfg(test)] record: fn(
-            (
-                murmur_dictation_core::status::Status,
-                murmur_dictation_core::ids::RecordingId,
-            ),
-            (
-                murmur_dictation_core::status::Status,
-                murmur_dictation_core::ids::RecordingId,
-            ),
-            &'static std::panic::Location<'static>,
-        ),
-        #[cfg(test)] caller: &'static std::panic::Location<'static>,
-    ) -> DictationCore {
-        #[cfg(test)]
-        super::probe::view();
-        let live_status = core_status(dictation.status);
-        let live_id = RecordingId(app.recording_id.load(Ordering::SeqCst));
-        #[cfg(test)]
-        record(
-            (dictation.core.status(), dictation.core.current_id()),
-            (live_status, live_id),
-            caller,
-        );
-        if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
-            CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
-            // Re-sync through the one seeder: no other method builds a core.
-            Self::seed_core(app, dictation);
         }
         DictationCore::new(
             dictation.core,
