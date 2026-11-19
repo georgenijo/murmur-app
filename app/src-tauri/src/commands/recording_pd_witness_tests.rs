@@ -874,17 +874,22 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-24 each name at least one: renaming
+/// `recording_harness_findings_tests.rs` or `recording_pd25_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-25 each name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
     let map = std::fs::read_to_string(root.join("recording_pd_witness_map.md")).expect("map");
-    let findings = std::fs::read_to_string(root.join("recording_harness_findings_tests.rs"))
-        .expect("the findings tests");
     let section = harness_section(&map);
     let names = finding_witness_names(section);
-    let running = running_tests(&findings);
+    let mut running = std::collections::BTreeSet::new();
+    for file in [
+        "recording_harness_findings_tests.rs",
+        "recording_pd25_tests.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(file)).expect("a findings test file");
+        running.extend(running_tests(&source));
+    }
     assert!(!names.is_empty(), "the section names no shell witness");
     for name in &names {
         assert!(
@@ -892,7 +897,7 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    for pd in 19..=24 {
+    for pd in 19..=25 {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1142,42 +1147,18 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// the shadow. The twelve goldens and the Stage 1 PD witness tests run through the
 /// shadow in this process (every sub-run is replayed, `run_sub_run_observed`), and each
 /// PD the allowlist credits is counted. PD-11, PD-14 and PD-17 are not row signatures
-/// (properties of an effect's implementation, or latent) and are not counted.
+/// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
+/// E8 enumerates every preserved defect, PD-1 to PD-25 (`e8_pds`): each is driven by a
+/// named shell fixture, the PD-19 to PD-25 fixtures are replayed through the shadow too
+/// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
+/// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
+/// not run.
 #[cfg(feature = "dictation-shadow")]
 #[test]
 fn every_family_pd_is_witnessed_by_the_shadow() {
-    use super::golden_tests as g;
     use crate::dictation_shadow::replay;
     replay::reset_totals();
-    g::golden_s01_stop_during_start();
-    g::golden_s02_cancel_in_each_phase();
-    g::golden_s03_interruption_of_8000_samples_or_more();
-    g::golden_s04_interruption_under_8000_samples();
-    g::golden_s05_timeout_teardown();
-    g::golden_s06_stale_stop();
-    g::golden_s07_meeting_conflict();
-    g::golden_s08_preview_handoff();
-    g::golden_s09_supervisor_idle_during_processing();
-    g::golden_s10_ready_vs_context_rendezvous();
-    g::golden_s11_idle_on_a_finished_recording();
-    g::golden_s12_start_failure_vs_initialization_failed();
-    pd03_stop_missing_context_runs_unconditional_idle_effects();
-    pd05_supervisor_events_for_the_current_id_claim_superseded();
-    pd06_pipeline_guard_overwrites_recovering();
-    pd08_flushing_start_leaves_its_context_installed();
-    pd09_dropped_start_orphans_the_begin_ledger_row();
-    pd10_terminal_before_accepted_is_dropped_and_ledger_evicts();
-    pd13_task_panic_restores_idle_without_a_terminal();
-    pd18bc_start_in_the_teardown_tail_leaves_recovering();
-    // PD-9's signature in the allowlist is an R101.15 flight abandoned between `PR` and
-    // `CS`: a start future dropped while it waits for a kept preview's capture start.
-    repeat_abandoning(
-        &sub(
-            "PD-9 abandoned at the awaited capture start",
-            pd09c_start_dropped_at_the_awaited_capture_start,
-        ),
-        1,
-    );
+    run_e8_fixtures();
     let totals = replay::totals();
     eprintln!("E8 pd_witness: {:?}", totals.pd_witness);
     eprintln!("E7 rows compared: {:?}", totals.per_row);
@@ -1273,6 +1254,386 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     assert!(
         missing.is_empty(),
         "preserved defects the shadow never witnessed: {missing:?} (witnessed: {:?})",
+        totals.pd_witness
+    );
+    assert_every_preserved_signature_is_accounted(&totals);
+}
+
+/// What a preserved defect is, to E8 (D-S2c-15 C4).
+#[cfg(feature = "dictation-shadow")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PdKind {
+    /// A row signature of the shadow's allowlist (`pd::PD_DEFS`): the shadow credits it,
+    /// and E8 requires the credit to be above zero.
+    Row,
+    /// A property of an effect's implementation, not a row (PD-11, PD-14): the named
+    /// fixture is its own `#[test]`, which E8 does not replay.
+    Property,
+    /// Not a row signature either: a split between a recording's terminal and its
+    /// performance outcome that the property harness found (PD-19 to PD-25). E8 replays
+    /// the named fixtures through the shadow in this process, where each must close
+    /// clean (E7), and the shadow credits nothing for them.
+    CrossLedger,
+    /// No production schedule (PD-17): there is no fixture to name.
+    Latent,
+}
+
+#[cfg(feature = "dictation-shadow")]
+type Fixture = (&'static str, &'static str, fn());
+
+/// A fixture by the name of its function: `(name, the path of the function, the function)`.
+/// The path is what the compiled test harness lists the test as (minus the crate).
+#[cfg(feature = "dictation-shadow")]
+macro_rules! fx {
+    ($module:ident :: $name:ident) => {
+        (
+            stringify!($name),
+            std::any::type_name_of_val(&$module::$name),
+            $module::$name as fn(),
+        )
+    };
+    ($name:ident) => {
+        (
+            stringify!($name),
+            std::any::type_name_of_val(&$name),
+            $name as fn(),
+        )
+    };
+}
+
+/// PD-9's signature in the allowlist is an R101.15 flight abandoned between `PR` and
+/// `CS`: a start future dropped while it waits for a kept preview's capture start.
+/// [`run_e8_fixtures`] replays it with PD-9's `#[test]` fixture (it is a helper, not a test).
+#[cfg(feature = "dictation-shadow")]
+fn pd09c_abandoned_at_the_awaited_capture_start() {
+    repeat_abandoning(
+        &sub(
+            "PD-9 abandoned at the awaited capture start",
+            pd09c_start_dropped_at_the_awaited_capture_start,
+        ),
+        1,
+    );
+}
+
+/// Every preserved defect, PD-1 to PD-25, with the shell fixtures that assert it. Seed
+/// 92,332 of #1157 is not a defect (the generator draws an uncaused `Cancelled`) and is
+/// not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
+/// [`assert_every_preserved_signature_is_accounted`] fails otherwise.
+#[cfg(feature = "dictation-shadow")]
+fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
+    use super::golden_tests as g;
+    use super::harness_findings_tests as f;
+    use super::pd25_tests as p;
+    use PdKind::{CrossLedger, Latent, Property, Row};
+    vec![
+        (1, Row, vec![fx!(g::golden_s04_interruption_under_8000_samples)]),
+        (2, Row, vec![fx!(g::golden_s11_idle_on_a_finished_recording)]),
+        (
+            3,
+            Row,
+            vec![
+                fx!(g::golden_s12_start_failure_vs_initialization_failed),
+                fx!(pd03_stop_missing_context_runs_unconditional_idle_effects),
+            ],
+        ),
+        (4, Row, vec![fx!(g::golden_s10_ready_vs_context_rendezvous)]),
+        (
+            5,
+            Row,
+            vec![fx!(pd05_supervisor_events_for_the_current_id_claim_superseded)],
+        ),
+        (
+            6,
+            Row,
+            vec![
+                fx!(g::golden_s05_timeout_teardown),
+                fx!(g::golden_s09_supervisor_idle_during_processing),
+                fx!(pd06_pipeline_guard_overwrites_recovering),
+            ],
+        ),
+        (
+            7,
+            Row,
+            vec![
+                fx!(g::golden_s09_supervisor_idle_during_processing),
+                fx!(g::golden_s05_timeout_teardown),
+            ],
+        ),
+        (
+            8,
+            Row,
+            vec![fx!(pd08_flushing_start_leaves_its_context_installed)],
+        ),
+        (
+            9,
+            Row,
+            vec![fx!(pd09_dropped_start_orphans_the_begin_ledger_row)],
+        ),
+        (
+            10,
+            Row,
+            vec![fx!(pd10_terminal_before_accepted_is_dropped_and_ledger_evicts)],
+        ),
+        (
+            11,
+            Property,
+            vec![fx!(pd11_terminal_claim_and_diagnostics_complete_are_not_atomic)],
+        ),
+        (
+            12,
+            Row,
+            vec![
+                fx!(g::golden_s01_stop_during_start),
+                fx!(g::golden_s06_stale_stop),
+            ],
+        ),
+        (
+            13,
+            Row,
+            vec![fx!(pd13_task_panic_restores_idle_without_a_terminal)],
+        ),
+        (
+            14,
+            Property,
+            vec![fx!(pd14_ticker_task_panic_never_runs_the_hide)],
+        ),
+        (
+            15,
+            Row,
+            vec![
+                fx!(g::golden_s03_interruption_of_8000_samples_or_more),
+                fx!(g::golden_s04_interruption_under_8000_samples),
+            ],
+        ),
+        (16, Row, vec![fx!(g::golden_s02_cancel_in_each_phase)]),
+        (17, Latent, vec![]),
+        (
+            18,
+            Row,
+            vec![
+                fx!(g::golden_s04_interruption_under_8000_samples),
+                fx!(pd18bc_start_in_the_teardown_tail_leaves_recovering),
+            ],
+        ),
+        (
+            19,
+            CrossLedger,
+            vec![
+                fx!(f::pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering),
+                fx!(f::pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering),
+                fx!(f::pd19_a_refused_auto_stop_leaves_the_capture_and_recovering),
+            ],
+        ),
+        (
+            20,
+            CrossLedger,
+            vec![fx!(f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree)],
+        ),
+        (
+            21,
+            CrossLedger,
+            vec![
+                fx!(f::pd21_timed_out_cancel_then_a_short_stop_disagree),
+                fx!(f::pd21_timed_out_cancel_and_the_late_recovery_disagree),
+            ],
+        ),
+        (
+            22,
+            CrossLedger,
+            vec![
+                fx!(f::pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance),
+                fx!(f::pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance),
+            ],
+        ),
+        (
+            23,
+            CrossLedger,
+            vec![
+                fx!(f::pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree),
+                fx!(f::pd23_superseded_terminal_and_a_refused_stop_failed_disagree),
+                fx!(f::pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree),
+            ],
+        ),
+        (
+            24,
+            CrossLedger,
+            vec![
+                fx!(f::pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree),
+                fx!(f::pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree),
+            ],
+        ),
+        (
+            25,
+            CrossLedger,
+            vec![
+                fx!(p::pd25_import_allocates_while_a_scoped_stop_for_the_old_generation_is_queued),
+                fx!(p::pd25_start_allocates_while_a_scoped_stop_for_the_old_generation_is_queued),
+            ],
+        ),
+    ]
+}
+
+/// Run every golden, then every replayed fixture of [`e8_pds`] once (a fixture named for
+/// two PDs runs once), so each closes through the shadow in this process.
+#[cfg(feature = "dictation-shadow")]
+fn run_e8_fixtures() {
+    use super::golden_tests as g;
+    let goldens: [Fixture; 12] = [
+        fx!(g::golden_s01_stop_during_start),
+        fx!(g::golden_s02_cancel_in_each_phase),
+        fx!(g::golden_s03_interruption_of_8000_samples_or_more),
+        fx!(g::golden_s04_interruption_under_8000_samples),
+        fx!(g::golden_s05_timeout_teardown),
+        fx!(g::golden_s06_stale_stop),
+        fx!(g::golden_s07_meeting_conflict),
+        fx!(g::golden_s08_preview_handoff),
+        fx!(g::golden_s09_supervisor_idle_during_processing),
+        fx!(g::golden_s10_ready_vs_context_rendezvous),
+        fx!(g::golden_s11_idle_on_a_finished_recording),
+        fx!(g::golden_s12_start_failure_vs_initialization_failed),
+    ];
+    let mut ran = std::collections::BTreeSet::new();
+    let mut run = |(name, _, fixture): Fixture| {
+        if ran.insert(name) {
+            fixture();
+        }
+    };
+    goldens.into_iter().for_each(&mut run);
+    for (_, kind, fixtures) in e8_pds() {
+        if kind != PdKind::Property {
+            fixtures.into_iter().for_each(&mut run);
+        }
+    }
+    run(fx!(pd09c_abandoned_at_the_awaited_capture_start));
+}
+
+/// The tests the compiled harness lists, and those of them it ignores, by their full path
+/// without the crate (`commands::recording::golden_tests::golden_s01..`). Asked of this very
+/// test binary (`--list`), so `cfg_attr(.., ignore)` and `cfg` are resolved as compiled.
+#[cfg(feature = "dictation-shadow")]
+fn compiled_harness() -> &'static (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    static LISTS: std::sync::OnceLock<(
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    )> = std::sync::OnceLock::new();
+    LISTS.get_or_init(|| {
+        let list = |ignored_only: bool| {
+            let mut command = std::process::Command::new(
+                std::env::current_exe().expect("the test binary's own path"),
+            );
+            command.args(["--list", "--format", "terse"]);
+            if ignored_only {
+                command.arg("--ignored");
+            }
+            let output = command.output().expect("the test binary lists its tests");
+            assert!(output.status.success(), "`--list` failed");
+            String::from_utf8(output.stdout)
+                .expect("a test list is UTF-8")
+                .lines()
+                .filter_map(|line| line.strip_suffix(": test"))
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        (list(false), list(true))
+    })
+}
+
+/// Whether the compiled harness runs the test at `path` (a `type_name` path, with the
+/// crate): it lists it and does not ignore it.
+#[cfg(feature = "dictation-shadow")]
+fn compiled_harness_runs(path: &str) -> bool {
+    let Some((_, listed_as)) = path.split_once("::") else {
+        return false;
+    };
+    let (all, ignored) = compiled_harness();
+    all.contains(listed_as) && !ignored.contains(listed_as)
+}
+
+/// A test the feature build ignores through a `cfg_attr`, as the control for
+/// [`e8_rejects_a_fixture_the_compiled_harness_skips`]: a source scan for `#[ignore]` sees no
+/// `ignore` attribute on it.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+#[cfg_attr(feature = "dictation-shadow", ignore = "E8 probe: skipped by libtest")]
+fn e8_probe_skipped_through_cfg_attr() {}
+
+/// E8 does not accept a fixture libtest skips (a `cfg_attr(.., ignore)` the feature build
+/// enables), nor a path that is no test, and does accept one it runs.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn e8_rejects_a_fixture_the_compiled_harness_skips() {
+    let probe = std::any::type_name_of_val(&e8_probe_skipped_through_cfg_attr);
+    assert!(
+        !compiled_harness_runs(probe),
+        "the harness skips the probe, so E8 must not take it as run: {probe}"
+    );
+    let running = std::any::type_name_of_val(&pd13_task_panic_restores_idle_without_a_terminal);
+    assert!(compiled_harness_runs(running), "{running}");
+    assert!(!compiled_harness_runs(
+        "ui_lib::commands::recording::nothing"
+    ));
+    assert!(
+        !compiled_harness().1.is_empty(),
+        "the control saw no ignored test at all"
+    );
+}
+
+/// E8's accounting (D-S2c-15 C4), over what [`run_e8_fixtures`] replayed:
+/// * PD-1 to PD-25 each have one row in [`e8_pds`], and a latent PD names no fixture;
+/// * the PDs of the shadow's allowlist are exactly the `Row` ones, and each was credited;
+/// * the shadow credited nothing else;
+/// * every named fixture is, by its full path, a test the **compiled** harness runs: listed by
+///   libtest in this very build and not ignored in it (so an `#[ignore]` behind a `cfg_attr`
+///   that this build enables is seen).
+#[cfg(feature = "dictation-shadow")]
+fn assert_every_preserved_signature_is_accounted(totals: &crate::dictation_shadow::replay::Totals) {
+    let table = e8_pds();
+    let numbers: Vec<u8> = table.iter().map(|(pd, _, _)| *pd).collect();
+    assert_eq!(numbers, (1..=25).collect::<Vec<u8>>(), "one E8 row per PD");
+    let allowlisted: std::collections::BTreeSet<u8> = crate::dictation_shadow::pd::PD_DEFS
+        .iter()
+        .map(|def| def.pd)
+        .collect();
+    let rows: std::collections::BTreeSet<u8> = table
+        .iter()
+        .filter(|(_, kind, _)| *kind == PdKind::Row)
+        .map(|(pd, _, _)| *pd)
+        .collect();
+    assert_eq!(
+        allowlisted, rows,
+        "the shadow's allowlist and E8's row-signature PDs differ"
+    );
+    for (pd, kind, fixtures) in &table {
+        assert_eq!(
+            fixtures.is_empty(),
+            *kind == PdKind::Latent,
+            "PD-{pd}: only a latent PD names no fixture"
+        );
+        for (name, path, _) in fixtures {
+            assert!(
+                compiled_harness_runs(path),
+                "PD-{pd}: `{name}` ({path}) is not a test the compiled harness runs: it is \
+                 missing, ignored in this build, or not a `#[test]`"
+            );
+        }
+        let credited = totals.pd_witness.get(pd).copied().unwrap_or(0);
+        match kind {
+            PdKind::Row => assert!(
+                credited > 0,
+                "PD-{pd} is a row signature and the shadow never witnessed it"
+            ),
+            _ => assert_eq!(
+                credited, 0,
+                "PD-{pd} is not a row signature, yet the shadow credited it {credited} times"
+            ),
+        }
+    }
+    assert!(
+        totals.pd_witness.keys().all(|pd| rows.contains(pd)),
+        "the shadow credited a PD E8 does not list as a row signature: {:?}",
         totals.pd_witness
     );
 }
@@ -1565,6 +1926,38 @@ pub(super) mod under_d {
         ("bridge Idle while idle (short idle, R215.3/R216)", 6, 5),
     ];
 
+    /// The blocking threads the pool is warmed to hold idle before a measured delivery.
+    const WARM_BLOCKING_THREADS: usize = 8;
+
+    /// Make the app runtime's blocking pool hold [`WARM_BLOCKING_THREADS`] idle threads, so a
+    /// measured delivery never makes the pool create one under D. The R211 arm persists
+    /// the recording's performance completion with `spawn_blocking`
+    /// (`spawn_dictation_performance_completion`, a call both builds make while D is
+    /// held), and Tokio creates a worker thread there whenever none is idle: seven
+    /// allocations that land in the calling thread's count. Whether one is idle depends on
+    /// whether the previous delivery's persist has returned to the pool, which is timing,
+    /// not behaviour; the pins measure the bridge, not the pool. The tasks rendezvous on a
+    /// barrier, so every one of them holds its own thread at once; the pool then keeps them
+    /// idle for its keep-alive, far longer than a run. First-delivery and steady-state
+    /// numbers stay separate measurements of the same code.
+    fn warm_the_blocking_pool() {
+        let barrier = Arc::new(std::sync::Barrier::new(WARM_BLOCKING_THREADS + 1));
+        let tasks: Vec<_> = (0..WARM_BLOCKING_THREADS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                tauri::async_runtime::spawn_blocking(move || {
+                    barrier.wait();
+                })
+            })
+            .collect();
+        barrier.wait();
+        tauri::async_runtime::block_on(async {
+            for task in tasks {
+                task.await.expect("a warming task finished");
+            }
+        });
+    }
+
     fn bridge_measure(world: &Arc<World>, event: AudioLifecycleEvent) {
         let state = world.state();
         let (_, allocations) = count_under_d(&state.app_state.dictation, || {
@@ -1631,6 +2024,7 @@ pub(super) mod under_d {
         // delivery first warms the process-wide state (callsite registration) so the
         // numbers do not depend on which test ran before.
         let pair = |scenario: &Scenario, disarmed: bool| -> (u64, u64) {
+            warm_the_blocking_pool();
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| {
