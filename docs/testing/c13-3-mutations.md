@@ -37,13 +37,18 @@ python3 scripts/c13_3_mutations.py --all --check            # edits still apply;
 python3 scripts/c13_3_mutations.py --family stop --dry-run  # print edits and commands
 ```
 
-Every command of a row runs. A command is `CAUGHT` only when cargo reported a failed
-test that the command names (one of its filter arguments, or any test when it has
-none). It is `INVALID` when no verdict can be drawn: a compile error, a cargo
-infrastructure failure (no test result at all, as when a dependency download fails),
-zero tests run, a crash, or a failure in tests the row does not name. A row is
-`INVALID` if any command is, else `CAUGHT` if any command is, else `SURVIVED` (the
-check lost its teeth). The exit status is 1 for `SURVIVED` or `INVALID`.
+Every command of a row runs, even after one is `INVALID` or cargo cannot start. A
+command is `CAUGHT` only when all of these hold: cargo exited with libtest's failure
+status (101); every test binary it started printed a completed `test result` summary
+and ended normally (no signal, no other exit status); and a test the command names
+(one of its filter arguments, or any test when it has none) failed in a binary whose
+summary completed. It is `INVALID` when no verdict can be drawn: a compile error, a
+cargo infrastructure failure (no test binary started, as when a dependency download
+fails), a binary that never finished or exited abnormally (a `FAILED` line printed
+before a crash does not count), zero tests run, a failure in tests the row does not
+name, or cargo failing to launch. A row is `INVALID` if any command is, else `CAUGHT`
+if any command is, else `SURVIVED` (the check lost its teeth). The exit status is 1
+for `SURVIVED` or `INVALID`.
 
 A cutover PR records, per row, the failing test name and the first failing
 assertion. After a cutover moves the code a row edits, update that row's `old` and
