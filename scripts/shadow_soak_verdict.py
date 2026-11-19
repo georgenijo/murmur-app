@@ -70,16 +70,20 @@ TAINT_COUNTERS = (
     "core_divergences",
 )
 
-# The shutdown record of a final summary (E9). The drain at a clean exit reports whether the
-# transport went quiet (`shutdown_quiesced`) and counts what it dropped after it closed. Each
-# is required, and fails closed: a missing field is a build before it was written, `false` is
-# a push still in flight at the deadline, and any non-zero count is a decision or header the
-# comparator never saw.
+# The shutdown record of a final write (`final: true`), as #1173 names it (E9). All four are
+# required, and fail closed: a missing field is a build before it was written.
+#   * `shutdown_quiesced`: `true` only if the wait finished before the deadline, nothing was
+#     dropped after the close and nothing was unaccounted for. Must be `true`.
+#   * `shutdown_unsettled`: attempts unaccounted for at the final sample. Must be `0`.
+#   * `dropped_after_shutdown`: publish attempts refused after the close. Must be `0`.
+#   * `published_attempts`: every publish attempt of the session. Required, a count, and
+#     information only (any value).
 SHUTDOWN_QUIESCED = "shutdown_quiesced"
-SHUTDOWN_REQUIRED_COUNTS = ("dropped_after_shutdown",)
-# Counters a later build may add: a non-zero value is taint when present. They are not
-# required until #1173 names them (`rejected_after_close`; `published_attempts` is not a drop).
-SHUTDOWN_OPTIONAL_COUNTS = ("rejected_after_close",)
+SHUTDOWN_ZERO_COUNTS = ("shutdown_unsettled", "dropped_after_shutdown")
+SHUTDOWN_INFORMATION_COUNTS = ("published_attempts",)
+# `rejected_after_close` is not a field of the summary: #1173 calls the same thing
+# `dropped_after_shutdown`. Kept only as an alias: when present and above 0 it is taint.
+SHUTDOWN_ALIAS_COUNTS = ("rejected_after_close",)
 
 CRITERIA = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 
@@ -440,18 +444,19 @@ def evaluate_family(
         # its counters stop at the last periodic write, so the pass is tainted.
         if summary.get("final") is not True:
             taint.append(f"{name}: not a final summary (`final` is {summary.get('final')!r}: a crash or a kill)")
-        # The shutdown: quiesced, and nothing dropped or rejected after the transport closed.
+        # The shutdown (a final write): quiesced, nothing unsettled, nothing dropped after the
+        # close, and the attempt count present. Each fails closed.
         if summary.get(SHUTDOWN_QUIESCED) is not True:
             taint.append(f"{name}:{SHUTDOWN_QUIESCED}={summary.get(SHUTDOWN_QUIESCED)!r} (absent or not true: the transport did not go quiet)")
-        for counter in (*SHUTDOWN_REQUIRED_COUNTS, *SHUTDOWN_OPTIONAL_COUNTS):
+        for counter in (*SHUTDOWN_ZERO_COUNTS, *SHUTDOWN_INFORMATION_COUNTS, *SHUTDOWN_ALIAS_COUNTS):
             if counter not in summary:
-                if counter in SHUTDOWN_REQUIRED_COUNTS:
+                if counter not in SHUTDOWN_ALIAS_COUNTS:
                     taint.append(f"{name}: no `{counter}` (a build before the shutdown record)")
                 continue
             value = summary[counter]
-            if not isinstance(value, int) or isinstance(value, bool):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 taint.append(f"{name}:{counter}={value!r} is not a count")
-            elif value > 0:
+            elif value > 0 and counter not in SHUTDOWN_INFORMATION_COUNTS:
                 taint.append(f"{name}:{counter}={value}")
         # The books are kept over all family sites together (`conservation.total`); only the
         # headers are per site, and `non_family` (keyed by file:line) is informational.

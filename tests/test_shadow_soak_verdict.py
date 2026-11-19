@@ -36,6 +36,9 @@ def row_entry(matched: int = 0, delegated: int = 0, compared: int = 0) -> dict:
     return {"compared": compared, "matched": matched, "delegated": delegated, "e3_credit": matched + delegated}
 
 
+_ABSENT = object()  # a field left out of a summary
+
+
 def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
     """A summary of one clean native pass: every natively required row matched 10 times."""
     per_row = {}
@@ -76,8 +79,11 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
         "incomplete_closes": {},
         "core_divergences": 0,
         "final": True,
+        # The final write's shutdown record, as #1173 round 3 names it.
         "shutdown_quiesced": True,
+        "shutdown_unsettled": 0,
         "dropped_after_shutdown": 0,
+        "published_attempts": 1200,
         "named_no_reply": 2,
         "unclassified_err_replies": 3,
         # The shape PR #1173 writes: per-site objects hold only `headers`; the four books and
@@ -570,38 +576,64 @@ class E9Tests(unittest.TestCase):
         del passes[1]["final"]
         self.assertFalse(by(evaluate(passes), "start", "E9").passed)
 
-    def test_a_missing_shutdown_field_fails_closed(self):
-        # Sol's #1173 re-check: E9 passed with `shutdown_quiesced` false and drops non-zero.
-        for field in ("shutdown_quiesced", "dropped_after_shutdown"):
-            passes = three_passes()
-            del passes[1][field]
-            result = by(evaluate(passes), "start", "E9")
-            self.assertFalse(result.passed, field)
-            self.assertIn(field, result.detail)
+    # The shutdown record, one test per fail-closed condition (#1173 round 3).
+
+    def shutdown(self, **change):
+        passes = three_passes()
+        for key, value in change.items():
+            if value is _ABSENT:
+                del passes[1][key]
+            else:
+                passes[1][key] = value
+        return by(evaluate(passes), "start", "E9")
+
+    def assert_tainted(self, result, text):
+        self.assertFalse(result.passed, result.detail)
+        self.assertIn(text, result.detail)
+
+    def test_a_clean_shutdown_record_passes(self):
+        self.assertTrue(self.shutdown().passed)
+        # `published_attempts` is information only: any count passes, zero included.
+        self.assertTrue(self.shutdown(published_attempts=0).passed)
+        self.assertTrue(self.shutdown(published_attempts=10**6).passed)
+
+    def test_a_non_final_write_fails_closed(self):
+        self.assert_tainted(self.shutdown(final=False), "not a final summary")
+
+    def test_a_missing_shutdown_quiesced_fails_closed(self):
+        self.assert_tainted(self.shutdown(shutdown_quiesced=_ABSENT), "shutdown_quiesced")
+
+    def test_a_missing_shutdown_unsettled_fails_closed(self):
+        self.assert_tainted(self.shutdown(shutdown_unsettled=_ABSENT), "no `shutdown_unsettled`")
+
+    def test_a_missing_published_attempts_fails_closed(self):
+        self.assert_tainted(self.shutdown(published_attempts=_ABSENT), "no `published_attempts`")
+
+    def test_a_missing_dropped_after_shutdown_fails_closed(self):
+        self.assert_tainted(self.shutdown(dropped_after_shutdown=_ABSENT), "no `dropped_after_shutdown`")
 
     def test_a_shutdown_that_did_not_quiesce_is_taint(self):
         for value in (False, None, "true", 1):
-            passes = three_passes()
-            passes[1]["shutdown_quiesced"] = value
-            result = by(evaluate(passes), "start", "E9")
-            self.assertFalse(result.passed, repr(value))
-            self.assertIn("shutdown_quiesced", result.detail)
+            self.assert_tainted(self.shutdown(shutdown_quiesced=value), "shutdown_quiesced")
 
-    def test_a_drop_or_rejection_after_the_shutdown_is_taint(self):
-        for field in ("dropped_after_shutdown", "rejected_after_close"):
-            for value in (1, 7):
-                passes = three_passes()
-                passes[1][field] = value
-                result = by(evaluate(passes), "start", "E9")
-                self.assertFalse(result.passed, f"{field}={value}")
-                self.assertIn(f"{field}={value}", result.detail)
-            passes = three_passes()
-            passes[1][field] = "0"
-            self.assertFalse(by(evaluate(passes), "start", "E9").passed, field)
-        # Zero is clean, and `rejected_after_close` is not required until it exists.
-        passes = three_passes()
-        passes[1]["rejected_after_close"] = 0
-        self.assertTrue(by(evaluate(passes), "start", "E9").passed)
+    def test_unsettled_attempts_at_the_final_sample_are_taint(self):
+        for value in (1, 5):
+            self.assert_tainted(self.shutdown(shutdown_unsettled=value), f"shutdown_unsettled={value}")
+
+    def test_attempts_refused_after_the_close_are_taint(self):
+        for value in (1, 7):
+            self.assert_tainted(self.shutdown(dropped_after_shutdown=value), f"dropped_after_shutdown={value}")
+
+    def test_a_shutdown_counter_that_is_not_a_count_is_taint(self):
+        for field in ("shutdown_unsettled", "dropped_after_shutdown", "published_attempts"):
+            for value in ("0", None, True, -1, 0.0):
+                self.assert_tainted(self.shutdown(**{field: value}), f"{field}={value!r}")
+
+    def test_rejected_after_close_is_only_an_alias_that_fails_when_above_zero(self):
+        # #1173 has no such field (it is `dropped_after_shutdown`); absent is fine, zero is
+        # fine, above zero fails.
+        self.assertTrue(self.shutdown(rejected_after_close=0).passed)
+        self.assert_tainted(self.shutdown(rejected_after_close=2), "rejected_after_close=2")
 
     def test_the_named_no_reply_close_is_expected_not_taint(self):
         passes = three_passes()
