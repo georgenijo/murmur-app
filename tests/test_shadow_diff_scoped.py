@@ -827,6 +827,24 @@ class LifecycleCutoverTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("shadow change: no", out)
 
+    def test_a_form_feed_in_the_file_does_not_shift_the_line_numbers(self):
+        # Fable round 7: `str.splitlines()` also splits at a form feed and U+2028, so its line
+        # numbers drift from git's and the tokenizer's. With a form feed on the import's line the
+        # blank-line check read the line before each removed line, and took the deleted `/*`
+        # and `*/` delimiters (each with a blank line before it) for blank lines.
+        for separator in ("\x0c", "\u2028"):
+            retained = (
+                "#[tauri::command]\npub async fn other_witnessed() {\n    live();\n\n    /*\n\n"
+                "    */\n    other().await\n}\n"
+            )
+            base = f"{self.IMPORT}{separator}\n\n" + self.RETIRED + retained
+            plant = retained.replace("    /*\n", "").replace("    */\n", "")
+            self.assertNotEqual(plant, retained)
+            self.assert_shadow(self.outcome(plant, base), repr(separator))
+            # The same file with the retired wrapper alone removed still passes.
+            control = self.outcome(retained, base)
+            self.assertEqual(control[0], 0, f"{separator!r}: {control[2]}")
+
     def test_an_inner_attribute_above_the_retired_wrapper_does_not_go_with_it(self):
         base = f"{self.IMPORT}\n\n#![allow(unused)]\n" + self.RETIRED + self.OTHER
         self.assert_shadow(self.outcome(self.OTHER, base))

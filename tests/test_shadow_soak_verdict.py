@@ -79,11 +79,14 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
         "incomplete_closes": {},
         "core_divergences": 0,
         "final": True,
-        # The final write's shutdown record, as #1173 round 3 names it.
+        # The final write's shutdown record, as #1173 round 4 names it: every attempt is
+        # popped, rejected by the queue, refused after the close, or unsettled.
         "shutdown_quiesced": True,
         "shutdown_unsettled": 0,
         "dropped_after_shutdown": 0,
         "published_attempts": 1200,
+        "popped": 1190,
+        "push_lost": 10,
         "named_no_reply": 2,
         "unclassified_err_replies": 3,
         # The shape PR #1173 writes: per-site objects hold only `headers`; the four books and
@@ -593,9 +596,11 @@ class E9Tests(unittest.TestCase):
 
     def test_a_clean_shutdown_record_passes(self):
         self.assertTrue(self.shutdown().passed)
-        # `published_attempts` is information only: any count passes, zero included.
-        self.assertTrue(self.shutdown(published_attempts=0).passed)
-        self.assertTrue(self.shutdown(published_attempts=10**6).passed)
+        # `published_attempts`, `popped` and `push_lost` are information only: any counts
+        # that add up pass, zero included.
+        self.assertTrue(self.shutdown(published_attempts=0, popped=0, push_lost=0).passed)
+        self.assertTrue(self.shutdown(published_attempts=10**6, popped=10**6, push_lost=0).passed)
+        self.assertTrue(self.shutdown(published_attempts=7, popped=0, push_lost=7).passed)
 
     def test_a_non_final_write_fails_closed(self):
         self.assert_tainted(self.shutdown(final=False), "not a final summary")
@@ -608,6 +613,37 @@ class E9Tests(unittest.TestCase):
 
     def test_a_missing_published_attempts_fails_closed(self):
         self.assert_tainted(self.shutdown(published_attempts=_ABSENT), "no `published_attempts`")
+
+    def test_a_missing_popped_fails_closed(self):
+        self.assert_tainted(self.shutdown(popped=_ABSENT), "no `popped`")
+
+    def test_a_missing_push_lost_fails_closed(self):
+        self.assert_tainted(self.shutdown(push_lost=_ABSENT), "no `push_lost`")
+
+    def test_a_broken_accounting_invariant_is_taint(self):
+        # popped + push_lost + dropped_after_shutdown + shutdown_unsettled == published_attempts,
+        # read once: a file where it fails was not written from one consistent read.
+        for change in (
+            {"popped": 1189},  # an attempt nobody accounts for
+            {"popped": 1191},  # an attempt counted twice
+            {"push_lost": 0},
+            {"push_lost": 11},
+            {"published_attempts": 1201},
+            {"published_attempts": 1199},
+        ):
+            result = self.shutdown(**change)
+            self.assert_tainted(result, "popped+push_lost+dropped_after_shutdown+shutdown_unsettled")
+            self.assertIn("!= published_attempts", result.detail)
+        # Every term counts: a refused or unsettled attempt balances only against attempts.
+        balanced = self.shutdown(dropped_after_shutdown=1, popped=1189)
+        self.assert_tainted(balanced, "dropped_after_shutdown=1")
+        self.assertNotIn("!= published_attempts", balanced.detail)
+        balanced = self.shutdown(shutdown_unsettled=2, popped=1188)
+        self.assertNotIn("!= published_attempts", balanced.detail)
+        # The terms do not overlap: counting a queue rejection in `dropped_after_shutdown` as well
+        # (a `push_lost` of 10 and a `dropped_after_shutdown` of 10 for the same 10 attempts) breaks it.
+        overlapping = self.shutdown(dropped_after_shutdown=10)
+        self.assertIn("!= published_attempts", overlapping.detail)
 
     def test_a_missing_dropped_after_shutdown_fails_closed(self):
         self.assert_tainted(self.shutdown(dropped_after_shutdown=_ABSENT), "no `dropped_after_shutdown`")
@@ -625,7 +661,7 @@ class E9Tests(unittest.TestCase):
             self.assert_tainted(self.shutdown(dropped_after_shutdown=value), f"dropped_after_shutdown={value}")
 
     def test_a_shutdown_counter_that_is_not_a_count_is_taint(self):
-        for field in ("shutdown_unsettled", "dropped_after_shutdown", "published_attempts"):
+        for field in ("shutdown_unsettled", "dropped_after_shutdown", "published_attempts", "popped", "push_lost"):
             for value in ("0", None, True, -1, 0.0):
                 self.assert_tainted(self.shutdown(**{field: value}), f"{field}={value!r}")
 

@@ -861,12 +861,12 @@ def is_shadow_change(
     for path in guarded:
         head_text = show(root, "HEAD", path)
         head = tokenize(head_text)
-        marks, _ = classify(head, head_text.splitlines(), path)
+        marks, _ = classify(head, head_text.split("\n"), path)
         reasons.extend(f"{path}:{line}" for line in _shadow_lines(head, marks, added_lines(root, base, path)))
         old_text = show(root, base, path)
         old = tokenize(old_text)
         if old:
-            old_marks, _ = classify(old, old_text.splitlines(), path, base_table)
+            old_marks, _ = classify(old, old_text.split("\n"), path, base_table)
             reasons.extend(f"{path}:{line} (removed)" for line in _shadow_lines(old, old_marks, removed_lines(root, base, path)))
     return reasons
 
@@ -1098,7 +1098,7 @@ def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str], imp
             removed_names.add(name)
     if not removed_names:
         return False
-    if not only_retired_items_go(tokens, removed, wrappers, imports, lexical_layout(text), text.splitlines()):
+    if not only_retired_items_go(tokens, removed, wrappers, imports, lexical_layout(text), text.split("\n")):
         return False
     for name in removed_names:
         result = subprocess.run(
@@ -1215,11 +1215,11 @@ def twin_problems(
     pending = [e for e in entries if e["form"] != "frozen_fn"]
     pins = [e for e in entries if e["form"] == "frozen_fn"]
     head = show(root, "HEAD", path)
-    lines = head.splitlines()
+    lines = head.split("\n")
     tokens = tokenize(head)
     base_text = show(root, base, path)
     base_tokens = tokenize(base_text)
-    base_lines = base_text.splitlines()
+    base_lines = base_text.split("\n")
     added = added_lines(root, base, path)
     regions = twin_regions(tokens)
     old_regions = twin_regions(base_tokens)
@@ -1375,7 +1375,7 @@ def scoping_problems(
     * The base's tokens survive, in order, once the gated insertions are taken out."""
     attrs_pending = [dict(entry) for entry in SHADOW_ATTR_ALLOW.get(path, [])]
     head = show(root, "HEAD", path)
-    lines = head.splitlines()
+    lines = head.split("\n")
     tokens = tokenize(head)
     added = added_lines(root, base, path)
     in_base = bool(show(root, base, path))
@@ -1388,7 +1388,7 @@ def scoping_problems(
     exempt: set[int] = set()
     allowed = SHADOW_DIFF_ALLOW.get(path)
     if allowed is not None:
-        base_text_lines = show(root, base, path).splitlines()
+        base_text_lines = show(root, base, path).split("\n")
         permitted_text = allowed[2] if len(allowed) > 2 else None
         for number in sorted(removed_lines(root, base, path)):
             text = base_text_lines[number - 1].strip() if 0 < number <= len(base_text_lines) else ""

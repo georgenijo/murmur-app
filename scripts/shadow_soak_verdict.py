@@ -70,17 +70,25 @@ TAINT_COUNTERS = (
     "core_divergences",
 )
 
-# The shutdown record of a final write (`final: true`), as #1173 names it (E9). All four are
-# required, and fail closed: a missing field is a build before it was written.
-#   * `shutdown_quiesced`: `true` only if the wait finished before the deadline, nothing was
-#     dropped after the close and nothing was unaccounted for. Must be `true`.
-#   * `shutdown_unsettled`: attempts unaccounted for at the final sample. Must be `0`.
+# The shutdown record of a final write (`final: true`), as #1173 round 4 names it (E9). All six
+# fields are required, and fail closed: a missing field is a build before it was written.
+#   * `shutdown_quiesced`: `true` only if the wait finished before the deadline, no attempt
+#     arrived while the file was being written, nothing was refused after the close and
+#     nothing was unaccounted for. Must be `true`.
+#   * `shutdown_unsettled`: attempts unaccounted for at the final read. Must be `0`.
 #   * `dropped_after_shutdown`: publish attempts refused after the close. Must be `0`.
-#   * `published_attempts`: every publish attempt of the session. Required, a count, and
-#     information only (any value).
+#   * `published_attempts`, `popped`, `push_lost`: every publish attempt of the session, the
+#     messages the comparison thread took off the queue, and the attempts the queue itself
+#     rejected. Required counts, information only, and the terms of the invariant below.
+# Each attempt ends in exactly one place (`Transport::push`: refused after the close, rejected
+# by the queue, or queued and later popped; the rest is unsettled), so the four terms do not
+# overlap (`push_lost` is a part of the summary's separate `dropped`, not of
+# `dropped_after_shutdown`), and all four are read once, attempts last:
+#     popped + push_lost + dropped_after_shutdown + shutdown_unsettled == published_attempts
+# A file for which it does not hold was not written from one consistent read: taint.
 SHUTDOWN_QUIESCED = "shutdown_quiesced"
 SHUTDOWN_ZERO_COUNTS = ("shutdown_unsettled", "dropped_after_shutdown")
-SHUTDOWN_INFORMATION_COUNTS = ("published_attempts",)
+SHUTDOWN_INFORMATION_COUNTS = ("published_attempts", "popped", "push_lost")
 # `rejected_after_close` is not a field of the summary: #1173 calls the same thing
 # `dropped_after_shutdown`. Kept only as an alias: when present and above 0 it is taint.
 SHUTDOWN_ALIAS_COUNTS = ("rejected_after_close",)
@@ -458,6 +466,15 @@ def evaluate_family(
                 taint.append(f"{name}:{counter}={value!r} is not a count")
             elif value > 0 and counter not in SHUTDOWN_INFORMATION_COUNTS:
                 taint.append(f"{name}:{counter}={value}")
+        terms = [summary.get(k) for k in ("popped", "push_lost", "dropped_after_shutdown", "shutdown_unsettled", "published_attempts")]
+        if all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in terms):
+            popped, lost, dropped, unsettled, published = terms
+            if popped + lost + dropped + unsettled != published:
+                taint.append(
+                    f"{name}: popped+push_lost+dropped_after_shutdown+shutdown_unsettled="
+                    f"{popped + lost + dropped + unsettled} != published_attempts={published} "
+                    "(the accounting is not one consistent read)"
+                )
         # The books are kept over all family sites together (`conservation.total`); only the
         # headers are per site, and `non_family` (keyed by file:line) is informational.
         total = (summary.get("conservation") or {}).get("total")
