@@ -78,9 +78,10 @@ pub(crate) fn classify(at: &Location<'_>) -> Site {
 
 // ------------------------------------------------------ the lock-free acquisition table
 
-/// Distinct acquisition sites the table can hold. The app has a few dozen; a full table
+/// Distinct acquisition sites the table can hold. The app has about 125 (the build's map
+/// counts them); twice that leaves room to grow. A full table
 /// counts the excess in [`overflow`], which the summary reports as unclassified.
-const SLOTS: usize = 128;
+const SLOTS: usize = 256;
 
 struct Slot {
     /// A non-zero hash of the site (file and line); 0 is a free slot.
@@ -191,9 +192,10 @@ impl Report {
 /// it reads no file).
 pub(crate) fn report() -> Report {
     let (sites, unpublished) = snapshot();
+    let past_the_end = overflow() + unpublished;
     let mut report = Report {
-        noted: overflow() + unpublished,
-        unclassified: overflow() + unpublished,
+        noted: past_the_end,
+        unclassified: past_the_end,
         ..Report::default()
     };
     for (at, count) in sites {

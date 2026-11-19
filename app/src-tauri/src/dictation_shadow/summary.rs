@@ -251,6 +251,12 @@ pub(crate) struct Stats {
     pub dropped_after_shutdown: u64,
     /// Final write only: every publish attempt of the session.
     pub published_attempts: u64,
+    /// Final write only: messages the comparison thread took off the queue.
+    pub popped: u64,
+    /// Final write only: attempts the queue itself rejected (a part of `dropped`). With
+    /// `popped`, `dropped_after_shutdown` and `shutdown_unsettled` it adds up to
+    /// `published_attempts`.
+    pub push_lost: u64,
     /// Final write only: attempts not accounted for (queued and unconsumed, still in a
     /// push, or lost-and-not-yet-counted) when the final snapshot was taken.
     pub shutdown_unsettled: u64,
@@ -407,6 +413,8 @@ impl Stats {
                 "published_attempts".to_string(),
                 json!(self.published_attempts),
             );
+            object.insert("popped".to_string(), json!(self.popped));
+            object.insert("push_lost".to_string(), json!(self.push_lost));
             object.insert(
                 "shutdown_unsettled".to_string(),
                 json!(self.shutdown_unsettled),
