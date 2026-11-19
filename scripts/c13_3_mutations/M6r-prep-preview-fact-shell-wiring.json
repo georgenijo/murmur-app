@@ -1,0 +1,24 @@
+{
+ "name": "M6r-prep-preview-fact-shell-wiring",
+ "family": "admission",
+ "bug": "0b798457",
+ "description": "The shell reads preview_active as always false for the preparation admission.",
+ "edits": [
+  [
+   "src/dictation_admission.rs",
+   "        session.read(|o| o.preview_active = preview.is_active())\n    })();",
+   "        session.read(|o| o.preview_active = false)\n    })();"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_prep_admission",
+   "connecting_preview_blocks_queued"
+  ]
+ ]
+}

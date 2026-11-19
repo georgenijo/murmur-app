@@ -1,0 +1,36 @@
+{
+ "name": "M8-handoff-K-to-R",
+ "family": "admission",
+ "bug": "3c44d9e4 / PR #1128",
+ "description": "Change the preview-handoff cells from Takeover (K) to refuse (R).",
+ "edits": [
+  [
+   "crates/dictation-core/src/admission.rs",
+   "                match o.handoff_candidate {\n                    Some(preview) => Some(Admission::Takeover(PreviewId(preview))),\n                    None => refuse(RefusalCode::PreviewActive),\n                }",
+   "                refuse(RefusalCode::PreviewActive)"
+  ],
+  [
+   "crates/dictation-core/src/admission.rs",
+   "                (true, Some(preview)) => PreviewDisposition::KeptForHandoff(PreviewId(preview)),",
+   "                (true, Some(_preview)) => PreviewDisposition::StopThenRetry,"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_preview_handoff",
+   "golden_s08",
+   "fn_key_down_takes_over"
+  ]
+ ]
+}

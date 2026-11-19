@@ -772,3 +772,200 @@ fn a_cancel_waiting_on_t_and_polled_inside_a_span_parks_without_deadlock() {
         )
     });
 }
+
+// ------------------------------------------- pre-cutover: the tail's order and fence
+
+/// The effects a cancel's tail ran, each with what the test saw just before it.
+type TailSeen = Arc<StdMutex<Vec<(&'static str, String)>>>;
+
+/// What a test can see of the cancel's tail at one barrier, before the effect named
+/// there runs.
+fn tail_state(world: &Arc<World>, id: u64) -> String {
+    let state = world.state();
+    let status = state
+        .app_state
+        .dictation
+        .try_lock_or_recover()
+        .map_or_else(|| "D-held".to_string(), |d| format!("{:?}", d.status));
+    let trace = world.trace();
+    let emitted = |needle: &str| trace.iter().any(|line| line.starts_with(needle));
+    format!(
+        "status={status} context={} cancelled={} terminal={} kb_processing={} idle_emitted={} cancelled_emitted={} transition={}",
+        if state.app_state.active_context(id).is_some() {
+            "present"
+        } else {
+            "cleared"
+        },
+        state.app_state.is_cancelled(id),
+        state.app_state.dictation_telemetry.terminal_for_test(id).is_some(),
+        keyboard::is_processing(),
+        emitted("emit recording-status-changed \"idle\""),
+        emitted("emit recording-cancelled"),
+        // The cancel's own thread holds T at the barriers from `ST` through `EV`.
+        if state.app_state.recording_transition.try_lock().is_err() {
+            "held"
+        } else {
+            "free"
+        },
+    )
+}
+
+/// R205.5's exact order (appendix C: `In:ST→Idle`; `PDT:CX-, MC, TERM, KB, EM, EV`;
+/// `PT:PC`). A barrier before each effect observes what the earlier effects did and
+/// what the later ones have not yet done, so each statement of the tail is pinned
+/// to its place, not only the first port after it (`cancel_window_preserved`).
+#[test]
+fn the_processing_cancel_tail_runs_in_r205_5_order() {
+    let seen: TailSeen = Arc::new(StdMutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    TAIL_SINK.with(|slot| *slot.borrow_mut() = Some(sink));
+    run_sub_run(&SubRun {
+        title: "cancel tail order",
+        setup: Setup {
+            status: DictationStatus::Processing,
+            recording_id: 3,
+        },
+        body: |w| {
+            w.install_context(3);
+            w.accept_silently(3);
+            keyboard::set_processing(true);
+            let sink = TAIL_SINK
+                .with(|slot| slot.borrow().clone())
+                .expect("the test installed its sink");
+            let observer = Arc::clone(w);
+            let _barrier = crate::barrier_hook::install(move |point| {
+                // The executor's legend codes only (`ST`, `CX-`, ...).
+                if point
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c == '+' || c == '-')
+                {
+                    let state = tail_state(&observer, 3);
+                    sink.lock().expect("sink").push((point, state));
+                }
+            });
+            cancel_command(w, None);
+        },
+    });
+    TAIL_SINK.with(|slot| *slot.borrow_mut() = None);
+    let seen = seen.lock().expect("sink").clone();
+    let codes: Vec<&str> = seen.iter().map(|(code, _)| *code).collect();
+    assert_eq!(
+        codes,
+        ["ST", "CX-", "MC", "TERM", "KB", "EM", "EV", "PC"],
+        "R205.5's effect order: {seen:#?}"
+    );
+    let state = |index: usize| seen[index].1.as_str();
+    // R205.5's transition-lock boundary: T is held from `ST` through `EV`, so a newer
+    // start cannot publish `starting` before this cancel's trailing `idle`, and it is
+    // released only before `PT:PC`.
+    for (index, (code, state)) in seen.iter().enumerate() {
+        let expected = if index < 7 {
+            "transition=held"
+        } else {
+            "transition=free"
+        };
+        assert!(
+            state.ends_with(expected),
+            "T must be {expected} at {code} (R205.5 releases it before PT:PC): {state}"
+        );
+    }
+    // Each effect has not run at its own barrier and every earlier one has.
+    assert!(
+        state(0).starts_with(
+            "status=D-held context=present cancelled=false terminal=false kb_processing=true"
+        ),
+        "{}",
+        state(0)
+    );
+    assert!(
+        state(1).starts_with("status=Idle context=present cancelled=false terminal=false"),
+        "ST ran, CX- has not: {}",
+        state(1)
+    );
+    assert!(
+        state(2).starts_with("status=Idle context=cleared cancelled=false terminal=false"),
+        "CX- ran, MC has not: {}",
+        state(2)
+    );
+    assert!(
+        state(3).starts_with("status=Idle context=cleared cancelled=true terminal=false"),
+        "MC ran, TERM has not: {}",
+        state(3)
+    );
+    assert!(
+        state(4).contains("terminal=true kb_processing=true idle_emitted=false"),
+        "TERM ran, KB has not: {}",
+        state(4)
+    );
+    assert!(
+        state(5).contains("kb_processing=false idle_emitted=false"),
+        "KB ran, EM has not: {}",
+        state(5)
+    );
+    assert!(
+        state(6).contains("idle_emitted=true cancelled_emitted=false"),
+        "EM ran, EV has not: {}",
+        state(6)
+    );
+    assert!(
+        state(7).contains("idle_emitted=true cancelled_emitted=true"),
+        "EV ran, PC has not: {}",
+        state(7)
+    );
+}
+
+thread_local! {
+    static TAIL_SINK: std::cell::RefCell<Option<TailSeen>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A processing cancel keeps the recording transition through its trailing `idle`
+/// emit. If it released T first, a newer start could publish `starting` and the old
+/// cancel's `idle` would then overwrite it (#1160, cancel). The cancel is parked
+/// just before that emit, and a new start is polled from an independent task: it
+/// stays blocked until the old emit has finished.
+#[test]
+fn a_new_start_stays_blocked_until_the_cancels_trailing_idle_is_emitted() {
+    let lines = run_sub_run(&SubRun {
+        title: "late idle",
+        setup: Setup {
+            status: DictationStatus::Processing,
+            recording_id: 3,
+        },
+        body: |w| {
+            w.install_context(3);
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            let mut parked = w.cancel_parked_before("EM");
+            parked.wait_parked();
+            w.note("the cancel is parked just before its trailing idle emit");
+            let mut start = w.start();
+            assert!(
+                poll_once(&mut start).is_pending(),
+                "the new start waits on the transition the cancel still holds"
+            );
+            assert!(
+                !w.trace().iter().any(|line| line.contains("\"starting\"")),
+                "no `starting` was published while the cancel was parked"
+            );
+            w.note("the cancel resumes");
+            let reply = parked.release_and_join();
+            w.reply_unit("cancel", &reply);
+            let started = complete(&mut start);
+            w.reply("start", &started);
+        },
+    });
+    let position = |needle: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in {lines:#?}"))
+    };
+    assert!(
+        position("emit recording-status-changed \"idle\"")
+            < position("emit recording-status-changed \"starting\""),
+        "the stale idle is emitted before the new starting, never after it: {lines:#?}"
+    );
+    assert!(
+        position("reply cancel Ok") < position("emit recording-status-changed \"starting\""),
+        "{lines:#?}"
+    );
+}

@@ -585,6 +585,10 @@ impl<'a> Executor<'a> {
             }
             None => ports,
         };
+        // Test builds: a point before every Sync, Blocking or Detached effect, named
+        // by its legend code, where a test observes the effects' exact order.
+        #[cfg(test)]
+        crate::barrier_hook::at(effect.code());
         match effect {
             // ---- field effects: committed through the adapter (C1.4.2)
             Effect::SetStatus(to) => {

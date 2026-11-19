@@ -48,6 +48,11 @@ cd app && npm test                                   # frontend vitest
 cd app && npx tsc --noEmit                           # TypeScript
 ```
 
+Every nextest run kills a test that runs past its budget: 120 s by default, 60 s for
+the golden scenarios, with a named override in `app/src-tauri/.config/nextest.toml`
+for a test that legitimately needs longer. A hang therefore fails the step instead of
+holding the job. Do not pass `--config-file` in CI; it replaces that file.
+
 CI runs clippy, the nextest unit suite, `npx tsc --noEmit`, **and** `npm test`
 on PRs and on pushes to main (see [CI and merging](#ci-and-merging)). A
 tsc-only check is not sufficient verification — several regressions have

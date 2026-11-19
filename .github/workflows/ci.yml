@@ -137,7 +137,8 @@ jobs:
             tests/test_dictation_lifecycle.py \
             tests/test_receiver_hang_diagnostics.py \
             tests/test_receiver_key_scrub.py \
-            tests/test_reliability_slo.py
+            tests/test_reliability_slo.py \
+            tests/test_c13_3_mutations.py
           python3 -m pytest tests/test_murmur_canary.py -q
 
   typecheck:
@@ -342,15 +343,15 @@ jobs:
         # dedicated step.
         # nextest gives every test its own process, so tests that share process
         # state stay as isolated as `cargo test -- --test-threads=1` kept them,
-        # while the suite uses every core. The golden scenarios get a per-test
-        # kill budget from .github/nextest-golden.toml so a missing wake fails
-        # here instead of hanging the job before the bounded repeat step.
+        # while the suite uses every core. app/src-tauri/.config/nextest.toml
+        # gives every test a kill budget (120 s, the goldens 60 s), so a missing
+        # wake or a deadlock fails here instead of hanging the job. Do not pass
+        # --config-file: it would replace that file.
         run: >-
           cd app/src-tauri &&
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
           --binaries-metadata target/ci-test-binaries.json
           -E 'kind(lib) | binary(c13_3_bug_replays)'
-          --config-file ../../.github/nextest-golden.toml
 
       - name: Run golden dictation scenarios 100 times
         if: needs.changes.outputs.verified != 'true'
@@ -359,8 +360,9 @@ jobs:
         # The single pass above is the ordinary check; this one is the flake
         # budget. Reuses the prebuild like the steps around it. A scenario
         # never waits on a clock, so a hang is a missing wake: the nextest
-        # profile in .github/nextest-golden.toml kills a test after 60 s and
-        # the step's own timeout is a backstop, so neither can hang the job.
+        # config in app/src-tauri/.config/nextest.toml kills a golden test after
+        # 60 s and the step's own timeout is a backstop, so neither can hang
+        # the job.
         timeout-minutes: 5
         env:
           MURMUR_GOLDEN_REPEAT: "100"
@@ -368,7 +370,6 @@ jobs:
           cd app/src-tauri &&
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
           --binaries-metadata target/ci-test-binaries.json
-          --config-file ../../.github/nextest-golden.toml
           -E 'kind(lib) & test(/golden_tests::golden_/)'
 
       - name: Run admission tests with internal-benchmark

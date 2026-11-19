@@ -191,7 +191,7 @@ How E7 counts, so a missed site cannot hide:
 * **Nothing is inferred.** The speculative-flow observation is the boolean the port read
   returned; the comparator checks it against the independently witnessed branch. Every
   reply is witnessed where the production code returns it (`*_witnessed` wrapper commands;
-  the detached auto-stop records its real result, and a source scan pins that until georgenijo/murmur-app#1171 drives it by behaviour). A finish a drain ran from the deferred queue (closed inside a no-reply scope;
+  the detached auto-stop records its real result at the return of `run_auto_stop`, and `a_wrong_auto_stop_return_is_a_reply_mismatch` drives that by behaviour: a wrong return is `diff_kind=4`). A finish a drain ran from the deferred queue (closed inside a no-reply scope;
   a command nested in it keeps its own reply) and a parent whose reply is another site's
   (R201.4 / R205.4, an explicit `Delegated` disposition; the comparison stays at R206)
   close as a **named no-reply close**, never with a kind filled in. The import's pipeline

@@ -6503,56 +6503,16 @@ pub(crate) fn handle_audio_lifecycle(
         app_handle,
         recording_id,
         event,
-        |app_handle, recording_id, auto_stop_owner| {
-            // `RS` (R215.2): the registered `AutoStop` op moves into the spawned
-            // stop, which consumes it at admission. A task that never runs, is
-            // cancelled or panics drops it, and `Drop` retires the op.
-            tauri::async_runtime::spawn(async move {
-                // D-S2-3: an internal entry checks re-entrancy before its
-                // managed-state lookup (a refusal drops `auto_stop_owner`, which
-                // retires the op).
-                if refuse_reentrant_stop().is_err() {
-                    return;
-                }
-                let state = app_handle.state::<State>();
-                #[cfg(not(feature = "dictation-shadow"))]
-                if stop_native_recording_owned(
-                    app_handle.clone(),
-                    state,
-                    Some(recording_id),
-                    audio_lifecycle::DictationStopTrigger::Other,
-                    Some(auto_stop_owner),
-                )
-                .await
-                .is_err()
-                {
-                    tracing::error!(
-                        target: "pipeline",
-                        recording_id,
-                        "interrupted recording transcription failed"
-                    );
-                }
-                // The detached stop is its own invocation: the reply it returns is the
-                // one its flights wait for (D-S2c-9 d).
-                #[cfg(feature = "dictation-shadow")]
-                if capture::commanded(stop_native_recording_owned(
-                    app_handle.clone(),
-                    state,
-                    Some(recording_id),
-                    audio_lifecycle::DictationStopTrigger::Other,
-                    Some(auto_stop_owner),
-                ))
-                .await
-                .is_err()
-                {
-                    tracing::error!(
-                        target: "pipeline",
-                        recording_id,
-                        "interrupted recording transcription failed"
-                    );
-                }
-            });
-        },
+        // `RS` (R215.2): the registered `AutoStop` op moves into the stop task,
+        // which consumes it at admission. Production supplies only the host and
+        // the scheduler; the golden harness supplies its own through the same
+        // [`auto_stop_dispatch`].
+        auto_stop_dispatch(
+            |app_handle, state| TauriHost::new(app_handle.clone(), state.performance.clone()),
+            |recording_id, _owner, stop| {
+                spawn_auto_stop(recording_id, stop);
+            },
+        ),
         |app_handle, recording_id, register| {
             spawn_vad_stream(app_handle.clone(), recording_id);
             spawn_dictation_partial_ticker(app_handle, recording_id, register);
@@ -8432,6 +8392,122 @@ async fn stop_native_recording_for(
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
     stop_native_recording_owned(app_handle, state, expected_recording_id, stop_trigger, None).await
+}
+
+/// R215.2 `RS`: the self-dispatched stop of an interrupted capture. The registered
+/// `AutoStop` owner moves into the stop and is consumed at its admission (C1.4.1 rule
+/// 4), so a dispatch that never runs, or is cancelled while it waits on T, retires the
+/// op when it drops. Production's spawned task and the golden harness's fake host both
+/// run exactly this function.
+async fn dispatch_auto_stop(
+    host: &dyn DictationHost,
+    state: &State,
+    recording_id: u64,
+    auto_stop_owner: ContinuationGuard,
+) -> Result<serde_json::Value, String> {
+    refuse_reentrant_stop()?;
+    stop_native_recording_admitted(
+        host,
+        state,
+        Some(recording_id),
+        audio_lifecycle::DictationStopTrigger::Other,
+        Some(auto_stop_owner),
+    )
+    .await
+}
+
+/// The task [`auto_stop_dispatch`] hands its scheduler. `None`: the stop was
+/// refused as re-entrant before it began (nothing to report).
+type AutoStopTask = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<Result<serde_json::Value, String>>> + Send>,
+>;
+
+/// Production's scheduler for the [`AutoStopTask`]: spawn it on the app runtime and
+/// log a failed stop. Named so a test can run the real scheduler on a task that
+/// records when it is polled.
+fn spawn_auto_stop(recording_id: u64, stop: AutoStopTask) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(run_auto_stop(recording_id, stop))
+}
+
+/// What [`spawn_auto_stop`] runs: the stop task, then the diagnostic for a stop that
+/// failed. A separate function so a test can run it on its own thread under a
+/// capturing subscriber (a spawned task's events are emitted on a runtime worker).
+async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {
+    #[cfg(not(feature = "dictation-shadow"))]
+    if let Some(Err(_)) = stop.await {
+        tracing::error!(
+            target: "pipeline",
+            recording_id,
+            "interrupted recording transcription failed"
+        );
+    }
+    // The detached stop is its own invocation: the result it returns is the reply its
+    // flights wait for, witnessed at the stop's actual return (D-S2c-9 d).
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(Err(_)) = witnessed_auto_stop(stop).await {
+        tracing::error!(
+            target: "pipeline",
+            recording_id,
+            "interrupted recording transcription failed"
+        );
+    };
+}
+
+/// [`AutoStopTask`] run as its own command invocation: its flights conclude with the
+/// result it returns (`None`: refused before it began, no flight waits). What
+/// [`run_auto_stop`] awaits, and what the golden harness runs the task through.
+#[cfg(feature = "dictation-shadow")]
+async fn witnessed_auto_stop(stop: AutoStopTask) -> Option<Result<serde_json::Value, String>> {
+    match capture::commanded(async move {
+        match stop.await {
+            None => Ok(None),
+            Some(Ok(reply)) => Ok(Some(reply)),
+            Some(Err(error)) => Err(error),
+        }
+    })
+    .await
+    {
+        Ok(None) => None,
+        Ok(Some(reply)) => Some(Ok(reply)),
+        Err(error) => Some(Err(error)),
+    }
+}
+
+/// R215.2 `RS`: what the lifecycle bridge does with the `AutoStop` owner it
+/// registered for an interrupted capture. It builds the stop task around the
+/// owner and passes `(recording id, the owner's token, the task)` to `schedule`,
+/// which runs it. Production's `schedule` spawns the task; the golden harness's
+/// keeps it for the test to poll. Both supply `make_host` (the
+/// host the stop runs against) and `schedule`, and nothing else: the owner never
+/// leaves this function except inside the task, so a scheduler cannot drop it. A
+/// task that never runs, is cancelled or panics drops the owner, and `Drop`
+/// retires the op.
+fn auto_stop_dispatch<R, H>(
+    make_host: impl FnOnce(&tauri::AppHandle<R>, &State) -> H + Send + 'static,
+    schedule: impl FnOnce(u64, murmur_dictation_core::decision::Continuation, AutoStopTask),
+) -> impl FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard)
+where
+    R: tauri::Runtime,
+    H: DictationHost,
+{
+    move |app_handle, recording_id, auto_stop_owner| {
+        let token = auto_stop_owner.token();
+        schedule(
+            recording_id,
+            token,
+            Box::pin(async move {
+                // D-S2-3: an internal entry checks re-entrancy before its
+                // managed-state lookup (a refusal drops `auto_stop_owner`, which
+                // retires the op).
+                if refuse_reentrant_stop().is_err() {
+                    return None;
+                }
+                let state = app_handle.state::<State>();
+                let host = make_host(&app_handle, state.inner());
+                Some(dispatch_auto_stop(&host, state.inner(), recording_id, auto_stop_owner).await)
+            }),
+        );
+    }
 }
 
 /// [`stop_native_recording_for`] for the self-dispatched stop of an interrupted

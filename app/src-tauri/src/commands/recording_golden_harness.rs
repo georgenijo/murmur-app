@@ -129,6 +129,14 @@ pub(super) fn complete_joining<T>(future: &mut Fut<T>) -> T {
     }
 }
 
+// The failure bound on helper threads lives in its own file: it never orders a
+// scenario (G3: no scenario waits on a clock), it only turns a hang into a failure.
+#[path = "recording_helper_wait.rs"]
+mod helper_wait;
+pub(super) use helper_wait::{
+    await_arrival, await_release, helper_failed, join_bounded, spin_bounded,
+};
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -226,6 +234,16 @@ pub(super) struct Knobs {
     pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
     /// The `smart-destination-selected` emit fails.
     pub(super) smart_destination_emit_error: bool,
+    /// The scheduler keeps the stop task [`auto_stop_dispatch`] built around the
+    /// registered `AutoStop` owner, for [`World::owned_auto_stop`] to hand to the
+    /// test (R215.2 `RS`; production's scheduler spawns the same task). Off, it
+    /// drops the task, and so the owner, as an unrun spawn would.
+    pub(super) carry_auto_stop_owner: bool,
+    /// A stop whose reply never comes from the supervisor: the receive timed out or
+    /// the channel closed. Production returns it whatever the owner is, so it is
+    /// separate from `stop_result`, which is the supervisor's own reply and is applied
+    /// only after the supervisor's ownership check.
+    pub(super) stop_transport_failure: Option<&'static str>,
 }
 
 impl Default for Knobs {
@@ -244,6 +262,8 @@ impl Default for Knobs {
             pipeline_finish_panics: false,
             smart_auto: None,
             smart_destination_emit_error: false,
+            carry_auto_stop_owner: false,
+            stop_transport_failure: None,
         }
     }
 }
@@ -274,7 +294,7 @@ impl AudioLifecycleEventScript {
 // ---------------------------------------------------------- fake audio
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase {
+pub(super) enum Phase {
     Idle,
     Starting,
     Recording,
@@ -321,6 +341,8 @@ struct Seen {
 // --------------------------------------------------------------- world
 
 pub(super) struct World {
+    /// This world's own `Arc`, for an entry that needs a host from `&self`.
+    me: std::sync::Weak<World>,
     app: MockHandle,
     log: StdMutex<Vec<String>>,
     seen: StdMutex<Seen>,
@@ -329,12 +351,27 @@ pub(super) struct World {
     knobs: StdMutex<Knobs>,
     supervisor: StdMutex<Supervisor>,
     auto_stops: StdMutex<Vec<u64>>,
+    /// Stop tasks (each holding its `AutoStop` owner) the bridge scheduled while
+    /// `carry_auto_stop_owner` is set.
+    auto_stop_tasks: StdMutex<
+        Vec<(
+            u64,
+            murmur_dictation_core::decision::Continuation,
+            AutoStopTask,
+        )>,
+    >,
     delivery: StdMutex<Option<Delivery>>,
     /// Smart Auto resolves the start asked its host for.
     smart_auto_resolves: std::sync::atomic::AtomicUsize,
     /// How many times the publish asked for its side tasks (`SD`): a counter, not
     /// a trace line, so no recorded golden changes.
     side_task_spawns: std::sync::atomic::AtomicUsize,
+    /// `core_divergences()` when this run began. The persisted-core invariant
+    /// (#1160, Opus seat) is that it never grows during a run: a path that writes
+    /// `dictation.status` or the recording id without the `FieldAdapter` would
+    /// otherwise stay green until the lifecycle cutover starts reading M1 from
+    /// `PersistedCore`.
+    divergence_baseline: u64,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -351,7 +388,8 @@ fn locked<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl World {
     fn new(app: MockHandle) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
+            me: me.clone(),
             app,
             log: StdMutex::new(Vec::new()),
             seen: StdMutex::new(Seen::default()),
@@ -360,10 +398,59 @@ impl World {
             knobs: StdMutex::new(Knobs::default()),
             supervisor: StdMutex::new(Supervisor::default()),
             auto_stops: StdMutex::new(Vec::new()),
+            auto_stop_tasks: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
             smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
             side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
+            divergence_baseline: crate::dictation_executor::adapter::core_divergences(),
         })
+    }
+
+    /// The persisted-core invariant, checked at every trace line and at the end of
+    /// a run: `FieldAdapter` has counted no new divergence since the run began, and
+    /// whenever D is free the persisted M1/M2 equal the live `status` and
+    /// `recording_id`. (With D held, the live and persisted writes of one effect
+    /// are mid-commit, so the equality is read only when D is free, the same rule
+    /// `sample` uses; the counter is checked regardless.)
+    fn assert_persisted_core(&self, at: &str) {
+        self.assert_no_new_divergence(at);
+        let state = self.state();
+        let Some(dictation) = state.app_state.dictation.try_lock_or_recover() else {
+            return;
+        };
+        self.assert_core_equals_live(&state.app_state, &dictation, at);
+    }
+
+    /// `FieldAdapter` has counted no divergence since this run began.
+    fn assert_no_new_divergence(&self, at: &str) {
+        let divergences = crate::dictation_executor::adapter::core_divergences();
+        assert!(
+            divergences <= self.divergence_baseline,
+            "persisted-core invariant: FieldAdapter counted {} new divergence(s) at `{at}` \
+             (a write to dictation.status or the recording id bypassed the adapter)",
+            divergences - self.divergence_baseline
+        );
+    }
+
+    /// The persisted M1/M2 equal the live status and recording id, read under the
+    /// dictation lock the caller holds.
+    fn assert_core_equals_live(
+        &self,
+        app_state: &AppState,
+        dictation: &crate::state::DictationState,
+        at: &str,
+    ) {
+        let live_status = crate::dictation_admission::core_status(dictation.status);
+        let live_id =
+            murmur_dictation_core::ids::RecordingId(app_state.recording_id.load(Ordering::SeqCst));
+        assert!(
+            dictation.core.status() == live_status && dictation.core.current_id() == live_id,
+            "persisted-core invariant: persisted M1/M2 ({:?}, {:?}) differ from live ({:?}, {:?}) at `{at}`",
+            dictation.core.status(),
+            dictation.core.current_id(),
+            live_status,
+            live_id
+        );
     }
 
     fn listen_to_the_bridge(self: &Arc<Self>) {
@@ -394,8 +481,10 @@ impl World {
     /// last line. A change is sampled at the next boundary the trace has, so
     /// its position relative to the lines around it is a causal fact.
     pub(super) fn push(&self, entry: impl Into<String>) {
+        let entry = entry.into();
+        self.assert_persisted_core(&entry);
         self.sample();
-        locked(&self.log).push(entry.into());
+        locked(&self.log).push(entry);
     }
 
     pub(super) fn note(&self, text: &str) {
@@ -489,6 +578,7 @@ impl World {
             "a delivery is still holding the ownership fence"
         );
         self.sample();
+        self.assert_persisted_core("end of run");
         let state = self.state();
         let status = state.app_state.dictation.lock_or_recover().status;
         let context = (1..=MAX_ID)
@@ -580,12 +670,10 @@ impl World {
             // on its own thread, joined at once so the causal order is the one the
             // traces record, exactly as `notify` does, and the production
             // re-entrancy check stays unrelaxed.
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(hook)
-                    .join()
-                    .expect("the hook's thread panicked");
-            });
+            //
+            // The join is bounded: a hook that blocks on a lock its caller holds (D
+            // held through a cancel's tail, say) fails here at the bound, not never.
+            join_bounded(std::thread::spawn(hook), "the independent hook");
         }
     }
 
@@ -697,6 +785,67 @@ impl World {
         })
     }
 
+    /// A start that carries a Fn/Globe gesture token, so it claims the speculative
+    /// capture bound to that token (`audio_lifecycle::speculative::bind`).
+    pub(super) fn start_with_gesture(
+        self: &Arc<Self>,
+        token: &str,
+    ) -> Fut<Result<serde_json::Value, String>> {
+        let world = Arc::clone(self);
+        let token = token.to_string();
+        Box::pin(async move {
+            let host = Host(Arc::clone(&world));
+            let state = world.state();
+            commanded_reply(start_native_recording_inner(
+                &host,
+                state.inner(),
+                None,
+                None,
+                None,
+                Some(token),
+            ))
+            .await
+        })
+    }
+
+    /// The self-dispatched stop of an interrupted capture, carrying the real `AutoStop`
+    /// owner the bridge registered (R215.2 `RS`), as production's spawned task does.
+    /// Returns the owner's token, for its generation and retirement, with the stop.
+    /// Needs `carry_auto_stop_owner`.
+    pub(super) fn owned_auto_stop(
+        self: &Arc<Self>,
+        recording_id: u64,
+    ) -> (
+        murmur_dictation_core::decision::Continuation,
+        Fut<Result<serde_json::Value, String>>,
+    ) {
+        let (token, task) = {
+            let mut tasks = locked(&self.auto_stop_tasks);
+            let at = tasks
+                .iter()
+                .position(|(id, _, _)| *id == recording_id)
+                .expect("the bridge scheduled an auto-stop task for this recording");
+            let (_, token, task) = tasks.remove(at);
+            (token, task)
+        };
+        // The task is the one production spawns, built by the same
+        // `auto_stop_dispatch`; this only unwraps its re-entrancy refusal.
+        // With the shadow, through the one function production runs it through, so its
+        // flights conclude with the result it returns.
+        #[cfg(feature = "dictation-shadow")]
+        let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
+            witnessed_auto_stop(task)
+                .await
+                .expect("the auto-stop was not refused as re-entrant")
+        });
+        #[cfg(not(feature = "dictation-shadow"))]
+        let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
+            task.await
+                .expect("the auto-stop was not refused as re-entrant")
+        });
+        (token, stop)
+    }
+
     pub(super) fn cancel(self: &Arc<Self>, expected: Option<u64>) -> Fut<Result<(), String>> {
         let world = Arc::clone(self);
         Box::pin(async move {
@@ -741,6 +890,35 @@ impl World {
         );
     }
 
+    /// A fixture poke: a scenario writes the live status itself, to put an end state in
+    /// order or to stand in for another entry's write. It is not a production path, so
+    /// the persisted M1 is updated with it. It never forgives an earlier violation: the
+    /// divergence counter and both persisted fields are checked against live, under the
+    /// dictation lock, *before* the poke changes anything, and only the field the
+    /// fixture means to change is updated (M2 is left exactly as it was).
+    pub(super) fn poke_status(&self, status: DictationStatus) {
+        let state = self.state();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        self.assert_no_new_divergence("poke_status");
+        self.assert_core_equals_live(&state.app_state, &dictation, "poke_status");
+        dictation.status = status;
+        dictation
+            .core
+            .set_status(crate::dictation_admission::core_status(status));
+    }
+
+    /// [`World::poke_status`] for the recording id (M2). The only way to set the
+    /// persisted id is the adapter's seeder, which also re-reads M1: M1 has just been
+    /// checked equal to live, so that changes nothing but M2.
+    pub(super) fn poke_recording_id(&self, id: u64) {
+        let state = self.state();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        self.assert_no_new_divergence("poke_recording_id");
+        self.assert_core_equals_live(&state.app_state, &dictation, "poke_recording_id");
+        state.app_state.recording_id.store(id, Ordering::SeqCst);
+        crate::dictation_executor::FieldAdapter::seed_core(&state.app_state, &mut dictation);
+    }
+
     /// An attempt the telemetry ledger accepted earlier, with no terminal yet.
     pub(super) fn accept_silently(&self, recording_id: u64) {
         self.state()
@@ -779,20 +957,46 @@ impl World {
     /// A supervisor notification, delivered through the production bridge on
     /// the caller's thread, as `ProductionLifecycleSink::notify` does.
     pub(super) fn notify(&self, recording_id: u64, event: AudioLifecycleEvent) {
+        let this = self
+            .me
+            .upgrade()
+            .expect("the world is alive while it notifies");
         self.push(format!(
             "supervisor.notify {recording_id} {}",
             event_name(&event)
         ));
         let ends_the_attempt = matches!(event, AudioLifecycleEvent::Idle);
+        let world = this;
         let deliver = move || {
-            handle_audio_lifecycle_and_ready_tasks(
-                self.app.clone(),
+            // A weak handle: the queued task outlives a scenario that panics before
+            // it fetches the task, and an `Arc` here would keep the world, which owns
+            // the task, alive for ever (and the task's `AutoStop` owner with it).
+            let host_world = Arc::downgrade(&world);
+            handle_audio_lifecycle_events(
+                world.app.clone(),
                 recording_id,
                 event,
-                |_, recording_id| {
-                    self.push(format!("bridge.auto_stop_scheduled {recording_id}"));
-                    locked(&self.auto_stops).push(recording_id);
-                },
+                // Production's `auto_stop_dispatch`, with this world's host and a
+                // scheduler that keeps the task instead of spawning it.
+                auto_stop_dispatch(
+                    move |_, _| {
+                        Host(
+                            host_world
+                                .upgrade()
+                                .expect("the world is alive when its task is polled"),
+                        )
+                    },
+                    |recording_id, token, stop| {
+                        world.push(format!("bridge.auto_stop_scheduled {recording_id}"));
+                        locked(&world.auto_stops).push(recording_id);
+                        // Unless a scenario carries it, the task drops here, and its
+                        // `AutoStop` owner is retired, as an unrun spawn's would be.
+                        let carry = world.knobs().carry_auto_stop_owner;
+                        if carry {
+                            locked(&world.auto_stop_tasks).push((recording_id, token, stop));
+                        }
+                    },
+                ),
                 |app, recording_id, register| {
                     // The two spawns `handle_audio_lifecycle` makes for a `Ready`.
                     // The ticker's own preconditions are production's: a recorded
@@ -802,7 +1006,7 @@ impl World {
                         return;
                     }
                     let registered = register();
-                    self.push(format!("SD ticker {recording_id} registered={registered}"));
+                    world.push(format!("SD ticker {recording_id} registered={registered}"));
                 },
             );
         };
@@ -814,12 +1018,20 @@ impl World {
             // thread, joined at once so the causal order is the one the golden
             // traces record, and the production re-entrancy check stays
             // unrelaxed (the same thread's nested entry is still refused).
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(deliver)
-                    .join()
-                    .expect("the supervisor's delivery thread panicked");
-            });
+            //
+            // The delivery takes D. A cancel (or any entry) that is still holding D
+            // here would block on the join below for ever, so that is a failure
+            // named here, not a hang.
+            assert!(
+                !matches!(
+                    self.state().app_state.dictation.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ),
+                "the dictation lock is held while the supervisor notification is delivered: \
+                 the delivery takes it, so the join below would never return"
+            );
+            let delivery = std::thread::spawn(deliver);
+            join_bounded(delivery, "the supervisor's delivery thread");
         } else {
             deliver();
         }
@@ -945,6 +1157,9 @@ impl World {
     /// queued: the supervisor installed a new attempt (`handle_start`, `set_owner`).
     pub(super) fn replace_owner(&self, recording_id: u64) {
         self.set_owner(Some(recording_id));
+        // Production installs the new attempt in `Starting` (`handle_start`); the
+        // replaced attempt's phase does not carry over to it.
+        locked(&self.supervisor).phase = Some(Phase::Starting);
         self.push(format!("supervisor.replace_owner {recording_id}"));
     }
 
@@ -1004,15 +1219,15 @@ impl World {
                     "delivery {recording_id}: holds the ownership fence D"
                 ));
                 let _ = entered.send(());
-                let _ = release_rx.recv();
+                await_release(&release_rx);
                 world.push(format!(
                     "delivery {recording_id}: operation done, D released next"
                 ));
             })
         });
-        if entered_rx.recv().is_err() {
-            // The owner check refused: the operation never ran.
-            let _ = thread.join();
+        if await_arrival(&entered_rx, &thread, "delivery").is_err() {
+            // The owner check refused: the operation never ran (a panic is re-raised).
+            join_bounded(thread, "delivery");
             self.push(format!("delivery {recording_id}: refused, not the owner"));
             return false;
         }
@@ -1020,17 +1235,24 @@ impl World {
         true
     }
 
+    /// Let a parked delivery return and release D, without waiting for anything.
+    fn release_delivery(&self) {
+        if let Some(delivery) = locked(&self.delivery).take() {
+            let _ = delivery.release.send(());
+        }
+    }
+
     /// Let the parked delivery operation return and release D, then wait for
     /// `cancel` (blocked on D) to finish. Nothing is logged between the release
     /// and the joins: the two threads' lines are ordered by D alone.
-    pub(super) fn finish_delivery(&self, cancel: ConcurrentCancel) -> Result<(), String> {
+    pub(super) fn finish_delivery(&self, mut cancel: ConcurrentCancel) -> Result<(), String> {
         let delivery = locked(&self.delivery).take().expect("a parked delivery");
         let _ = delivery.release.send(());
-        let reply = cancel.thread.join().expect("the cancel thread panicked");
-        let delivered = delivery
-            .thread
-            .join()
-            .expect("the delivery thread panicked");
+        let reply = join_bounded(
+            cancel.thread.take().expect("a live cancel"),
+            "the concurrent cancel",
+        );
+        let delivered = join_bounded(delivery.thread, "the parked delivery");
         self.push(format!(
             "delivery returned {}",
             if delivered.is_some() { "Some" } else { "None" }
@@ -1043,44 +1265,122 @@ impl World {
     pub(super) fn cancel_on_thread(self: &Arc<Self>) -> ConcurrentCancel {
         let world = Arc::clone(self);
         ConcurrentCancel {
-            thread: std::thread::spawn(move || {
+            world: Arc::clone(&world),
+            thread: Some(std::thread::spawn(move || {
                 let _runtime = runtime().enter();
                 let mut cancel = world.cancel(None);
                 complete_joining(&mut cancel)
-            }),
+            })),
         }
     }
 
-    fn dictation_owner_phase(&self, recording_id: u64) -> Option<Phase> {
+    /// The fake supervisor's phase when `recording_id` owns it.
+    pub(super) fn dictation_owner_phase(&self, recording_id: u64) -> Option<Phase> {
         let supervisor = locked(&self.supervisor);
         (supervisor.owner == Some(recording_id)).then(|| supervisor.phase())
     }
 }
 
+impl World {
+    /// Run a cancel on its own thread and park it just before the executor runs the
+    /// effect whose legend code is `code` (`EM`, `TERM`, ...): the thread blocks at that
+    /// barrier, holding whatever locks the cancel holds there, until
+    /// [`ParkedCancel::release_and_join`].
+    pub(super) fn cancel_parked_before(self: &Arc<Self>, code: &'static str) -> ParkedCancel {
+        let (parked, parked_rx) = std::sync::mpsc::channel::<()>();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let world = Arc::clone(self);
+        let thread = std::thread::spawn(move || {
+            let _runtime = runtime().enter();
+            let _barrier = crate::barrier_hook::install(move |point| {
+                if point == code {
+                    let _ = parked.send(());
+                    // A scenario that panics first drops `release`: the cancel then
+                    // runs on instead of hanging the test.
+                    await_release(&release_rx);
+                }
+            });
+            let mut cancel = world.cancel(None);
+            complete_joining(&mut cancel)
+        });
+        ParkedCancel {
+            thread: Some(thread),
+            parked: parked_rx,
+            release,
+        }
+    }
+}
+
+/// A cancel parked at an executor barrier (see [`World::cancel_parked_before`]).
+pub(super) struct ParkedCancel {
+    /// `None` once joined. A cancel still parked when the scenario unwinds is released
+    /// by the sender dropping with this struct, so it never outlives the test blocked.
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+    parked: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl ParkedCancel {
+    /// Block until the cancel has reached its barrier.
+    pub(super) fn wait_parked(&mut self) {
+        if await_arrival(
+            &self.parked,
+            self.thread.as_ref().expect("a live thread"),
+            "cancel",
+        )
+        .is_err()
+        {
+            helper_failed(self.thread.take().expect("a live thread"), "cancel");
+        }
+    }
+
+    /// Let the cancel run on and return its reply.
+    pub(super) fn release_and_join(mut self) -> Result<(), String> {
+        let _ = self.release.send(());
+        join_bounded(self.thread.take().expect("a live thread"), "cancel")
+    }
+}
+
 /// A cancel running on its own thread.
 pub(super) struct ConcurrentCancel {
-    thread: std::thread::JoinHandle<Result<(), String>>,
+    /// `None` once joined.
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+    world: Arc<World>,
+}
+
+impl Drop for ConcurrentCancel {
+    /// A scenario that fails while this cancel is blocked on D unwinds through the
+    /// locals it declared before the cancel, and some of their drops take D. The
+    /// delivery that holds D is released first, here, as soon as the cancel drops.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.world.release_delivery();
+        }
+    }
 }
 
 impl ConcurrentCancel {
+    fn live(&self) -> &std::thread::JoinHandle<Result<(), String>> {
+        self.thread.as_ref().expect("a live cancel")
+    }
+
     /// Wait until the cancel holds the recording transition and so is at (or a
     /// statement from) its `D` lock: the transition is released only at the
     /// end of the command, so a held transition with an unfinished command is
     /// a cancel that has not got past D. No clock: this spins on the lock
     /// state, and gives up if the command finished.
     pub(super) fn wait_until_blocked_on_d(&self, world: &World) {
-        while !self.thread.is_finished()
-            && world
-                .state()
-                .app_state
-                .recording_transition
-                .try_lock()
-                .is_ok()
-        {
-            std::thread::yield_now();
-        }
+        spin_bounded("the concurrent cancel", || {
+            !self.live().is_finished()
+                && world
+                    .state()
+                    .app_state
+                    .recording_transition
+                    .try_lock()
+                    .is_ok()
+        });
         assert!(
-            !self.thread.is_finished(),
+            !self.live().is_finished(),
             "the cancel finished while a delivery held the ownership fence"
         );
     }
@@ -1146,33 +1446,53 @@ impl SupervisorPort for World {
         _released_at: Option<std::time::Instant>,
     ) -> Result<Vec<f32>, String> {
         self.push(format!("supervisor.stop {recording_id} {trigger:?}"));
-        self.set_phase(Phase::Stopping);
+        // The supervisor handles the `Stop` message against whatever attempt exists
+        // then, and moves its own attempt to `Stopping` only when that attempt is the
+        // one being stopped. A stop that finds another recording's attempt is refused
+        // and leaves that attempt's phase alone.
+        let replaced = matches!(
+            locked(&self.supervisor).owner,
+            Some(current) if current != recording_id
+        );
+        if !replaced {
+            self.set_phase(Phase::Stopping);
+        }
         self.fire("supervisor.stop");
-        let (result, unsealed) = {
+        let (result, unsealed, transport_failure) = {
             let knobs = self.knobs();
-            (knobs.stop_result, knobs.stop_unsealed)
+            (
+                knobs.stop_result,
+                knobs.stop_unsealed,
+                knobs.stop_transport_failure,
+            )
         };
-        // The supervisor handles the `Stop` message against whatever attempt exists then
-        // (`audio_lifecycle.rs:1235-1245`). With no attempt (the owner was cleared) it
-        // answers `Ok(Vec::new())` at once: nothing is sealed, so no `CleanupFinished`
-        // follows and no owner clear is pending. With another recording's attempt (the
-        // owner was replaced) it refuses: `Audio owner changed before stop`.
-        if result.is_ok() {
-            let owner = locked(&self.supervisor).owner;
-            match owner {
-                Some(current) if current == recording_id => {}
-                None => {
-                    self.push(format!(
-                        "supervisor.stop_after_owner_clear {recording_id} samples=0"
-                    ));
-                    return Ok(Vec::new());
-                }
-                Some(other) => {
-                    self.push(format!(
-                        "supervisor.stop_owner_changed {recording_id} owner={other}"
-                    ));
-                    return Err("Audio owner changed before stop".to_string());
-                }
+        // A transport failure (the 12 s receive expired, the channel closed) is the
+        // caller's own error: the supervisor's ownership check and scripted replies
+        // are not consulted, and it is returned whatever the owner is.
+        if let Some(error) = transport_failure {
+            return Err(error.to_string());
+        }
+        // Reply precedence (production, `audio_lifecycle.rs:1235-1245`): the owner is
+        // checked first, so a scripted supervisor reply (a recovery refusal, a stop
+        // timeout the supervisor itself reports) never masks "Audio owner changed".
+        // With no attempt (the owner was cleared) it answers `Ok(Vec::new())` at once:
+        // nothing is sealed, so no `CleanupFinished` follows and no owner clear is
+        // pending. With another recording's attempt (the owner was replaced) it refuses:
+        // `Audio owner changed before stop`.
+        let owner = locked(&self.supervisor).owner;
+        match owner {
+            Some(current) if current == recording_id => {}
+            None => {
+                self.push(format!(
+                    "supervisor.stop_after_owner_clear {recording_id} samples=0"
+                ));
+                return Ok(Vec::new());
+            }
+            Some(other) => {
+                self.push(format!(
+                    "supervisor.stop_owner_changed {recording_id} owner={other}"
+                ));
+                return Err("Audio owner changed before stop".to_string());
             }
         }
         match result {
@@ -1771,12 +2091,18 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     app_state
         .recording_id
         .store(sub_run.setup.recording_id, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = sub_run.setup.status;
+    {
+        // The persisted core starts equal to live, as the shell seeds it.
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = sub_run.setup.status;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let app = tauri::test::mock_builder()
         .manage(test_state(app_state))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build mock Tauri app");
     let world = World::new(app.handle().clone());
+    let _release_on_unwind = ReleaseOnUnwind(Arc::clone(&world));
     world.listen_to_the_bridge();
     // The first sample is the starting state, not a change.
     {
@@ -1822,6 +2148,21 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
         );
     }
     lines
+}
+
+/// A parked delivery holds D inside a thread that owns an `Arc<World>`, and the world
+/// owns that delivery's release sender, so a scenario that panics (or a bounded wait
+/// that gives up) would leave the delivery, and a cancel blocked on D behind it,
+/// parked for ever. This releases it while the scenario unwinds. It joins nothing:
+/// a panic in a drop during unwinding would abort the process.
+struct ReleaseOnUnwind(Arc<World>);
+
+impl Drop for ReleaseOnUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.release_delivery();
+        }
+    }
 }
 
 /// A scenario's golden text: a header naming the scenario and the preserved

@@ -971,6 +971,14 @@ impl RenderedValue for () {
     }
 }
 
+/// The detached auto-stop's result: `None` is a stop refused before it began (no flight
+/// waits for a reply then).
+impl RenderedValue for Option<serde_json::Value> {
+    fn rendered_kind(&self) -> ReplyKind {
+        self.as_ref().map_or(ReplyKind::Ok, value_kind)
+    }
+}
+
 impl RenderedValue for serde_json::Value {
     fn rendered_kind(&self) -> ReplyKind {
         value_kind(self)

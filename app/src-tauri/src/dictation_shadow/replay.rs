@@ -471,6 +471,8 @@ const NO_SHELL_ENTRY: &[&str] = &[
     "117 installer blocked on the install lock",
     "117 install fails before parking",
     "117 dropping an installer blocked on the install lock",
+    // Pokes a field of the state directly: no family entry runs.
+    "status poke",
 ];
 
 impl Report {

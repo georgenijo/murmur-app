@@ -663,6 +663,15 @@ fn a_flight_that_suspends_with_queued_work_carries_it_and_drains_after_t() {
                     }
                 });
                 take_t_free_at_drain();
+                // #1166: the capture start runs on a real `spawn_blocking` thread, and a
+                // thread that finished before the first poll made it `Ready`. Hold that
+                // thread at the supervisor's start call until this test has asserted
+                // `Pending` and the checks that follow it.
+                let (release, held) = std::sync::mpsc::channel::<()>();
+                w.on("supervisor.start", move || {
+                    // A panicking test drops `release`, which ends the wait.
+                    await_release(&held);
+                });
                 let mut start = w.start();
                 assert!(
                     poll_once(&mut start).is_pending(),
@@ -683,6 +692,7 @@ fn a_flight_that_suspends_with_queued_work_carries_it_and_drains_after_t() {
                     1,
                     "the dropped stop's pipeline is not retired yet"
                 );
+                release.send(()).expect("the capture start is still held");
                 let reply = complete_joining(&mut start);
                 assert!(reply.is_ok(), "{reply:?}");
                 assert_drained_with_t_free("the carried finish");
@@ -1284,7 +1294,7 @@ fn a_start_dropped_while_suspended_with_carried_work_drains_after_t() {
                 );
                 w.open_gate("smart_capture");
                 // The dropped start left Starting behind; put the end state in order.
-                w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+                w.poke_status(DictationStatus::Idle);
             },
         });
     });
@@ -1404,4 +1414,63 @@ fn a_state_freed_while_its_work_is_queued_is_never_dereferenced() {
     // Its owner retires when the entry is dropped (nothing dereferences A).
     DEFERRED_FINISHES.with(|queue| queue.borrow_mut().clear());
     assert_eq!(history_a.pipeline_count(), 0);
+}
+
+// ------------------------------------------- pre-cutover: the speculative-flow branch
+
+/// A start for gesture 41 that adopts speculative capture 9, flowing or not.
+fn speculative_start(w: &Arc<World>, flowing: bool) {
+    use crate::audio_lifecycle::speculative;
+    speculative::clear_binding();
+    w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+    let _flowing = flowing.then(|| speculative::mark_flowing_for_test(9));
+    speculative::bind(41, 9);
+    let mut start = w.start_with_gesture("41");
+    let reply = complete(&mut start);
+    w.reply("start", &reply);
+    speculative::clear_binding();
+}
+
+const STARTING_EMIT: &str = "emit recording-status-changed \"starting\"";
+
+/// R101.15 `PDT:EM(starting)` carries `UnlessSpeculativeFlowing`: a Fn key-down capture
+/// that already retains PCM is adopted with no connecting phase, so the `starting`
+/// event is suppressed while the rest of the start (the status write, the generation
+/// event, the capture start, the `recording` publish) is unchanged. The speculative
+/// branch is outside the seeded model (#1160, start).
+#[test]
+fn a_flowing_speculative_capture_suppresses_the_redundant_starting_event() {
+    let control = run_sub_run(&SubRun {
+        title: "speculative capture not flowing",
+        setup: Setup::idle(),
+        body: |w| speculative_start(w, false),
+    });
+    let flowing = run_sub_run(&SubRun {
+        title: "speculative capture flowing",
+        setup: Setup::idle(),
+        body: |w| speculative_start(w, true),
+    });
+    assert!(
+        control.iter().any(|line| line == STARTING_EMIT),
+        "a capture that is not flowing publishes `starting`: {control:#?}"
+    );
+    assert!(
+        !flowing.iter().any(|line| line == STARTING_EMIT),
+        "a flowing capture publishes no redundant `starting`: {flowing:#?}"
+    );
+    assert!(
+        flowing
+            .iter()
+            .any(|line| line == "emit recording-status-changed \"recording\""),
+        "the start still publishes `recording`: {flowing:#?}"
+    );
+    let without_starting: Vec<&String> = control
+        .iter()
+        .filter(|line| *line != STARTING_EMIT)
+        .collect();
+    assert_eq!(
+        flowing.iter().collect::<Vec<_>>(),
+        without_starting,
+        "the flowing start differs from the control by that one emit and nothing else"
+    );
 }

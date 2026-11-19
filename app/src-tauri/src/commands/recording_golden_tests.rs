@@ -1082,3 +1082,121 @@ fn golden_files_name_their_preserved_defects() {
     let c8 = std::fs::read_to_string(dir.join("s10-ready-vs-context.golden")).expect("s10 golden");
     assert!(c8.contains("# known-bad: "), "10c is recorded as known-bad");
 }
+
+// ------------------------------- the persisted-core invariant (#1160, Opus seat)
+//
+// The harness asserts, at every trace line and at the end of every run, that
+// `FieldAdapter` has counted no new divergence since the run began and that the
+// persisted M1/M2 equal the live status and recording id. Every golden, C13.3
+// replay and harness-findings test runs through it. These tests prove it catches what
+// it is for: a write to `dictation.status` that does not go through the adapter.
+
+fn panic_text(body: fn(&Arc<World>)) -> String {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_sub_run(&sub("invariant probe", body));
+    }));
+    let payload = outcome.expect_err("the harness should have refused the run");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+/// A status write that bypasses the adapter leaves the persisted core behind the live
+/// field. The next trace line fails the run.
+#[test]
+fn the_persisted_core_invariant_catches_a_status_write_that_bypasses_the_adapter() {
+    let message = panic_text(|w| {
+        w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        w.note("a write that did not go through FieldAdapter::set_status");
+    });
+    assert!(
+        message.contains("persisted-core invariant: persisted M1/M2 (Idle, RecordingId(0)) differ from live (Recording, RecordingId(0))"),
+        "{message}"
+    );
+}
+
+/// The same bypass, found where production would find it: the next adapter write meets
+/// a persisted copy that did not predict the live field and counts a divergence.
+#[test]
+fn the_persisted_core_invariant_catches_a_divergence_the_adapter_counts() {
+    let message = panic_text(|w| {
+        {
+            let state = w.state();
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            dictation.status = DictationStatus::Recording;
+            crate::dictation_executor::FieldAdapter::set_status(
+                0,
+                &mut dictation,
+                DictationStatus::Processing,
+            );
+        }
+        w.note("the adapter has seen the stale persisted copy");
+    });
+    assert!(
+        message.contains("persisted-core invariant: FieldAdapter counted 1 new divergence(s)"),
+        "{message}"
+    );
+}
+
+/// A fixture's own poke (end-state tidying) re-seeds the core and is not a violation;
+/// a start and stop through the real entries keep the invariant at every line.
+#[test]
+fn the_persisted_core_invariant_holds_for_real_entries_and_fixture_pokes() {
+    run_sub_run(&sub("honest run", |w| {
+        recording(w);
+        stopped(w, "stop", None);
+        w.poke_status(DictationStatus::Recovering);
+        w.poke_recording_id(7);
+        w.note("pokes keep persisted equal to live");
+    }));
+}
+
+/// A fixture poke never forgives an earlier violation. A rogue write to the live
+/// recording id, followed by the end-state `poke_status`, must still fail: the poke
+/// checks both persisted fields and the divergence counter before it changes
+/// anything, and updates only M1.
+#[test]
+fn a_fixture_poke_does_not_erase_an_earlier_recording_id_divergence() {
+    let message = panic_text(|w| {
+        w.state().app_state.recording_id.store(9, Ordering::SeqCst);
+        w.poke_status(DictationStatus::Idle);
+    });
+    assert!(
+        message.contains("persisted M1/M2 (Idle, RecordingId(0)) differ from live (Idle, RecordingId(9)) at `poke_status`"),
+        "{message}"
+    );
+}
+
+/// The same for a rogue status write ahead of a recording-id poke.
+#[test]
+fn a_fixture_poke_does_not_erase_an_earlier_status_divergence() {
+    let message = panic_text(|w| {
+        w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        w.poke_recording_id(4);
+    });
+    assert!(
+        message.contains("differ from live (Processing, RecordingId(0)) at `poke_recording_id`"),
+        "{message}"
+    );
+}
+
+/// A poke changes only its own field: poking the status leaves the persisted id as it
+/// was, so a later id divergence stays visible.
+#[test]
+fn a_status_poke_leaves_the_persisted_recording_id_alone() {
+    run_sub_run(&sub("status poke", |w| {
+        w.poke_status(DictationStatus::Recovering);
+        let state = w.state();
+        let dictation = state.app_state.dictation.lock_or_recover();
+        assert_eq!(
+            dictation.core.status(),
+            murmur_dictation_core::status::Status::Recovering
+        );
+        assert_eq!(
+            dictation.core.current_id(),
+            murmur_dictation_core::ids::RecordingId(0)
+        );
+    }));
+}
