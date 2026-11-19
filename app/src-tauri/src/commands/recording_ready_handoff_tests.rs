@@ -28,7 +28,9 @@
 //!   spawner and both ready callbacks is pinned, with `check_shadow_diff.py`'s own
 //!   normalisation. Any edit fails `the_ticker_and_vad_starting_code_is_the_pinned_code`;
 //!   a re-pin needs a reviewed justification that the ticker and VAD still start for every
-//!   eligible recording. `CONTROLS` are the mutations that must break their pin. The
+//!   eligible recording. Every pinned target, and each callback's receiver, must be found
+//!   **exactly once**: zero or several (a `cfg` split, a second function) fail closed and
+//!   say which. `CONTROLS` are the mutations that must break their pin. The
 //!   structural check stays as documentation and an extra guard.
 //!
 //! The spawners themselves run only in the lifecycle cutover PR's runtime check (D-S2c-16:
@@ -357,6 +359,41 @@ fn early_returns(function: &syn::ItemFn) -> Vec<(&syn::Expr, usize)> {
         .collect()
 }
 
+/// The ready callback of `entry`: the last argument of its call to `receiver`. **Exactly
+/// one** `entry` function and exactly one call to `receiver` in it, or the error says which
+/// count was wrong: a second branch (a `cfg` split, say) is a second callback nobody
+/// pinned, so it fails here rather than being resolved to the first one in source order.
+fn ready_callback<'a>(
+    file: &'a syn::File,
+    entry: &str,
+    receiver: &str,
+) -> Result<&'a syn::ExprClosure, String> {
+    let entries = functions(file, entry);
+    let [function] = entries.as_slice() else {
+        return Err(format!(
+            "expected exactly one `{entry}`, found {}",
+            entries.len()
+        ));
+    };
+    let executed = executed_in_fn(function);
+    let calls: Vec<_> = executed
+        .iter()
+        .filter(|(path, _, _, _)| path == receiver)
+        .collect();
+    let [(_, _, _, call)] = calls.as_slice() else {
+        return Err(format!(
+            "expected exactly one call to `{receiver}` in `{entry}`, found {}",
+            calls.len()
+        ));
+    };
+    match call.args.last() {
+        Some(syn::Expr::Closure(closure)) => Ok(closure),
+        _ => Err(format!(
+            "`{entry}` does not pass a closure as the last argument of `{receiver}`"
+        )),
+    }
+}
+
 /// What is wrong with the production handoff in `source` (`recording.rs`), as messages;
 /// empty when the handoff holds.
 fn handoff_defects(source: &str) -> Vec<String> {
@@ -368,9 +405,9 @@ fn handoff_defects(source: &str) -> Vec<String> {
     // ticker loop. A task that is built and dropped (a future nobody polls), or a loop
     // moved into a nested future, is not a handoff.
     let tickers = functions(&file, "spawn_dictation_partial_ticker");
-    if tickers.len() < 2 {
+    if tickers.len() != 2 {
         defects.push(format!(
-            "expected the ticker spawner's two cfg variants, found {}",
+            "expected exactly the ticker spawner's two cfg variants, found {}",
             tickers.len()
         ));
     }
@@ -477,21 +514,12 @@ fn handoff_defects(source: &str) -> Vec<String> {
             "publish_recording_ready_with",
         ),
     ] {
-        let functions = functions(&file, entry);
-        if functions.len() != 1 {
-            defects.push(format!("expected one `{entry}`, found {}", functions.len()));
-            continue;
-        }
-        let executed = executed_in_fn(functions[0]);
-        let callback = executed
-            .iter()
-            .find(|(path, _, _, _)| path == receiver)
-            .and_then(|(_, _, _, call)| call.args.last());
-        let Some(syn::Expr::Closure(closure)) = callback else {
-            defects.push(format!(
-                "`{entry}` does not pass a closure as the last argument of `{receiver}`"
-            ));
-            continue;
+        let closure = match ready_callback(&file, entry, receiver) {
+            Ok(closure) => closure,
+            Err(defect) => {
+                defects.push(defect);
+                continue;
+            }
         };
         let names: Vec<String> = closure.inputs.iter().filter_map(bound_name).collect();
         let [handle, id, register] = names.as_slice() else {
@@ -584,7 +612,11 @@ fn text_between(
     source[offset(start)..offset(end)].to_string()
 }
 
-/// The texts of the five pinned items of `source`, in [`PINS`] order.
+/// Starts the text of a pinned item that was not found exactly once.
+const MULTIPLICITY: &str = "MULTIPLICITY: ";
+
+/// The texts of the five pinned items of `source`, in [`PINS`] order. A target found zero or
+/// several times is a `MULTIPLICITY` text, which fails its pin by name.
 fn pinned_texts(source: &str) -> Vec<String> {
     let file = syn::parse_file(source).expect("recording.rs parses");
     let function_text = |function: &syn::ItemFn| {
@@ -608,23 +640,19 @@ fn pinned_texts(source: &str) -> Vec<String> {
     let feature_build: Vec<_> = tickers.iter().filter(|f| !is_default_build(f)).collect();
     let vads = functions(&file, "spawn_vad_stream");
     let callback = |entry: &str, receiver: &str| -> String {
-        let functions = functions(&file, entry);
-        assert_eq!(functions.len(), 1, "one `{entry}`");
-        let executed = executed_in_fn(functions[0]);
-        let callback = executed
-            .iter()
-            .find(|(path, _, _, _)| path == receiver)
-            .and_then(|(_, _, _, call)| call.args.last());
-        let Some(syn::Expr::Closure(closure)) = callback else {
-            return format!("NO-CALLBACK {entry}");
-        };
-        text_between(source, closure.span().start(), closure.span().end())
+        match ready_callback(&file, entry, receiver) {
+            Ok(closure) => text_between(source, closure.span().start(), closure.span().end()),
+            Err(defect) => format!("{MULTIPLICITY}{defect}"),
+        }
     };
     // A missing item is its own text, so the pin fails on it instead of the test panicking.
     let one = |found: Vec<String>, name: &str| -> String {
         match found.as_slice() {
             [only] => only.clone(),
-            other => format!("{} `{name}` items found", other.len()),
+            other => format!(
+                "{MULTIPLICITY}expected exactly one {name}, found {}",
+                other.len()
+            ),
         }
     };
     vec![
@@ -685,16 +713,32 @@ fn normalised_digests(texts: &[String]) -> Vec<String> {
 
 /// The pins `source` breaks, as messages that name the pin and the re-pin rule.
 fn pin_defects(source: &str) -> Vec<String> {
-    let digests = normalised_digests(&pinned_texts(source));
+    let texts = pinned_texts(source);
+    let found: Vec<String> = texts
+        .iter()
+        .filter(|text| !text.starts_with(MULTIPLICITY))
+        .cloned()
+        .collect();
+    let mut digests = normalised_digests(&found).into_iter();
     PINS.iter()
-        .zip(digests)
-        .filter(|((_, pinned), digest)| digest != pinned)
-        .map(|((name, pinned), digest)| {
-            format!(
-                "S8 pin: {name} changed (digest {digest}, pinned {pinned}). Re-pin only with a \
-                 reviewed justification that the ticker and the VAD still start for every \
-                 eligible recording (D-S2c-16 amendment 1)."
-            )
+        .zip(&texts)
+        .filter_map(|((name, pinned), text)| {
+            if let Some(why) = text.strip_prefix(MULTIPLICITY) {
+                return Some(format!(
+                    "S8 pin: {name} is not found exactly once ({why}). Every pinned target must \
+                     have exactly one match; pin each supported variant explicitly, with a \
+                     reviewed justification that the ticker and the VAD still start for every \
+                     eligible recording (D-S2c-16 amendment 1)."
+                ));
+            }
+            let digest = digests.next().expect("one digest for each found text");
+            (digest != *pinned).then(|| {
+                format!(
+                    "S8 pin: {name} changed (digest {digest}, pinned {pinned}). Re-pin only with \
+                     a reviewed justification that the ticker and the VAD still start for every \
+                     eligible recording (D-S2c-16 amendment 1)."
+                )
+            })
         })
         .collect()
 }
@@ -744,6 +788,29 @@ type Control = (
     &'static str,
     &'static [(&'static str, &'static str)],
     &'static [&'static str],
+);
+
+/// Sol's round-3 plant: R104.2 split into two `cfg` branches. The original callback stays
+/// first in source order under `dictation-shadow`, and VAD startup is dropped from the
+/// default branch. Resolving a callback to the first match kept every digest and the
+/// structural check green; two calls to the receiver must fail closed.
+const SPLIT_R104_2: Control = (
+    "R104.2 split into two cfg branches, VAD dropped from the default branch",
+    &[(
+        "    publish_recording_ready_with(\n        app_handle,\n        state,\n        recording_id,\n        context_ready_at,\n        ready_op,\n        audio_lifecycle::is_dictation_recording,\n        |app_handle, recording_id, register| {\n            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);\n        },\n    )\n}",
+        "    #[cfg(feature = \"dictation-shadow\")]\n    {\n        return publish_recording_ready_with(\n            app_handle,\n            state,\n            recording_id,\n            context_ready_at,\n            ready_op,\n            audio_lifecycle::is_dictation_recording,\n            |app_handle, recording_id, register| {\n                spawn_vad_stream(app_handle.clone(), recording_id);\n                spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);\n            },\n        );\n    }\n    #[cfg(not(feature = \"dictation-shadow\"))]\n    {\n        publish_recording_ready_with(\n            app_handle,\n            state,\n            recording_id,\n            context_ready_at,\n            ready_op,\n            audio_lifecycle::is_dictation_recording,\n            |app_handle, recording_id, register| {\n                spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);\n            },\n        )\n    }\n}",
+    )],
+    &["R104.2 ready callback"],
+);
+
+/// A second `spawn_vad_stream`: a pinned function found twice must fail, not resolve to one.
+const DUPLICATE_VAD: Control = (
+    "a second `spawn_vad_stream`",
+    &[(
+        "fn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {",
+        "#[cfg(test)]\nfn spawn_vad_stream(_other: u8) {}\n\nfn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {",
+    )],
+    &["the VAD spawner"],
 );
 
 /// Sol's round-2 mutations, which the structural check let through, and the callbacks'
@@ -800,6 +867,8 @@ const CONTROLS: &[Control] = &[
         )],
         &["the bridge `Ready` ready callback"],
     ),
+    SPLIT_R104_2,
+    DUPLICATE_VAD,
     (
         "the start command's ready callback starts the VAD only `if false`",
         &[(
@@ -967,6 +1036,35 @@ fn every_plant_that_drops_the_handoff_fails() {
         assert!(
             defects.iter().any(|defect| defect.contains(expected)),
             "plant `{name}` was not caught as `{expected}`: {defects:#?}"
+        );
+    }
+}
+
+/// The two multiplicity plants fail the structural check as well as their pin: the checker
+/// reads exactly one receiver and exactly one function, and says which count was wrong.
+#[test]
+fn a_second_match_fails_the_structural_check_and_names_the_count() {
+    let source = production_source();
+    for ((name, replacements, _), expected) in [
+        (
+            SPLIT_R104_2,
+            "expected exactly one call to `publish_recording_ready_with`",
+        ),
+        (DUPLICATE_VAD, "expected one `spawn_vad_stream`, found 2"),
+    ] {
+        let planted = replacements
+            .iter()
+            .fold(source.clone(), |text, (from, to)| mutated(&text, from, to));
+        let defects = handoff_defects(&planted);
+        assert!(
+            defects.iter().any(|defect| defect.contains(expected)),
+            "plant `{name}` was not caught by the structural check as `{expected}`: {defects:#?}"
+        );
+        let pins = pin_defects(&planted);
+        assert!(
+            pins.iter()
+                .any(|pin| pin.contains("not found exactly once")),
+            "plant `{name}`'s pin must say the target is not found exactly once: {pins:#?}"
         );
     }
 }
