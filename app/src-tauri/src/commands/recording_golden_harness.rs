@@ -601,6 +601,18 @@ impl World {
         );
         self.sample();
         self.assert_persisted_core("end of run");
+        // The end-of-run check `plant_core_divergence` promises: the counter is exactly the
+        // baseline plus the divergences planted, so a planted divergence that no switched
+        // entry read (a D-less site reads none) fails the run instead of passing unseen. A
+        // run that planted nothing counted nothing.
+        let planted = self.planted_divergences.load(Ordering::SeqCst);
+        let counted =
+            crate::dictation_executor::adapter::core_divergences() - self.divergence_baseline;
+        assert_eq!(
+            counted, planted,
+            "a planted divergence was never read: {planted} planted, {counted} counted \
+             (no switched entry ran after the plant, or none reads the persisted core)"
+        );
         let state = self.state();
         let status = state.app_state.dictation.lock_or_recover().status;
         let context = (1..=MAX_ID)
@@ -954,8 +966,8 @@ impl World {
     /// A **planted** C8.6 divergence (the stop cutover's tests): put both persisted fields
     /// off live, as a write that bypassed the adapter would, and allow the run's invariant
     /// exactly one more counted divergence. The entry that next reads the persisted core
-    /// must count it and re-sync it (`stop_view`); a run that never does fails its
-    /// end-of-run check. The persisted fields are checked equal to live first, so it never
+    /// must count it and re-sync it (`stop_view`); a run in which none does fails
+    /// [`World::finish`]'s end-of-run check (`counted == planted`). The persisted fields are checked equal to live first, so it never
     /// forgives an earlier violation. Returns the planted `(status, id)` and live's.
     pub(super) fn plant_core_divergence(
         &self,

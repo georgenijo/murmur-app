@@ -681,6 +681,29 @@ fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
     }
 }
 
+/// A divergence planted where **no switched entry reads it** must fail the run. The stale
+/// scoped stop (R201.1) is D-less: it reads no persisted core, so nothing counts or repairs
+/// the plant, and the harness's end-of-run check (`counted == planted`) is what catches it.
+/// Without that check the plant would pass unseen.
+#[test]
+#[should_panic(expected = "a planted divergence was never read")]
+fn a_divergence_planted_at_a_d_less_site_no_entry_reads_fails_the_run() {
+    let _gate = serialized();
+    run_sub_run(&SubRun {
+        title: "a plant no entry reads",
+        setup: Setup {
+            status: DictationStatus::Recording,
+            recording_id: 2,
+        },
+        body: |world| {
+            world.install_context(2);
+            world.accept_silently(1);
+            planted_now(world);
+            stopped(world, "stop", Some(1));
+        },
+    });
+}
+
 // ------------------------------------------------------------- the four IdleGuard origins
 
 /// Every `IdleGuard` origin finishes through the one 204a section (`finish_section`), so
@@ -694,40 +717,49 @@ fn every_idle_guard_origin_reads_the_persisted_core_and_resyncs_a_divergence() {
     let _gate = serialized();
 
     type Make = fn(&AppState, u64) -> IdleGuard<'_>;
-    let origins: [(&str, GuardOrigin, Make, bool); 5] = [
+    // (case, the origin the guard decides as, its constructor, finished (else dropped), the
+    // row the 204a section decides for it). The legacy parse origin is the one that decides
+    // site 302's own row (R302.1), everything else is 204a (R204a.1 a finish that emits idle,
+    // R204a.6 a drop).
+    let origins: [(&str, GuardOrigin, Make, bool, &str); 5] = [
         (
             "StopCapture, finished",
             GuardOrigin::StopCapture,
             |a, r| IdleGuard::new(a, r),
             true,
+            "R204a.1",
         ),
         (
             "Dropped, a stop guard dropped",
             GuardOrigin::Dropped,
             |a, r| IdleGuard::new(a, r),
             false,
+            "R204a.6",
         ),
         (
             "PipelineExit, finished",
             GuardOrigin::PipelineExit,
             |a, r| IdleGuard::for_pipeline(a, r, None),
             true,
+            "R204a.1",
         ),
         (
             "LegacyParse, finished",
             GuardOrigin::LegacyParse,
             |a, r| IdleGuard::for_legacy_parse(a, r, None),
             true,
+            "R302.1",
         ),
         (
             "Dropped, a legacy parse guard dropped",
             GuardOrigin::Dropped,
             |a, r| IdleGuard::for_legacy_parse(a, r, None),
             false,
+            "R204a.6",
         ),
     ];
 
-    for (name, _origin, make, finish) in origins {
+    for (name, origin, make, finish, expected_row) in origins {
         for diverged in [false, true] {
             let app_state = AppState::default();
             let rid = app_state.next_recording_id();
@@ -743,13 +775,31 @@ fn every_idle_guard_origin_reads_the_persisted_core_and_resyncs_a_divergence() {
             probe::take_stop_entries();
             let projections = probe::projections();
             let divergences = core_divergences();
+            GUARD_FINISH_ROW.with(|slot| *slot.borrow_mut() = None);
             {
                 let mut guard = make(&app_state, rid);
+                // The column is real: the origin the guard finishes (or, dropped, is
+                // dropped) as is the one the case names.
+                assert_eq!(
+                    if finish {
+                        guard.finish_origin
+                    } else {
+                        guard.drop_origin
+                    },
+                    origin,
+                    "{name}: the guard's own origin"
+                );
                 if finish {
                     guard.finish(|_| {});
                 }
                 // Not finished: the drop is the finish.
             }
+            let row = GUARD_FINISH_ROW.with(|slot| slot.borrow_mut().take());
+            assert_eq!(
+                row,
+                Some(expected_row),
+                "{name}: the row the switched 204a section decided"
+            );
             let reads = labelled(probe::take_stop_entries());
             assert_eq!(
                 reads.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>(),
