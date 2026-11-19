@@ -367,17 +367,22 @@ type TickerStart = Result<(Arc<DictationContextSnapshot>, bool), SkipReason>;
 #[cfg(feature = "dictation-shadow")]
 pub(crate) fn ticker_start_check(app_state: &AppState, recording_id: u64) -> TickerStart {
     use crate::dictation_shadow::types::TickerSkipReason;
-    let Some(context) = app_state.active_context(recording_id) else {
-        crate::dictation_executor::shadow::ticker_skipped(TickerSkipReason::NoContext);
-        return Err(TickerSkipReason::NoContext);
+    let started = match app_state.active_context(recording_id) {
+        None => Err(TickerSkipReason::NoContext),
+        Some(context) => {
+            let model = &context.transcription.model_name;
+            let whisper = transcriber::whisper::supports_live_preview(model);
+            if !whisper && !transcriber::is_coreml_model(model) {
+                Err(TickerSkipReason::NoLivePreview)
+            } else {
+                Ok((context, whisper))
+            }
+        }
     };
-    let model = &context.transcription.model_name;
-    let whisper = transcriber::whisper::supports_live_preview(model);
-    if !whisper && !transcriber::is_coreml_model(model) {
-        crate::dictation_executor::shadow::ticker_skipped(TickerSkipReason::NoLivePreview);
-        return Err(TickerSkipReason::NoLivePreview);
-    }
-    Ok((context, whisper))
+    // The outcome of that one lookup, for the port that called the spawner: one flag load
+    // while disarmed, and nothing else (D-S2c-10 amendment 1 i, ii).
+    crate::dictation_executor::shadow::ticker_outcome(started.as_ref().err().copied());
+    started
 }
 
 /// What one `SD` attempt witnesses: the gate when `register` ran, the skip when the

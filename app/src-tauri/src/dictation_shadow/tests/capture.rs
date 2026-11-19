@@ -1297,37 +1297,49 @@ fn a_queued_finish_closes_with_no_reply_and_a_nested_command_keeps_its_own() {
 }
 
 /// The import's pipeline failure is modelled as an `Err` outcome for R302.2, and the actual
-/// return is what it is compared against (D-S2c-10 R3): the `Err` it returns closes the
-/// waiting flights as the named no-reply close; any other return is credited as the reply
-/// it is, so the comparator can report it.
+/// return is what it is compared against (D-S2c-10 R3, amendment 1 iii): the `Err` it
+/// returns closes the waiting flights as the named no-reply close; any other return,
+/// **the decided success included**, is credited with a kind no decision names, so the
+/// comparator reports it.
 #[test]
 fn an_import_pipeline_error_is_compared_with_the_actual_return() {
     use crate::dictation_executor::shadow::{commanded, import_pipeline_error};
     use murmur_dictation_core::replies::{Reply, ReplyType};
 
-    let decided = Reply::typed(ReplyType::NotRecording, Status::Idle);
-    for (returned, credited) in [
-        (Err("the pipeline failed".to_string()), None),
-        (
-            Ok(serde_json::json!({"type": "not_recording", "state": "idle"})),
-            Some(ReplyKind::Typed(ReplyType::NotRecording)),
-        ),
+    for decided in [
+        Reply::typed(ReplyType::NotRecording, Status::Idle),
+        Reply::Transcription {
+            text: murmur_dictation_core::replies::TranscriptText::FromPipeline,
+            state: Status::Idle,
+        },
     ] {
-        let transport = default_transport();
-        let _armed = Armed::on(&transport);
-        let result = block_on(commanded(async {
-            drop(replying_flight(&decided));
-            import_pipeline_error();
-            returned.clone()
-        }));
-        assert_eq!(result, returned);
-        let (replies, closes) = reply_and_close(&pop_all(&transport));
-        assert_eq!(replies, credited.into_iter().collect::<Vec<_>>());
-        assert_eq!(
-            closes.contains(&true),
-            credited.is_some(),
-            "for {returned:?}: {closes:?}"
-        );
+        for (returned, credited) in [
+            (Err("the pipeline failed".to_string()), None),
+            (
+                Ok(serde_json::json!({"type": "not_recording", "state": "idle"})),
+                Some(ReplyKind::Unrecognized),
+            ),
+            (
+                Ok(serde_json::json!({"type": "transcription", "text": ""})),
+                Some(ReplyKind::Unrecognized),
+            ),
+        ] {
+            let transport = default_transport();
+            let _armed = Armed::on(&transport);
+            let result = block_on(commanded(async {
+                drop(replying_flight(&decided));
+                import_pipeline_error();
+                returned.clone()
+            }));
+            assert_eq!(result, returned);
+            let (replies, closes) = reply_and_close(&pop_all(&transport));
+            assert_eq!(replies, credited.into_iter().collect::<Vec<_>>());
+            assert_eq!(
+                closes.contains(&true),
+                credited.is_some(),
+                "for {returned:?}: {closes:?}"
+            );
+        }
     }
 }
 

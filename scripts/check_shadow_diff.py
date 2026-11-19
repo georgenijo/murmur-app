@@ -162,7 +162,86 @@ def _cfg_value(predicate: str) -> bool | None:
     return False if all(value is False for value in values) else None
 
 
-_CFG_ATTRIBUTE = re.compile(r"^\s*#!?\[cfg\((.*)\)\]\s*$")
+def _strip_comments(line: str) -> str:
+    """The line without `//` and `/* */` comments (outside string literals)."""
+    out: list[str] = []
+    i, in_string = 0, False
+    while i < len(line):
+        char = line[i]
+        if in_string:
+            out.append(char)
+            if char == "\\" and i + 1 < len(line):
+                out.append(line[i + 1])
+                i += 2
+                continue
+            if char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+            out.append(char)
+        elif line.startswith("//", i):
+            break
+        elif line.startswith("/*", i):
+            end = line.find("*/", i + 2)
+            if end < 0:
+                break
+            i = end + 2
+            continue
+        else:
+            out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def _requires_test(predicate: str) -> bool:
+    """The predicate holds only in a test build (`test`, or `all(.., test, ..)`)."""
+    predicate = predicate.strip()
+    if predicate == "test":
+        return True
+    match = re.fullmatch(r"(all|any)\((.*)\)", predicate, re.S)
+    if not match:
+        return False
+    kind, inner = match.groups()
+    parts, depth, current = [], 0, ""
+    for char in inner:
+        if char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        current += char
+    if current.strip():
+        parts.append(current)
+    flags = [_requires_test(part) for part in parts]
+    return bool(flags) and (any(flags) if kind == "all" else all(flags))
+
+
+def cfg_attributes(text: str) -> list[tuple[int, int, bool, str]]:
+    """Every `#[cfg(..)]` / `#![cfg(..)]` of `text`, comments stripped first, as
+    `(first line, line after the attribute's end, is_inner, predicate)` (1-based). An
+    attribute may span lines and share a line with the item it gates."""
+    lines = [_strip_comments(line) for line in text.splitlines()]
+    code = "\n".join(lines)
+    found = []
+    for match in re.finditer(r"#(!?)\[\s*cfg\s*\(", code):
+        depth, at = 1, match.end()
+        while at < len(code) and depth:
+            depth += {"(": 1, ")": -1}.get(code[at], 0)
+            at += 1
+        predicate = code[match.end() : at - 1]
+        rest = code[at:].lstrip()
+        if depth or not rest.startswith("]"):
+            continue
+        end = at + (len(code[at:]) - len(rest)) + 1
+        found.append(
+            (
+                code.count("\n", 0, match.start()) + 1,
+                code.count("\n", 0, end) + 1,
+                match.group(1) == "!",
+                predicate,
+            )
+        )
+    return found
 
 
 def added_lines(root: Path, base: str, path: str) -> set[int]:
@@ -181,21 +260,34 @@ def added_lines(root: Path, base: str, path: str) -> set[int]:
 
 
 def disabled_originals(root: Path, base: str, path: str) -> list[str]:
-    """Always-false gates the branch put in front of a statement the base already had."""
-    text = show(root, "HEAD", path).splitlines()
+    """Gates the branch put on code the base already had, that switch it off in a production
+    build: an always-false gate, a gate that holds only in a test build, and any file-level
+    (`#![cfg(..)]`) gate added to a file the base had."""
+    head = show(root, "HEAD", path)
+    text = head.splitlines()
     added = added_lines(root, base, path)
+    in_base = bool(show(root, base, path))
     found = []
-    for number in sorted(added):
-        match = _CFG_ATTRIBUTE.match(text[number - 1]) if number <= len(text) else None
-        if not match or _cfg_value(match.group(1)) is not False:
+    for start, after, inner, predicate in cfg_attributes(head):
+        if start not in added:
+            continue
+        shown = f"#{'!' if inner else ''}[cfg({predicate.strip()})]"
+        if inner:
+            if in_base:
+                found.append(
+                    f"{path}:{start}: `{shown}` gates the whole of a file the base already had"
+                )
+            continue
+        if _cfg_value(predicate) is not False and not _requires_test(predicate):
             continue
         # The item the attribute gates: the next line that is not another attribute or a comment.
-        target = number + 1
-        while target <= len(text) and re.match(r"^\s*(#\[|//)", text[target - 1]):
+        target = after + 1
+        while target <= len(text) and re.match(r"^\s*(#\[|#!\[|//|$)", text[target - 1]):
             target += 1
+        # An item on the attribute's own line is new text with it.
         if target <= len(text) and target not in added:
             found.append(
-                f"{path}:{number}: `{text[number - 1].strip()}` disables the existing statement "
+                f"{path}:{start}: `{shown}` disables the existing statement "
                 f"at line {target} without deleting it"
             )
     return found

@@ -237,6 +237,49 @@ class ShadowDiffTests(unittest.TestCase):
         self.assertEqual(code, 1, err)
         self.assertIn("removes", err)
 
+    def test_a_trailing_comment_does_not_hide_an_always_false_gate(self):
+        for gate in [
+            "#[cfg(any())] // keep",
+            "#[cfg(any())] /* keep */",
+            "#[cfg(not(all()))]// explain",
+            "#[cfg(\n    any()\n)]",
+        ]:
+            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 1, f"{gate!r}: {err}")
+            self.assertIn("disables the existing statement", err)
+
+    def test_a_gate_that_holds_only_in_a_test_build_disables_the_existing_statement(self):
+        for gate in ["#[cfg(test)]", "#[cfg(all(test, unix))]"]:
+            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 1, f"{gate}: {err}")
+
+    def test_a_string_with_slashes_is_not_a_comment(self):
+        root = repo(
+            "a\nb\n",
+            'a\n#[cfg(feature = "x//y")]\nnew();\n#[cfg(not(feature = "x//y"))]\nb\n',
+        )
+        code, _, err = run(root)
+        self.assertEqual(code, 0, err)
+
+    def test_a_file_level_gate_added_to_a_production_file_fails_by_itself(self):
+        for gate in ["#![cfg(test)]", "#![cfg(feature = \"dictation-shadow\")]", "#![cfg(any())]"]:
+            root = repo("fn a() {}\nfn b() {}\n", f"{gate}\nfn a() {{}}\nfn b() {{}}\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 1, f"{gate}: {err}")
+            self.assertIn("gates the whole of a file the base already had", err)
+
+    def test_a_file_level_gate_in_a_new_file_is_harmless(self):
+        root = repo("a\n", "a\nb\n")
+        path = "app/src-tauri/src/commands/recording_extra.rs"
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("#![cfg(feature = \"dictation-shadow\")]\nfn a() {}\n")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "a new gated file")
+        code, _, err = run(root)
+        self.assertEqual(code, 0, err)
+
     def test_numstat_reads_added_and_removed(self):
         root = repo("a\n", "a\nb\n")
         self.assertEqual(numstat(root, "main")[LIVE], (1, 0))

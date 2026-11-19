@@ -161,7 +161,9 @@ the diff adds lines and removes none, and every added line is behind
 **any** changed production path under `app/src-tauri/src` and `crates/*/src` (test files and
 the named shadow-only modules excluded; a rename counts as a delete plus an add) unless
 `SHADOW_DIFF_ALLOW` names it (one test-only entry today, `main_thread_watch.rs`, with its
-reason). Files are classified from the base revision, so adding `#![cfg(test)]` to a
+reason). Comments are stripped before attributes are matched, and a gate that holds only in
+a test build, or a file-level `#![cfg(..)]` added to a file the base had, fails like an
+always-false one. Files are classified from the base revision, so adding `#![cfg(test)]` to a
 production file does not exempt its deletions, and a gate that is always false
 (`cfg(any())`, `cfg(not(all()))`, ...) on a statement that exists in the base fails as
 disabling it.
@@ -176,7 +178,8 @@ How E7 counts, so a missed site cannot hide:
   in a named allowlist by site (`replay::NON_FAMILY`). That policy scan matches the
   **receiver** (`.dictation`), so every acquisition form (`lock`, `try_lock`,
   `try_lock_or_recover`, any future method) outside the counted `lock_or_recover` and a
-  short named list of non-decision reads fails
+  short named list of non-decision reads fails (the executor's own borrowed guard field
+  `ctx.dictation` is exempt in `dictation_executor/executor.rs` only)
   `every_production_dictation_lock_goes_through_the_counting_guard`.
 * **No ambient flight.** There is no thread-local current flight and no stash. The
   executor carries the flight (`Executor::attach_flight`); the flight owns its mirror,
@@ -192,16 +195,28 @@ How E7 counts, so a missed site cannot hide:
   a command nested in it keeps its own reply) and a parent whose reply is another site's
   (R201.4 / R205.4, an explicit `Delegated` disposition; the comparison stays at R206)
   close as a **named no-reply close**, never with a kind filled in. The import's pipeline
-  failure is an `Err` outcome for R302.2 compared with the actual return, so an `Ok`
-  return after a failed import is reported as a mismatch.
+  failure is an `Err` outcome for R302.2 compared with the actual return: an `Err` return
+  closes as the named no-reply close, and **any other return, the decided success
+  included**, is credited with a reply kind no decision names, so the comparator reports it
+  (`diff_kind=4`).
 * **The gate.** `Report::assert_clean` requires `open == 0`, `lost == 0`,
   `unverifiable == 0`, `closes == headers`, credit at close, and entries == headers +
   no-decision + unwound, unless the test that provoked an incomplete close asserts it by
   name (`replay::expect`). A suite whose every `Close` is dropped fails.
 * The ticker spawner makes **one** lookup (`ticker_start_check`): the production spawner and
-  the harness's spawners both go through it and the skip it takes is handed to the port
-  that called it, so nothing is read twice under D. A test per skip reason asserts exactly
-  one note.
+  the harness's spawners both go through it. Its outcome (a skip, or none) overwrites a
+  one-call mailbox on every call while armed, and the port that called the spawner takes it
+  **once**, so no earlier call's value is ever this one's and nothing is read twice under D.
+  A test per skip reason asserts exactly one note, and a Core ML replay requires the
+  registration through both ready entry points (the comparator accepts any
+  `NoLivePreview` skip for a recording, so only that replay sees a spawner that stops
+  registering Core ML).
+* **One flag load per inserted block.** Every inserted block begins with exactly one read of
+  the enable flag, which is the active check; everything else sits behind it. The probe
+  counts those reads (`dictation_shadow::enabled()` in test builds) and the pin
+  `the_shadow_makes_only_its_one_flag_load_and_its_one_take_as_pinned` fixes, per entry,
+  `(state reads, flag loads)` disarmed and armed, so a second load in a block, a second
+  mailbox take, or any state read while disarmed fails it.
 * **Reads are pinned.** `the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned`
   counts `core_now()` calls and live-field view projections per entry (disarmed and armed),
   and `a_disarmed_keyboard_write_reads_no_shadow_state` the disarmed shadow's reads of its

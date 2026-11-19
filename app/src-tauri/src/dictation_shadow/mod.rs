@@ -114,7 +114,10 @@ pub(crate) fn parse_flag(value: Option<&str>) -> bool {
 /// Whether shadow capture is active: the env var read **once** at first use. The
 /// feature gate is the `#[cfg]` that compiles this module at all, so both are
 /// required in a real build.
+#[cfg_attr(test, track_caller)]
 pub(crate) fn enabled() -> bool {
+    #[cfg(test)]
+    crate::dictation_executor::probe::flag_load();
     // Test builds: a replay arms the shadow in synchronous mode without the env var
     // (see `replay`); no other build has this branch.
     #[cfg(test)]

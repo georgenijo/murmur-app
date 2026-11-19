@@ -441,8 +441,6 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
         let register_app = self.app.clone();
         let gate = std::rc::Rc::new(std::cell::Cell::new(None));
         let noted = std::rc::Rc::clone(&gate);
-        // Nothing a spawner left from an earlier call is this one's.
-        crate::dictation_executor::shadow::take_ticker_skip();
         spawn(
             self.app.clone(),
             recording_id,

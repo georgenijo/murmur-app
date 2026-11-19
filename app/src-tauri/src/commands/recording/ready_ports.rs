@@ -160,8 +160,6 @@ impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
         let app_state = &self.state.app_state;
         let recording_id = self.recording_id;
         let gate = std::cell::Cell::new(None);
-        // Nothing a spawner left from an earlier call is this one's.
-        crate::dictation_executor::shadow::take_ticker_skip();
         spawn(
             self.app_handle,
             recording_id,

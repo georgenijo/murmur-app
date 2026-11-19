@@ -196,8 +196,12 @@ fn every_production_dictation_lock_goes_through_the_counting_guard() {
         let text = production_text(&std::fs::read_to_string(&file).unwrap());
         let shown = file.to_string_lossy().replace('\\', "/");
         for (start, receiver, tail) in receivers(&text) {
-            // The counted guard, and the executor context's own borrowed guard option.
-            if tail.starts_with(".lock_or_recover()") || receiver == "ctx" {
+            // The counted guard, and the executor context's own borrowed guard option:
+            // a field of the executor's phase context, in the executor's own file only, so
+            // an `AppState` bound to the name `ctx` elsewhere is still scanned.
+            if tail.starts_with(".lock_or_recover()")
+                || (receiver == "ctx" && shown.ends_with("dictation_executor/executor.rs"))
+            {
                 continue;
             }
             let context = &text[start.saturating_sub(40)..(start + 80).min(text.len())];

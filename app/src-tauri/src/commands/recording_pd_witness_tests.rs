@@ -1246,13 +1246,19 @@ pub(super) mod under_d {
         static READS_UNDER_D: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
         /// Reads of the shadow's own per-thread state made by the measured entries.
         static SHADOW_READS_UNDER_D: Cell<u64> = const { Cell::new(0) };
+        /// Reads of the shadow's enable flag made by the measured entries.
+        static FLAG_LOADS_UNDER_D: Cell<u64> = const { Cell::new(0) };
     }
 
     /// Run `f` and add the clock reads and view projections it made to [`READS_UNDER_D`].
     fn count_reads<R>(f: impl FnOnce() -> R) -> R {
         let before = crate::dictation_executor::probe::counts();
         let shadow_before = crate::dictation_executor::probe::shadow_reads();
+        let loads_before = crate::dictation_executor::probe::flag_loads();
         let result = f();
+        FLAG_LOADS_UNDER_D.with(|total| {
+            total.set(total.get() + crate::dictation_executor::probe::flag_loads() - loads_before)
+        });
         let after = crate::dictation_executor::probe::counts();
         SHADOW_READS_UNDER_D.with(|total| {
             total
@@ -1399,6 +1405,10 @@ pub(super) mod under_d {
         ALLOCATIONS_UNDER_D.with(|total| total.set(0));
         READS_UNDER_D.with(|total| total.set((0, 0)));
         SHADOW_READS_UNDER_D.with(|total| total.set(0));
+        FLAG_LOADS_UNDER_D.with(|total| total.set(0));
+        // A disarmed run reaches the site hooks with no replay to compare against: its
+        // "violations" are not findings, and must not reach the next armed run's check.
+        crate::dictation_shadow::replay::reset_site_totals();
         REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
         struct Rearm;
         impl Drop for Rearm {
@@ -1415,6 +1425,7 @@ pub(super) mod under_d {
             },
             body: scenario.body,
         });
+        crate::dictation_shadow::replay::reset_site_totals();
         ALLOCATIONS_UNDER_D.with(Cell::get)
     }
 
@@ -1585,7 +1596,7 @@ pub(super) mod under_d {
     /// reads exactly what its header needs. An extra read added under D allocates nothing,
     /// so the allocation pins cannot see it; one of these does (D-S2c-10 R4).
     type Reads = (u64, u64);
-    const READS: [(&str, Reads, Reads); 16] = [
+    const READS: [(&str, Reads, Reads); 17] = [
         (
             "start refused before D (Smart Auto with a fixed device)",
             (1, 0),
@@ -1626,7 +1637,25 @@ pub(super) mod under_d {
             (1, 1),
             (1, 1),
         ),
+        (
+            "start accepted (R104.2, the ticker spawner under D)",
+            (5, 8),
+            (5, 9),
+        ),
     ];
+
+    /// The entries whose reads are pinned: every refusal, every bridge arm, and the accepted
+    /// start whose R104.2 `SD` asks the ticker spawner (the ticker mailbox's take).
+    fn read_scenarios() -> Vec<Scenario> {
+        let mut all = scenarios();
+        all.extend(bridge_scenarios());
+        all.push(Scenario {
+            title: "start accepted (R104.2, the ticker spawner under D)",
+            setup: Setup::idle(),
+            body: |w| count_reads(|| recording(w)),
+        });
+        all
+    }
 
     fn reads_of(scenario: &Scenario, disarmed: bool) -> (u64, u64) {
         run_measured(scenario, disarmed);
@@ -1636,7 +1665,7 @@ pub(super) mod under_d {
     #[test]
     fn the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned() {
         let mut counted = (0, 0);
-        for scenario in scenarios().into_iter().chain(bridge_scenarios()) {
+        for scenario in read_scenarios() {
             let disarmed = reads_of(&scenario, true);
             assert_eq!(
                 SHADOW_READS_UNDER_D.with(Cell::get),
@@ -1670,6 +1699,100 @@ pub(super) mod under_d {
             counted.0 > 0 || std::env::var_os("MURMUR_PRINT_PINS").is_some(),
             "the probe counted no clock read at all: it is not measuring"
         );
+    }
+
+    /// What the shadow reads of **its own** state and of its enable flag per entry, as
+    /// `(state reads, flag loads)` disarmed, then armed (D-S2c-10 amendment 1 i, ii). Each
+    /// inserted block makes exactly one flag load, as its first operation, and the ticker
+    /// mailbox is taken once per spawner call: a second load, a second take or a read made
+    /// while disarmed changes a number here. Disarmed, no entry reads any state.
+    type Gates = (u64, u64);
+    const GATES: [(&str, Gates, Gates); 17] = [
+        (
+            "start refused before D (Smart Auto with a fixed device)",
+            (0, 3),
+            (0, 2),
+        ),
+        (
+            "start refused under D (a meeting is active)",
+            (0, 3),
+            (0, 2),
+        ),
+        ("start refused under D (already recording)", (0, 3), (0, 2)),
+        ("stop refused (stale, R201.1)", (0, 3), (0, 2)),
+        ("stop refused (processing, R201.2)", (0, 3), (0, 2)),
+        ("stop refused (idle, R201.3)", (0, 3), (0, 2)),
+        (
+            "stop refused (recovering, nothing preserved, R201.6)",
+            (0, 3),
+            (0, 2),
+        ),
+        ("cancel refused (stale, R205.1)", (0, 3), (0, 2)),
+        ("cancel no-op (idle, R205.2)", (0, 3), (0, 2)),
+        ("cancel no-op (recovering, R205.3)", (0, 3), (0, 2)),
+        ("bridge Ready while starting (R207)", (0, 3), (1, 2)),
+        (
+            "bridge StillConnecting while starting (R208)",
+            (0, 2),
+            (0, 1),
+        ),
+        ("bridge Recovering while recording (R209)", (0, 2), (0, 1)),
+        (
+            "bridge CleanupFinished while recovering (R210)",
+            (0, 2),
+            (0, 1),
+        ),
+        ("bridge Idle while recording (R211)", (0, 3), (1, 2)),
+        (
+            "bridge Idle while idle (short idle, R215.3/R216)",
+            (0, 2),
+            (0, 1),
+        ),
+        (
+            "start accepted (R104.2, the ticker spawner under D)",
+            (0, 23),
+            (2, 16),
+        ),
+    ];
+
+    #[test]
+    fn the_shadow_makes_only_its_one_flag_load_and_its_one_take_as_pinned() {
+        for scenario in read_scenarios() {
+            crate::dictation_executor::probe::record_flag_sites(true);
+            run_measured(&scenario, true);
+            let sites = crate::dictation_executor::probe::take_flag_sites();
+            crate::dictation_executor::probe::record_flag_sites(false);
+            let disarmed = (
+                SHADOW_READS_UNDER_D.with(Cell::get),
+                FLAG_LOADS_UNDER_D.with(Cell::get),
+            );
+            if std::env::var_os("MURMUR_PRINT_PINS").is_some() {
+                eprintln!("SITES {} disarmed: {sites:?}", scenario.title);
+            }
+            run_measured(&scenario, false);
+            let armed = (
+                SHADOW_READS_UNDER_D.with(Cell::get),
+                FLAG_LOADS_UNDER_D.with(Cell::get),
+            );
+            if std::env::var_os("MURMUR_PRINT_PINS").is_some() {
+                eprintln!("GATE (\"{}\", {disarmed:?}, {armed:?}),", scenario.title);
+                continue;
+            }
+            let (_, pinned_disarmed, pinned_armed) = GATES
+                .iter()
+                .find(|(title, _, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned gates", scenario.title));
+            assert_eq!(
+                disarmed, *pinned_disarmed,
+                "{}: (state reads, flag loads) {disarmed:?} not armed, pinned {pinned_disarmed:?}",
+                scenario.title
+            );
+            assert_eq!(
+                armed, *pinned_armed,
+                "{}: (state reads, flag loads) {armed:?} armed, pinned {pinned_armed:?}",
+                scenario.title
+            );
+        }
     }
 
     /// The keyboard effect reads the shadow's per-thread write sequence only for a flight
@@ -1802,6 +1925,38 @@ mod ticker_skip_notes {
         ready(world);
     }
 
+    /// A Core ML recording, reaching the ticker spawner through the lifecycle bridge's
+    /// `Ready` (the cold start that finishes after the context is installed).
+    fn a_coreml_model_through_the_bridge(world: &Arc<World>) {
+        with_model(world, crate::transcriber::COREML_MODEL_NAME);
+        ready(world);
+        registered(world);
+    }
+
+    /// The harness's spawner (which makes the production check) ran the registration.
+    fn registered(world: &Arc<World>) {
+        assert!(
+            world
+                .trace()
+                .contains(&"SD ticker 1 registered=true".to_string()),
+            "the Core ML recording's ticker was not registered: {:?}",
+            world.trace()
+        );
+    }
+
+    /// A Core ML recording, reaching it through the start command's own ready entry (R104.2:
+    /// the supervisor is already `Recording` when the context is installed).
+    fn a_coreml_model_through_the_start_command(world: &Arc<World>) {
+        world
+            .state()
+            .app_state
+            .dictation
+            .lock_or_recover()
+            .model_name = crate::transcriber::COREML_MODEL_NAME.to_string();
+        recording(world);
+        registered(world);
+    }
+
     fn skipped_by(title: &'static str, body: fn(&Arc<World>)) -> ([u64; 2], u64) {
         replay::reset_totals();
         repeat(&sub_from(title, DictationStatus::Starting, 1, body));
@@ -1835,5 +1990,47 @@ mod ticker_skip_notes {
         let (skipped, replays) = skipped_by("ticker: a live preview model", a_live_preview_model);
         assert!(replays >= 1);
         assert_eq!(skipped, [0, 0], "no skip when the spawner registers");
+    }
+
+    /// A Core ML recording registers its ticker through **both** ready entry points
+    /// (D-S2c-10 amendment 1 iii). The soak comparator accepts a `NoLivePreview` skip for any
+    /// recording, so only a replay of the production check against a Core ML context can
+    /// see a spawner that stops registering one: `if !whisper` (and a check that refuses
+    /// Core ML) leaves a skip note where a registration is required.
+    #[test]
+    fn a_coreml_recording_registers_its_ticker_through_both_ready_entry_points() {
+        // The start command's cold start reaches `Ready` before its context exists, so the
+        // bridge's own spawner call is the one `NoContext` skip of that run; R104.2 then
+        // registers.
+        for (title, status, id, body, expected) in [
+            (
+                "ticker: a Core ML model through the bridge's Ready",
+                DictationStatus::Starting,
+                1,
+                a_coreml_model_through_the_bridge as fn(&Arc<World>),
+                [0, 0],
+            ),
+            (
+                "ticker: a Core ML model through the start command (R104.2)",
+                DictationStatus::Idle,
+                0,
+                a_coreml_model_through_the_start_command as fn(&Arc<World>),
+                [1, 0],
+            ),
+        ] {
+            replay::reset_totals();
+            repeat(&sub_from(title, status, id, body));
+            let totals = replay::totals();
+            assert!(totals.replays >= 1, "{title}: nothing was replayed");
+            let mut per_replay = expected;
+            for count in &mut per_replay {
+                *count *= totals.replays;
+            }
+            assert_eq!(
+                totals.ticker_skipped, per_replay,
+                "{title}: a Core ML recording must register its ticker, not skip it as \
+                 `NoLivePreview`"
+            );
+        }
     }
 }

@@ -851,7 +851,7 @@ pub(crate) fn unreplied<R>(finish: impl FnOnce() -> R) -> R {
 /// R302.2 does not model (it decides the success reply): the decisions already waiting
 /// for the command's reply take the `Err` outcome, and the actual return is what they are
 /// compared against (D-S2c-10 R3). An `Err` return closes them as the named no-reply close;
-/// any other return is concluded as the reply it is, which the comparator reports. Does
+/// any other return is concluded with a kind no decision names, which the comparator reports. Does
 /// nothing without a command wrapper.
 pub(crate) fn import_pipeline_error() {
     if !crate::dictation_shadow::enabled() {
@@ -864,23 +864,25 @@ pub(crate) fn import_pipeline_error() {
     });
 }
 
-// The ticker spawner's skip, handed to the port that called it. The spawner runs
+// The ticker spawner's outcome, handed to the port that called it. The spawner runs
 // synchronously inside the port's `spawn` call and there is no `.await` between its
-// write and the port's take, so this holds one value for one call; it names no flight and
-// is written only while armed and read only by the active port that made the call.
+// write and the port's take, and **every** spawner call overwrites it (a skip or `None`),
+// so a value an earlier call left is never this one's. It names no flight and is written
+// only while armed and read, once, by the active port that made the call.
 thread_local! {
     static TICKER_SKIP: Cell<Option<TickerSkipReason>> = const { Cell::new(None) };
 }
 
-/// The ticker spawner returned before it asked for the registration gate (its one lookup
-/// found no recorded context, or a model with no live preview).
-pub(crate) fn ticker_skipped(reason: TickerSkipReason) {
+/// The ticker spawner's one lookup is done: `skip` is the skip it takes before it asks for
+/// the registration gate (no recorded context, or a model with no live preview), `None`
+/// when it goes on to ask. One flag load is this function's whole cost while disarmed.
+pub(crate) fn ticker_outcome(skip: Option<TickerSkipReason>) {
     if crate::dictation_shadow::enabled() {
-        TICKER_SKIP.with(|slot| slot.set(Some(reason)));
+        TICKER_SKIP.with(|slot| slot.set(skip));
     }
 }
 
-/// The skip the spawner reported during the port's call, if any (an active port only).
+/// The spawner's outcome of the port's call (an active port only, once per call).
 pub(crate) fn take_ticker_skip() -> Option<TickerSkipReason> {
     #[cfg(test)]
     super::probe::shadow_read();
@@ -899,10 +901,19 @@ fn witness_returned<T: RenderedValue, E>(result: &Result<T, E>) {
     let _ = REPLY_SINK.try_with(|sink| {
         let waiting = std::mem::take(&mut *sink.flights.borrow_mut());
         for live in waiting {
-            if live.err_outcome.get() && kind == ReplyKind::Err {
-                // The modelled outcome happened: the pipeline's own error is returned.
-                #[cfg(test)]
-                NO_REPLY.fetch_add(1, Ordering::Relaxed);
+            if live.err_outcome.get() {
+                if kind == ReplyKind::Err {
+                    // The modelled outcome happened: the pipeline's own error is returned.
+                    #[cfg(test)]
+                    NO_REPLY.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                // The pipeline failed and the command returned something else, whatever it
+                // is (a success included): the expected outcome did not happen. Credit a
+                // reply kind no decision names, so the comparator reports it (diff 4)
+                // instead of matching it against the success the core decided.
+                live.reply.set(Some(ReplyKind::Unrecognized));
+                live.conclude();
                 continue;
             }
             live.reply.set(Some(kind));

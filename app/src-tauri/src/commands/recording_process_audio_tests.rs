@@ -1300,6 +1300,19 @@ fn a_pipeline_error_runs_the_idle_gate_and_returns_its_text_as_a_shell_tail() {
     });
 }
 
+/// The same fixture with **no assertion of its own on the return**: whether the failed
+/// import's reply is the `Err` it models is E7's call (the replay's end), so a production
+/// change that returns a success here, a `transcription` included, is reported by the
+/// comparator and not by this test's own expectation (D-S2c-10 amendment 1 iii).
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn e7_compares_a_failed_imports_actual_return() {
+    run(|run| {
+        *locked(&run.host.pipeline) = Pipeline::Fail;
+        let _ = run.process(&wav_base64(8_000));
+    });
+}
+
 /// D-S2c-7 b, c: through the `process_audio` entry, each refusal allocates under D
 /// exactly what it allocates with the shadow compiled in and not armed, and the
 /// warning it logs is emitted at the same lock boundary.
