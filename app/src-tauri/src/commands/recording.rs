@@ -7381,15 +7381,20 @@ type AutoStopTask = std::pin::Pin<
 /// log a failed stop. Named so a test can run the real scheduler on a task that
 /// records when it is polled.
 fn spawn_auto_stop(recording_id: u64, stop: AutoStopTask) -> tauri::async_runtime::JoinHandle<()> {
-    tauri::async_runtime::spawn(async move {
-        if let Some(Err(_)) = stop.await {
-            tracing::error!(
-                target: "pipeline",
-                recording_id,
-                "interrupted recording transcription failed"
-            );
-        }
-    })
+    tauri::async_runtime::spawn(run_auto_stop(recording_id, stop))
+}
+
+/// What [`spawn_auto_stop`] runs: the stop task, then the diagnostic for a stop that
+/// failed. A separate function so a test can run it on its own thread under a
+/// capturing subscriber (a spawned task's events are emitted on a runtime worker).
+async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {
+    if let Some(Err(_)) = stop.await {
+        tracing::error!(
+            target: "pipeline",
+            recording_id,
+            "interrupted recording transcription failed"
+        );
+    }
 }
 
 /// R215.2 `RS`: what the lifecycle bridge does with the `AutoStop` owner it

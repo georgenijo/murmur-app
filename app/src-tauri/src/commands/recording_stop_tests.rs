@@ -1852,6 +1852,27 @@ fn the_production_bridge_hands_the_auto_stop_task_to_spawn_auto_stop() {
     );
 }
 
+/// How long the scheduler's task may take. Plain `cargo test` has no per-test timeout,
+/// so a task that is never woken fails here instead of hanging the run.
+const SCHEDULER_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Wait for a spawned scheduler task to finish. Past [`SCHEDULER_BOUND`] the task is
+/// aborted and the test fails.
+fn join_within_the_bound(mut handle: tauri::async_runtime::JoinHandle<()>) {
+    let joined = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(SCHEDULER_BOUND, &mut handle).await
+    });
+    match joined {
+        Ok(result) => result.expect("the scheduler's task joins"),
+        Err(_) => {
+            handle.abort();
+            panic!(
+                "the scheduler's task did not finish within {SCHEDULER_BOUND:?} (a missed wake?)"
+            );
+        }
+    }
+}
+
 /// Production's scheduler runs the task it is handed to completion. The task records
 /// when it is polled and when it finishes, and a drop guard records an end that was
 /// not a completion (a scheduler that discarded the task would drop it unpolled).
@@ -1899,8 +1920,7 @@ fn the_production_scheduler_polls_the_auto_stop_task_to_completion() {
                 reply
             })
         };
-        tauri::async_runtime::block_on(spawn_auto_stop(1, task))
-            .expect("the scheduler's task joins");
+        join_within_the_bound(spawn_auto_stop(1, task));
         assert!(polled.load(Ordering::SeqCst), "the task was polled");
         assert!(
             finished.load(Ordering::SeqCst),
@@ -1943,4 +1963,88 @@ fn an_unclaimed_auto_stop_task_does_not_keep_the_world_alive_after_a_panic() {
         world.upgrade().is_none(),
         "the queued task kept the world (and its AutoStop owner) alive after the scenario unwound"
     );
+}
+
+/// What `run_auto_stop` logs. It runs on the test's own thread under a capturing
+/// subscriber (a spawned task's events come from a runtime worker thread).
+mod auto_stop_log {
+    use super::*;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    /// `(level, target, recording_id, message)` of each event.
+    type Event = (tracing::Level, String, Option<u64>, String);
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<Event>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Capture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            #[derive(Default)]
+            struct Fields {
+                recording_id: Option<u64>,
+                message: String,
+            }
+            impl tracing::field::Visit for Fields {
+                fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                    if field.name() == "recording_id" {
+                        self.recording_id = Some(value);
+                    }
+                }
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = format!("{value:?}");
+                    }
+                }
+            }
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            let meta = event.metadata();
+            self.0.lock().expect("log").push((
+                *meta.level(),
+                meta.target().to_string(),
+                fields.recording_id,
+                fields.message,
+            ));
+        }
+    }
+
+    fn logged_for(reply: Option<Result<serde_json::Value, String>>) -> Vec<Event> {
+        let capture = Capture::default();
+        let events = Arc::clone(&capture.0);
+        let subscriber = tracing_subscriber::Registry::default().with(capture);
+        let task: AutoStopTask = Box::pin(async move { reply });
+        tracing::subscriber::with_default(subscriber, || {
+            tauri::async_runtime::block_on(run_auto_stop(7, task));
+        });
+        let logged = events.lock().expect("log").clone();
+        logged
+    }
+
+    /// Only a failed stop is reported, as a `pipeline` error that names the recording.
+    #[test]
+    fn only_a_failed_auto_stop_logs_a_pipeline_error_with_its_recording_id() {
+        let failed = logged_for(Some(Err("transcription failed".to_string())));
+        assert_eq!(
+            failed,
+            vec![(
+                tracing::Level::ERROR,
+                "pipeline".to_string(),
+                Some(7),
+                "interrupted recording transcription failed".to_string()
+            )]
+        );
+        assert!(
+            logged_for(Some(Ok(serde_json::json!({})))).is_empty(),
+            "a successful stop logs nothing"
+        );
+        assert!(
+            logged_for(None).is_empty(),
+            "a refused (re-entrant) stop logs nothing"
+        );
+    }
 }
