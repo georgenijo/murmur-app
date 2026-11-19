@@ -543,25 +543,32 @@ class HandlerAndBaseTests(unittest.TestCase):
 
 
 class LifecycleCutoverTests(unittest.TestCase):
-    """Sol round 3, finding 3: a cutover removes a handler pair, its wrapper in the
-    feature-only `shadow_commands.rs`, its pins and its call sites, in one PR. It must pass;
-    an unrelated edit of the same module beside it must still count as a shadow change."""
+    """A cutover removes a handler pair, its wrapper in the feature-only `shadow_commands.rs`,
+    its pins and its call sites, in one PR. It must pass; any other edit of the module beside
+    it, any `use` not listed in the entry's `retire_imports` included, must still count as a
+    shadow change (Sol rounds 3 to 5)."""
 
     GATE = '#[cfg(not(feature = "dictation-shadow"))]'
     FEATURE = '#[cfg(feature = "dictation-shadow")]'
     LIB = "app/src-tauri/src/lib.rs"
     MODULE = "app/src-tauri/src/commands/recording/shadow_commands.rs"
-    SCRIPT = (
-        "SHADOW_TWINS: dict[str, list[dict]] = {\n"
-        '    "app/src-tauri/src/lib.rs": [\n'
-        '        {"first": "commands::recording::process_audio,", "form": "handler",\n'
-        '         "twin": "commands::recording::shadow_commands::process_audio_witnessed,", "why": "x"},\n'
-        "    ],\n"
-        '    "app/src-tauri/src/keyboard.rs": [\n'
-        '        {"first": "fn orig_observed(x: u64) -> (bool, u64) {", "form": "frozen_fn",\n'
-        '         "original": "fn orig(x: u64) -> bool {", "pair": "0000000000000000", "why": "x"},\n'
-        "    ],\n}\n"
-    )
+    IMPORT = "use crate::commands::recording::process_audio;"
+
+    @staticmethod
+    def script(imports: list[str]) -> str:
+        listed = f'"retire_imports": {imports!r},\n         ' if imports else ""
+        return (
+            "SHADOW_TWINS: dict[str, list[dict]] = {\n"
+            '    "app/src-tauri/src/lib.rs": [\n'
+            '        {"first": "commands::recording::process_audio,", "form": "handler",\n'
+            f'         {listed}"twin": "commands::recording::shadow_commands::process_audio_witnessed,", "why": "x"}},\n'
+            "    ],\n"
+            '    "app/src-tauri/src/keyboard.rs": [\n'
+            '        {"first": "fn orig_observed(x: u64) -> (bool, u64) {", "form": "frozen_fn",\n'
+            '         "original": "fn orig(x: u64) -> bool {", "pair": "0000000000000000", "why": "x"},\n'
+            "    ],\n}\n"
+        )
+
     LIVE_BASE = (
         "fn orig(x: u64) -> bool {\n    x > 1\n}\n"
         '#[cfg(feature = "dictation-shadow")]\n'
@@ -581,19 +588,18 @@ class LifecycleCutoverTests(unittest.TestCase):
         "        b,\n    ]\n}\n"
     )
     LIB_AFTER = "fn handlers() {\n    generate_handler![\n        a,\n        commands::recording::process_audio,\n        b,\n    ]\n}\n"
-    MODULE_BASE = (
-        "use crate::commands::recording::process_audio;\n\n"
-        "#[tauri::command]\npub async fn process_audio_witnessed() {\n    process_audio().await\n}\n\n"
-        "#[tauri::command]\npub async fn other_witnessed() {\n    other().await\n}\n"
-    )
-    MODULE_AFTER = "#[tauri::command]\npub async fn other_witnessed() {\n    other().await\n}\n"
+    RETIRED = "#[tauri::command]\npub async fn process_audio_witnessed() {\n    process_audio().await\n}\n\n"
+    OTHER = "#[tauri::command]\npub async fn other_witnessed() {\n    other().await\n}\n"
+    MODULE_BASE = f"{IMPORT}\n\n" + RETIRED + OTHER
+    MODULE_AFTER = OTHER
 
-    def cutover_repo(self, module_after: str, module_base: str | None = None):
+    def cutover_repo(self, module_after: str, module_base: str | None = None, *, imports=None, live_after=None):
         module_base = self.MODULE_BASE if module_base is None else module_base
-        root = repo(self.LIVE_BASE, self.LIVE_AFTER)
+        imports = [self.IMPORT] if imports is None else imports
+        root = repo(self.LIVE_BASE, self.LIVE_AFTER if live_after is None else live_after)
         git(root, "checkout", "-q", "main")
         for rel, text in (
-            ("scripts/check_shadow_diff.py", self.SCRIPT),
+            ("scripts/check_shadow_diff.py", self.script(imports)),
             (self.LIB, self.LIB_BASE),
             (self.MODULE, module_base),
         ):
@@ -608,11 +614,23 @@ class LifecycleCutoverTests(unittest.TestCase):
         git(root, "commit", "-am", "the cutover")
         return root
 
-    def test_a_cutover_removing_the_pair_the_wrapper_the_pin_and_the_call_sites_passes(self):
+    def outcome(self, *args, **kwargs):
         with allowed({}):
-            code, out, err = run(self.cutover_repo(self.MODULE_AFTER))
+            return run(self.cutover_repo(*args, **kwargs))
+
+    def assert_shadow(self, result, message=""):
+        code, out, err = result
+        self.assertIn("shadow change: yes", out, message)
+        self.assertEqual(code, 1, f"{message}: {err}")
+
+    def test_a_cutover_removing_the_pair_the_wrapper_the_listed_import_the_pin_and_the_call_sites_passes(self):
+        code, out, err = self.outcome(self.MODULE_AFTER)
         self.assertEqual(code, 0, err)
         self.assertIn("shadow change: no", out)
+
+    def test_the_same_cutover_with_the_import_unlisted_is_a_shadow_change(self):
+        # Nothing is inferred: the import only the retired wrapper used goes only when listed.
+        self.assert_shadow(self.outcome(self.MODULE_AFTER, imports=[]))
 
     def test_an_unrelated_edit_of_the_module_beside_the_cutover_is_a_shadow_change(self):
         for after in (
@@ -620,80 +638,70 @@ class LifecycleCutoverTests(unittest.TestCase):
             self.MODULE_AFTER.replace("other().await", "other().await?"),
             self.MODULE_AFTER.replace("    other().await\n", ""),
         ):
-            with allowed({}):
-                code, out, err = run(self.cutover_repo(after))
-            self.assertIn("shadow change: yes", out, after)
+            code, out, err = self.outcome(after)
             self.assertIn("feature-only module changed", out)
-            # The cutover's own deletions are held to insertion only again.
-            self.assertEqual(code, 1, err)
+            self.assert_shadow((code, out, err), after)
 
-    # A retained wrapper with a local import, and the module-level fallback it would resolve
-    # to without it (Sol round 4, finding 1: the deleted import flips the return value).
-    RETAINED = (
-        "fn check() -> bool {\n    true\n}\n\n"
+    # A retained wrapper with a local import, and the module-level fallback it resolves to
+    # without it (the deleted import flips the return value). One retained wrapper per
+    # revision, so the fixture is valid Rust.
+    FALLBACK = "fn check() -> bool {\n    true\n}\n\n"
+    LOCAL = (
         "#[tauri::command]\npub async fn other_witnessed() -> bool {\n"
         "    use crate::real::check;\n    check()\n}\n"
     )
 
     def test_deleting_a_local_import_of_a_retained_wrapper_is_a_shadow_change(self):
-        base = self.MODULE_BASE + self.RETAINED
-        after = self.MODULE_AFTER + self.RETAINED.replace("    use crate::real::check;\n", "")
-        # The same module without the retired wrapper but with the import intact passes ...
-        with allowed({}):
-            code, out, err = run(self.cutover_repo(self.MODULE_AFTER + self.RETAINED, base))
-        self.assertEqual(code, 0, err)
-        self.assertIn("shadow change: no", out)
-        # ... and the deleted import (the plant) is a shadow edit.
-        with allowed({}):
-            code, out, err = run(self.cutover_repo(after, base))
-        self.assertIn("shadow change: yes", out)
-        self.assertEqual(code, 1, err)
+        base = f"{self.IMPORT}\n\n" + self.RETIRED + self.FALLBACK + self.LOCAL
+        control = self.outcome(self.FALLBACK + self.LOCAL, base)
+        self.assertEqual(control[0], 0, control[2])
+        self.assertIn("shadow change: no", control[1])
+        plant = self.outcome(self.FALLBACK + self.LOCAL.replace("    use crate::real::check;\n", ""), base)
+        self.assert_shadow(plant)
 
-    def test_a_module_level_import_goes_only_when_the_retired_wrappers_alone_used_it(self):
-        used_by_both = (
-            "use crate::commands::recording::process_audio;\nuse crate::util::shared;\n\n"
-            "#[tauri::command]\npub async fn process_audio_witnessed() {\n    shared(); process_audio().await\n}\n\n"
-            "#[tauri::command]\npub async fn other_witnessed() {\n    shared();\n}\n"
-        )
-        # Dropping `shared`'s import, which the retained wrapper still uses: a shadow edit.
-        after = (
-            "use crate::commands::recording::process_audio;\n\n"
-            "#[tauri::command]\npub async fn other_witnessed() {\n    shared();\n}\n"
-        ).replace("use crate::commands::recording::process_audio;\n\n", "")
-        with allowed({}):
-            code, out, err = run(self.cutover_repo(after, used_by_both))
-        self.assertIn("shadow change: yes", out)
-        self.assertEqual(code, 1, err)
-        # Dropping only the import the retired wrapper alone used: a clean retirement.
-        after = (
-            "use crate::util::shared;\n\n"
-            "#[tauri::command]\npub async fn other_witnessed() {\n    shared();\n}\n"
-        )
-        with allowed({}):
-            code, out, err = run(self.cutover_repo(after, used_by_both))
-        self.assertEqual(code, 0, err)
-        self.assertIn("shadow change: no", out)
+    # Sol round 5: a trait import changes which method a call binds to without being named,
+    # so deleting `use crate::api::FastReply;` flips `Reply.reply()` from 1 to 2. Both
+    # versions compile; only an explicit reviewed list can say an import is safe to drop.
+    TRAIT_BASE = (
+        f"{IMPORT}\nuse crate::api::FastReply;\n\n" + RETIRED
+        + "trait Fallback {\n    fn reply(&self) -> u8 {\n        2\n    }\n}\nimpl Fallback for Reply {}\n\n"
+        + "#[tauri::command]\npub async fn other_witnessed() -> u8 {\n    Reply.reply()\n}\n"
+    )
+    TRAIT_AFTER = TRAIT_BASE.replace(f"{IMPORT}\nuse crate::api::FastReply;\n\n", "").replace(RETIRED, "")
 
-    def test_a_removed_brace_import_or_glob_is_checked_name_by_name(self):
-        base = (
-            "use crate::commands::{\n    helper,\n    process_audio,\n};\nuse super::*;\n\n"
-            "#[tauri::command]\npub async fn process_audio_witnessed() {\n    process_audio().await\n}\n\n"
-            "#[tauri::command]\npub async fn other_witnessed() {\n    helper();\n}\n"
-        )
-        tail = "\n#[tauri::command]\npub async fn other_witnessed() {\n    helper();\n}\n"
-        # The name only the retired wrapper used, on its own line of a brace import: fine.
-        clean = "use crate::commands::{\n    helper,\n};\nuse super::*;\n" + tail
-        with allowed({}):
-            code, out, err = run(self.cutover_repo(clean, base))
-        self.assertEqual(code, 0, err)
-        # The retained wrapper's name: a shadow edit. So is a removed glob.
-        retained = "use crate::commands::{\n    process_audio,\n};\nuse super::*;\n" + tail
-        no_glob = "use crate::commands::{\n    helper,\n};\n" + tail
-        for after in (retained, no_glob):
-            with allowed({}):
-                code, out, err = run(self.cutover_repo(after, base))
-            self.assertIn("shadow change: yes", out, after)
-            self.assertEqual(code, 1, err)
+    def test_deleting_a_trait_import_a_retained_wrapper_resolves_through_is_a_shadow_change(self):
+        self.assert_shadow(self.outcome(self.TRAIT_AFTER, self.TRAIT_BASE))
+        # Only the reviewed list changes that: the trait import is not on it.
+        keep = self.TRAIT_BASE.replace(f"{self.IMPORT}\n", "").replace(self.RETIRED, "")
+        control = self.outcome(keep, self.TRAIT_BASE)
+        self.assertEqual(control[0], 0, control[2])
+
+    def test_a_glob_or_a_partly_removed_brace_import_is_never_a_listed_one(self):
+        brace = "use crate::commands::{\n    helper,\n    process_audio,\n};"
+        base = f"{brace}\nuse super::*;\n\n" + self.RETIRED + "#[tauri::command]\npub async fn other_witnessed() {\n    helper();\n}\n"
+        tail = "#[tauri::command]\npub async fn other_witnessed() {\n    helper();\n}\n"
+        # The whole brace statement listed and removed (and nothing else): a clean retirement
+        # only when the glob stays.
+        clean = self.outcome("use super::*;\n\n" + tail, base, imports=[brace])
+        self.assertEqual(clean[0], 0, clean[2])
+        # One name taken out of the listed statement, the statement itself still there.
+        partial = "use crate::commands::{\n    helper,\n};\nuse super::*;\n\n" + tail
+        self.assert_shadow(self.outcome(partial, base, imports=[brace]))
+        # The glob removed, listed or not.
+        no_glob = f"{brace}\n\n" + tail
+        self.assert_shadow(self.outcome(no_glob, base, imports=[brace]))
+
+    def test_the_table_refuses_a_glob_or_a_non_use_retire_import(self):
+        from scripts.check_shadow_diff import twin_table_problems
+
+        def entry(imports):
+            return {LIVE: [{"first": "a,", "form": "handler", "twin": "b::c,", "why": "x", "retire_imports": imports}]}
+
+        self.assertEqual(twin_table_problems(entry([self.IMPORT])), [])
+        for bad in (["use super::*;"], ["fn x() {}"], ["use a; use b;"], ["use a"], [5]):
+            self.assertTrue(twin_table_problems(entry(bad)), bad)
+        frozen = {LIVE: [{"first": "fn a(", "form": "frozen_fn", "original": "fn b(", "pair": "0" * 16, "why": "x", "retire_imports": [self.IMPORT]}]}
+        self.assertTrue(twin_table_problems(frozen))
 
     def test_removing_a_wrapper_that_is_still_registered_is_a_shadow_change(self):
         # The handler entry stays in the table (not retired): the wrapper's removal is an edit.
@@ -710,26 +718,7 @@ class LifecycleCutoverTests(unittest.TestCase):
 
     def test_a_wrapper_removed_while_the_name_is_still_referenced_is_a_shadow_change(self):
         live_after = self.LIVE_AFTER + "fn leftover() { process_audio_witnessed(); }\n"
-        root = repo(self.LIVE_BASE, live_after)
-        git(root, "checkout", "-q", "main")
-        for rel, text in (
-            ("scripts/check_shadow_diff.py", self.SCRIPT),
-            (self.LIB, self.LIB_BASE),
-            (self.MODULE, self.MODULE_BASE),
-        ):
-            (root / rel).parent.mkdir(parents=True, exist_ok=True)
-            (root / rel).write_text(text)
-        git(root, "add", ".")
-        git(root, "commit", "-m", "the reviewed tree")
-        git(root, "checkout", "-q", "branch")
-        git(root, "merge", "-q", "main", "-m", "merge main")
-        (root / self.LIB).write_text(self.LIB_AFTER)
-        (root / self.MODULE).write_text(self.MODULE_AFTER)
-        git(root, "commit", "-am", "the cutover")
-        with allowed({}):
-            code, out, err = run(root)
-        self.assertIn("shadow change: yes", out)
-        self.assertEqual(code, 1, err)
+        self.assert_shadow(self.outcome(self.MODULE_AFTER, live_after=live_after))
 
 
 class PinnedHelperTests(unittest.TestCase):

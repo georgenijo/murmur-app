@@ -97,6 +97,13 @@ SHADOW_DIFF_ALLOW: dict[str, tuple] = {
 # * `frozen_fn`: the shadow's copy of a whole live function (`*_observed`), pinned against its
 #   original by the digest of both token streams (D-S2c-15 C3). Here `first` is the copy's first
 #   line and `original` the original function's. Editing an original without re-pinning fails.
+# A `handler` entry may carry `retire_imports`: the exact `use` statements, written out by a
+# reviewer, that only its wrapper in `shadow_commands.rs` needed. When a cutover retires the
+# entry, the wrapper's lines and exactly those statements may leave the feature-only module
+# without making the PR a shadow change. Nothing is inferred (a trait import changes a method
+# call's binding without being named), and any other deleted `use` is a shadow edit. The list
+# is read from the **base** table, so it is added by an earlier reviewed PR, never by the
+# cutover itself. Every list is empty today: the module's imports are shared by the wrappers.
 SHADOW_TWINS: dict[str, list[dict]] = {
     "app/src-tauri/src/commands/recording.rs": [
         {"first": "fn spawn_dictation_partial_ticker(", "form": "frozen", "pair": "3ec58dd4b5441fa6", "why": "the shared ticker lookup (`ticker_start_check`) replaces the spawner's head, so the skip taken is the witness of that one lookup (D-S2c-10 R2)"},
@@ -861,18 +868,24 @@ def is_shadow_change(
     return reasons
 
 
-def retired_wrapper_names(
+def retired_wrappers(
     old_table: dict[str, list[dict]] | None,
     table: dict[str, list[dict]] | None = None,
-) -> set[str]:
-    """The wrapper commands of the handler entries this PR retired: a `handler` entry the base
-    table had and this one lacks, named by the last path segment of its `twin`
-    (`...::process_audio_witnessed,` -> `process_audio_witnessed`)."""
+) -> tuple[set[str], set[str]]:
+    """The wrapper commands of the handler entries this PR retired, and the imports those
+    entries list for removal with them.
+
+    A retired entry is a `handler` entry the base table had and this one lacks. Its wrapper is
+    named by the last path segment of its `twin` (`...::process_audio_witnessed,` ->
+    `process_audio_witnessed`). Its `retire_imports` are the exact `use` statements, written
+    out by a reviewer, that only that wrapper needed; each is normalised to its tokens. Both
+    come from the **base** table: a reviewer accepted them before the cutover."""
     table = SHADOW_TWINS if table is None else table
     if not old_table:
-        return set()
+        return set(), set()
     kept = {(path, e["first"]) for path, entries in table.items() for e in entries if e.get("form") == "handler"}
-    names = set()
+    names: set[str] = set()
+    imports: set[str] = set()
     for path, entries in old_table.items():
         for entry in entries:
             if entry.get("form") != "handler" or (path, entry["first"]) in kept:
@@ -880,7 +893,13 @@ def retired_wrapper_names(
             match = re.search(r"(\w+)\s*,?\s*$", entry.get("twin", ""))
             if match:
                 names.add(match.group(1))
-    return names
+            imports.update(normalised_use(text) for text in entry.get("retire_imports", []))
+    return names, imports
+
+
+def normalised_use(text: str) -> str:
+    """A `use` statement as its tokens, joined (whitespace, comments and line breaks gone)."""
+    return "".join(token for token, _ in tokenize(text))
 
 
 def function_line_span(tokens: list[tuple[str, int]], lines: list[str], name: str) -> set[int]:
@@ -909,14 +928,9 @@ def function_line_span(tokens: list[tuple[str, int]], lines: list[str], name: st
     return set()
 
 
-_USE_NOT_A_LEAF = {"use", "pub", "crate", "super", "as", "in"}
-
-
 def module_use_statements(tokens: list[tuple[str, int]], lines: list[str]) -> list[dict]:
     """The module-level `use` statements of a text (brace depth 0): their line set (leading
-    attribute lines included) and the names they import, each with its line. A leaf is the
-    last segment of a path, or the alias after `as`. `names` is `None` for a statement with a
-    glob or a `self` leaf, whose imports cannot be named."""
+    attribute lines included) and their normalised text, from `use` to `;`."""
     statements = []
     depth = 0
     for k, (text, line) in enumerate(tokens):
@@ -929,57 +943,46 @@ def module_use_statements(tokens: list[tuple[str, int]], lines: list[str]) -> li
         end = next((j for j in range(k, len(tokens)) if tokens[j][0] == ";"), None)
         if end is None:
             continue
-        names: list[tuple[str, int]] | None = []
-        for j in range(k + 1, end + 1):
-            word, at = tokens[j]
-            following = tokens[j + 1][0] if j + 1 < len(tokens) else ";"
-            if word in ("*", "self"):
-                names = None
-                break
-            if re.fullmatch(r"[A-Za-z_]\w*", word) and word not in _USE_NOT_A_LEAF and following in (",", "}", ";"):
-                names.append((word, at))
         first = line
         while first > 1 and lines[first - 2].strip().startswith("#["):
             first -= 1
-        statements.append({"lines": set(range(first, tokens[end][1] + 1)), "names": names, "start": k, "end": end})
+        statements.append(
+            {
+                "lines": set(range(first, tokens[end][1] + 1)),
+                "text": "".join(t for t, _ in tokens[k : end + 1]),
+            }
+        )
     return statements
 
 
-def only_retired_wrappers_use(
-    tokens: list[tuple[str, int]], lines: list[str], uncovered: set[int], covered: set[int]
+def only_listed_imports_go(
+    tokens: list[tuple[str, int]], lines: list[str], uncovered: set[int], listed: set[str]
 ) -> bool:
-    """Whether every removed line outside the retired wrappers is a blank line or part of a
-    module-level `use` whose removed names the base uses only inside those wrappers (checked
-    against the base text). A deleted import of anything a retained function uses, a local
-    `use` inside a function, a glob and any other line are not part of the retirement."""
+    """Whether every removed line outside the retired wrappers is a blank line or a whole
+    module-level `use` statement a retired entry lists in `retire_imports` (compared as
+    tokens). Nothing is inferred: whether an import is exclusive to a wrapper (a trait
+    import, a glob, a name a method call resolves through) cannot be proved from text, so any
+    other deleted `use`, a local one included, is not part of the retirement."""
     statements = module_use_statements(tokens, lines)
     for line in sorted(uncovered):
         shown = lines[line - 1].strip() if 0 < line <= len(lines) else ""
         if not shown:
             continue
         owner = next((st for st in statements if line in st["lines"]), None)
-        if owner is None or owner["names"] is None:
+        if owner is None or owner["text"] not in listed:
             return False
-        removed_names = {name for name, at in owner["names"] if at in uncovered}
-        if not removed_names and not all(l in uncovered or not lines[l - 1].strip() for l in owner["lines"]):
-            # A line of the statement with no import on it (an opener or a closer) goes only
-            # with the whole statement.
+        if not all(l in uncovered or not lines[l - 1].strip() for l in owner["lines"]):
             return False
-        inside = set(range(owner["start"], owner["end"] + 1))
-        for name in removed_names:
-            for j, (word, at) in enumerate(tokens):
-                if word == name and j not in inside and at not in covered:
-                    return False
     return True
 
 
-def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str]) -> bool:
+def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str], imports: set[str]) -> bool:
     """A feature-only module's change that only takes out the wrappers of retired handler
     entries: no line is added, every removed line is inside such a wrapper (its attributes,
-    signature and body) or is a blank line or a module-level `use` of names that only those
-    wrappers used (checked against the base), and the wrapper's name is gone from the whole
-    tree (its handler entry and call sites went with it). Anything else in the module, a
-    retained wrapper's local import included, is a shadow edit."""
+    signature and body), a blank line, or a whole `use` statement the retired entry lists in
+    `retire_imports`, and the wrapper's name is gone from the whole tree (its handler entry and
+    call sites went with it). Anything else in the module, any other `use` included, is a
+    shadow edit."""
     if not names or added_lines(root, base, path):
         return False
     removed = removed_lines(root, base, path)
@@ -997,7 +1000,7 @@ def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str]) -> 
             removed_names.add(name)
     if not removed_names:
         return False
-    if not only_retired_wrappers_use(tokens, lines, removed - covered, covered):
+    if not only_listed_imports_go(tokens, lines, removed - covered, imports):
         return False
     for name in removed_names:
         result = subprocess.run(
@@ -1025,14 +1028,14 @@ def shadow_module_changes(
     The one exception is a cutover's: removing the wrappers of handler entries the PR retires
     from the table (with their entries and every reference) is part of the retirement, not a
     shadow edit, and must not subject the cutover's deletions to insertion-only."""
-    retired = retired_wrapper_names(old_table)
+    retired, imports = retired_wrappers(old_table)
     reasons = []
     for path in sorted(stats):
         if not is_production_path(path) or not is_shadow_only(path):
             continue
         if is_test_file(path, show(root, base, path) or show(root, "HEAD", path)):
             continue
-        if retired and is_wrapper_retirement(root, base, path, retired):
+        if retired and is_wrapper_retirement(root, base, path, retired, imports):
             continue
         reasons.append(f"{path} (feature-only module changed)")
     return reasons
@@ -1407,6 +1410,13 @@ def twin_table_problems(allow: dict[str, list[dict]] | None = None) -> list[str]
                 found.append(f"{name} pins a function without naming its original")
             if entry.get("form") == "handler" and not str(entry.get("twin", "")).strip():
                 found.append(f"{name} is a handler entry without its witnessing wrapper (`twin`)")
+            imports = entry.get("retire_imports", [])
+            if imports and entry.get("form") != "handler":
+                found.append(f"{name} lists retire_imports, which only a handler entry may")
+            for statement in imports if isinstance(imports, list) else [imports]:
+                tokens = [t for t, _ in tokenize(statement)] if isinstance(statement, str) else []
+                if not tokens or tokens[0] != "use" or tokens[-1] != ";" or tokens.count(";") != 1 or "*" in tokens:
+                    found.append(f"{name} retire_imports {statement!r} is not one exact `use ...;` statement without a glob")
     return found
 
 
