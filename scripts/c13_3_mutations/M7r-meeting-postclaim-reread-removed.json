@@ -1,0 +1,24 @@
+{
+ "name": "M7r-meeting-postclaim-reread-removed",
+ "family": "admission",
+ "bug": "bb66238b",
+ "description": "Remove the post-claim relaunch_committed re-read in claim_meeting_ownership.",
+ "edits": [
+  [
+   "src/commands/meeting.rs",
+   "crate::dictation_admission::meeting_post_claim(\n        crate::commands::permissions::relaunch_committed(),\n    )",
+   "Ok::<(), &'static str>(())"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_relaunch_vs_meeting",
+   "a_committed_relaunch_refuses"
+  ]
+ ]
+}

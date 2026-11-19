@@ -1,0 +1,30 @@
+{
+ "name": "M535b-R211.3-TERM-dropped",
+ "family": "lifecycle",
+ "bug": "#535 / PR #563",
+ "description": "R211.3 drops its TERM effect.",
+ "edits": [
+  [
+   "crates/dictation-core/src/lifecycle.rs",
+   "pub fn decide_sup_idle(core: &DictationCore, rid: RecordingId, _now: Now) -> Decision {",
+   "pub fn decide_sup_idle(core: &DictationCore, rid: RecordingId, now: Now) -> Decision {\n    let mut d = decide_sup_idle_inner(core, rid, now);\n    if d.row.0 == \"R211.3\" {\n        d.effects.retain(|p| !matches!(p.effect, Effect::Terminal(_)));\n    }\n    d\n}\n\nfn decide_sup_idle_inner(core: &DictationCore, rid: RecordingId, _now: Now) -> Decision {"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug535",
+   "golden_"
+  ]
+ ]
+}

@@ -1,0 +1,31 @@
+{
+ "name": "M216b-R104.5-guard",
+ "family": "start",
+ "bug": "#216 / PR #219",
+ "description": "R104.5 no longer refuses a late publish at Idle, Recovering or Processing.",
+ "edits": [
+  [
+   "crates/dictation-core/src/start.rs",
+   "        Status::Idle | Status::Recovering | Status::Processing => {\n            nothing(Verdict::Continue, \"R104.5\")\n        }\n        Status::Starting => match input.context_present {",
+   "        Status::Starting | Status::Idle | Status::Recovering | Status::Processing => match input.context_present {"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug216_late",
+   "golden_",
+   "a_late_ready"
+  ]
+ ]
+}

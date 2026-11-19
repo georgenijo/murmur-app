@@ -1,0 +1,24 @@
+{
+ "name": "M216-stop-queued-behind-start",
+ "family": "stop",
+ "bug": "#216 / PR #219",
+ "description": "Delete the stop command's T acquisition: the stop no longer queues behind the start.",
+ "edits": [
+  [
+   "src/commands/recording.rs",
+   "    let stop_entered_at = std::time::Instant::now();\n    let transition = state.app_state.recording_transition.lock().await;",
+   "    let stop_entered_at = std::time::Instant::now();\n    let scratch_t: &'static tokio::sync::Mutex<()> = Box::leak(Box::new(tokio::sync::Mutex::new(())));\n    let transition = scratch_t.lock().await;"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug216_stop_queued",
+   "golden_s01"
+  ]
+ ]
+}

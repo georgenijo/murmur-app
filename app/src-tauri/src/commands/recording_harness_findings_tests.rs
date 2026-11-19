@@ -389,7 +389,7 @@ impl ParkedStop {
         let (release, release_rx) = std::sync::mpsc::channel::<()>();
         world.on("supervisor.stop", move || {
             let _ = entered.send(());
-            let _ = release_rx.recv();
+            await_release(&release_rx);
         });
         let thread_world = Arc::clone(world);
         let thread = std::thread::spawn(move || {
@@ -400,9 +400,12 @@ impl ParkedStop {
             let mut stop = thread_world.stop(None);
             complete_joining(&mut stop)
         });
-        entered_rx
-            .recv()
-            .expect("the stop reached the supervisor's capture stop");
+        // The arrival sender sits in a hook the world keeps, so a helper that panics
+        // before the barrier (a persisted-core assertion, say) never disconnects it:
+        // watch the thread, and re-raise its panic here.
+        if await_arrival(&entered_rx, &thread, "the parked stop").is_err() {
+            helper_failed(thread, "the parked stop");
+        }
         world.note("the stop is in the capture stop, T released");
         Self {
             thread,
@@ -415,7 +418,7 @@ impl ParkedStop {
     /// stop does after the supervisor's reply runs to its end before this returns.
     fn finish(self) -> StopReply {
         let _ = self.release.send(());
-        self.thread.join().expect("the stop thread panicked")
+        join_bounded(self.thread, "the parked stop")
     }
 
     /// A hook body that finishes the stop and files its reply in `reply`.
@@ -577,6 +580,108 @@ fn a_queued_stop_after_the_owner_was_replaced_is_refused() {
                 perf_claim(1),
                 Some(RunOutcomeV1::NoSpeech),
                 "the refusal is not the empty-audio path"
+            );
+        },
+    ));
+}
+
+/// #1162, reply precedence. A stop queued behind another recording's start meets the
+/// replacement owner while the fixture has also scripted a supervisor refusal: the
+/// supervisor checks ownership first, so the reply is `Audio owner changed before
+/// stop`, not the scripted error.
+#[test]
+fn a_scripted_supervisor_reply_never_masks_a_replaced_owner() {
+    repeat(&sub(
+        "a scripted refusal meets a replaced owner",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_result = Err(REFUSED_STOP_IN_RECOVERY);
+            let stop = ParkedStop::start(world);
+            world.replace_owner(2);
+            let reply = stop.finish();
+            world.reply("stop", &reply);
+            assert_eq!(reply, Err("Audio owner changed before stop".to_string()));
+            let trace = world.trace();
+            assert!(
+                trace
+                    .iter()
+                    .any(|line| line == "supervisor.stop_owner_changed 1 owner=2"),
+                "{trace:#?}"
+            );
+        },
+    ));
+}
+
+/// #1162, reply precedence, the other half: a transport failure (the receive expired)
+/// is the caller's own error, so it is returned whatever the owner is, and the
+/// supervisor's ownership check is never reached.
+#[test]
+fn a_transport_failure_is_returned_whatever_the_owner_is() {
+    repeat(&sub(
+        "a transport failure meets a replaced owner",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_transport_failure = Some(STOP_RECEIVE_TIMEOUT);
+            let stop = ParkedStop::start(world);
+            world.replace_owner(2);
+            let reply = stop.finish();
+            world.reply("stop", &reply);
+            assert_eq!(reply, Err(STOP_RECEIVE_TIMEOUT.to_string()));
+            assert!(
+                !world
+                    .trace()
+                    .iter()
+                    .any(|line| line.starts_with("supervisor.stop_owner_changed")),
+                "the ownership check was not consulted"
+            );
+        },
+    ));
+}
+
+/// #1162, replacement phase. Production installs the new attempt in `Starting` and
+/// leaves that phase alone when it refuses the stale stop, so a cleanup query for the
+/// replacement owner stays `false`. The replacement lands before the stop reaches the
+/// supervisor (at the last port before the capture stop), so the refusal is the only
+/// thing that could move the phase.
+#[test]
+fn a_replacement_owner_is_installed_starting_and_the_refused_stop_preserves_it() {
+    repeat(&sub(
+        "the replacement owner's phase",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_result = Ok(0);
+            let replacer = Arc::clone(world);
+            world.on("keyboard.stop_gesture_take_for", move || {
+                replacer.replace_owner(2);
+                assert_eq!(
+                    replacer.dictation_owner_phase(2),
+                    Some(Phase::Starting),
+                    "the replacement is installed in Starting, not in the old attempt's phase"
+                );
+            });
+            let reply = stop_reply(world, None);
+            assert_eq!(reply, Err("Audio owner changed before stop".to_string()));
+            assert_eq!(
+                world.dictation_owner_phase(2),
+                Some(Phase::Starting),
+                "the refusal leaves the replacement's phase unchanged"
+            );
+            let trace = world.trace();
+            let replaced = trace
+                .iter()
+                .position(|line| line == "supervisor.replace_owner 2")
+                .expect("the owner was replaced");
+            assert!(
+                trace[replaced..]
+                    .iter()
+                    .any(|line| line == "supervisor.stop_owner_changed 1 owner=2"),
+                "the stop reached the supervisor after the replacement: {trace:#?}"
+            );
+            assert!(
+                !trace[replaced..]
+                    .iter()
+                    .any(|line| line.starts_with("supervisor.set_phase")),
+                "the refused stop moved no phase: {trace:#?}"
             );
         },
     ));
@@ -775,7 +880,9 @@ fn idle_at_cx_minus(world: &Arc<World>, then: impl FnOnce() + 'static) {
 
 fn the_stop_receive_expired(world: &Arc<World>) -> ParkedStop {
     recording(world);
-    world.knobs().stop_result = Err(STOP_RECEIVE_TIMEOUT);
+    // The 12 s receive expired: the client's own error, not the supervisor's reply, so
+    // an ownership change before the fake answers cannot mask it.
+    world.knobs().stop_transport_failure = Some(STOP_RECEIVE_TIMEOUT);
     let stop = ParkedStop::start(world);
     assert_eq!(status(world), DictationStatus::Processing);
     stop
@@ -889,7 +996,7 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
     let (release, release_rx) = std::sync::mpsc::channel::<()>();
     world.on("supervisor.start", move || {
         let _ = entered.send(());
-        let _ = release_rx.recv();
+        await_release(&release_rx);
     });
     let thread_world = Arc::clone(world);
     let start = std::thread::spawn(move || {
@@ -902,9 +1009,9 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
         thread_world.reply("start", &reply);
         reply
     });
-    entered_rx
-        .recv()
-        .expect("the start reached the supervisor's capture start");
+    if await_arrival(&entered_rx, &start, "the parked start").is_err() {
+        helper_failed(start, "the parked start");
+    }
     world.note("the start waits in the supervisor call; its 2 s receive is the one that expires");
     // `handle_start` accepted it and has not answered (`1481-1588`).
     world.accepted_start(1);
@@ -914,7 +1021,7 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
         // The receiver expired: the start thread returns `SupervisorUnavailable` and
         // runs R102 now, inside the arm's tail.
         let _ = release.send(());
-        let result = start.join().expect("the start thread panicked");
+        let result = join_bounded(start, "the parked start");
         *filed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
@@ -1147,4 +1254,46 @@ fn pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree() {
         "PD-23: R207.3's Superseded for a live recording, then a cancel of the processing recording completes Cancelled (R207.3, R205.5)",
         pd23_a_cancel_of_a_processing_recording_completes_cancelled,
     ));
+}
+
+// ------------------------------------- a failing scenario never leaves a helper parked
+
+static UNWOUND_WORLD: std::sync::Mutex<Option<Arc<World>>> = std::sync::Mutex::new(None);
+
+/// The pipeline's delivery holds D on its own thread and a cancel is blocked behind it
+/// when the scenario fails. The delivery's release sender lives in the world, and the
+/// delivery thread owns the world, so without an explicit release both would stay
+/// parked for ever. `run_sub_run` releases the delivery while it unwinds: D comes free.
+#[test]
+fn a_delivery_parked_in_a_failing_scenario_is_released_on_unwind() {
+    let outcome = std::panic::catch_unwind(|| {
+        run_sub_run(&SubRun {
+            title: "unwind",
+            setup: Setup::idle(),
+            body: |world| {
+                recording(world);
+                {
+                    let mut knobs = world.knobs();
+                    knobs.stop_result = Ok(16_000);
+                    knobs.hold_delivery = true;
+                }
+                world.close_gate("pipeline");
+                let mut stop = world.stop(None);
+                assert!(poll_once(&mut stop).is_pending());
+                let cancel = world.cancel_on_thread();
+                cancel.wait_until_blocked_on_d(world);
+                *UNWOUND_WORLD.lock().expect("slot") = Some(Arc::clone(world));
+                panic!("the scenario fails with a delivery parked and a cancel blocked on D");
+            },
+        })
+    });
+    assert!(outcome.is_err(), "the scenario's own panic propagates");
+    let world = UNWOUND_WORLD
+        .lock()
+        .expect("slot")
+        .take()
+        .expect("the scenario reached its failure");
+    spin_bounded("the parked delivery's release", || {
+        world.state().app_state.dictation.try_lock().is_err()
+    });
 }

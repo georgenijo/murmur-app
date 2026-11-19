@@ -934,7 +934,7 @@ fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
             assert_history_empty(w, "after a panic in the guard's In effects");
             // The panicking recording left Processing behind (nothing wrote Idle):
             // put the scenario's end state in order for the golden runner.
-            w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            w.poke_status(DictationStatus::Idle);
         },
     });
 }
@@ -1109,7 +1109,7 @@ fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
             );
             assert_history_empty(w, "after a panic in PE(Vad)");
             // Put the scenario's end state in order for the golden runner.
-            w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            w.poke_status(DictationStatus::Idle);
             crate::dictation_executor::FieldAdapter::clear_context(&w.state().app_state, 1);
         },
     });
@@ -1710,4 +1710,341 @@ fn the_panicked_finish_report_is_registered_and_content_free() {
             },
         })
     });
+}
+
+// ------------------------------------------- pre-cutover: the owned auto-stop handoff
+
+/// An interrupted capture of 9,000 samples, as golden scenario 3 builds it, with the
+/// bridge keeping the `AutoStop` owner it registers.
+fn interrupted_with_a_carried_owner(w: &Arc<World>) {
+    w.knobs().carry_auto_stop_owner = true;
+    recording(w);
+    w.runtime_failure(1);
+    w.finish_interrupted(1, 9_000);
+    assert_eq!(
+        w.auto_stop_requests(),
+        vec![1],
+        "the bridge scheduled the auto-stop"
+    );
+}
+
+/// R215.2 `RS`: the bridge registers an `AutoStop` op for the interrupted recording
+/// and production moves its owner into the spawned stop, which consumes it at admission
+/// (C1.4.1 rule 4). The fake no longer drops that owner: it is carried into the stop,
+/// and the test asserts its generation (the recording it belongs to), that it is
+/// outstanding until the stop is admitted, and that it is retired by then (#1160,
+/// lifecycle).
+#[test]
+fn an_auto_stop_carries_its_real_owner_into_the_stop_and_the_op_retires_at_admission() {
+    use murmur_dictation_core::decision::ContKind;
+    use murmur_dictation_core::ids::RecordingId;
+    run_sub_run(&SubRun {
+        title: "owned auto-stop",
+        setup: Setup::idle(),
+        body: |w| {
+            interrupted_with_a_carried_owner(w);
+            let history = &w.state().app_state.core_history;
+            assert_eq!(history.outstanding_ops(), 1, "the registered AutoStop op");
+            w.close_gate("pipeline");
+            let (token, mut stop) = w.owned_auto_stop(1);
+            assert_eq!(token.recording_id, RecordingId(1), "its generation");
+            assert_eq!(token.kind, ContKind::AutoStop);
+            assert!(history.is_outstanding(token), "outstanding until admission");
+            // The dispatched stop waits on T, which another entry holds: the owner it
+            // carries stays outstanding (a dispatch that dropped it would retire the op
+            // here).
+            let state = w.state();
+            let held = state
+                .app_state
+                .recording_transition
+                .try_lock()
+                .expect("T is free");
+            assert!(poll_once(&mut stop).is_pending(), "the stop waits on T");
+            assert!(
+                history.is_outstanding(token),
+                "the owner is still outstanding while the stop waits for the transition lock"
+            );
+            drop(held);
+            // The stop takes T, consumes the owner at admission, and parks in the pipeline.
+            assert!(poll_once(&mut stop).is_pending());
+            assert!(
+                !history.is_outstanding(token),
+                "the owner was consumed at stop admission, while the stop is still running"
+            );
+            // The one op left is the stop's own `K:Pipeline`, registered after admission.
+            assert_eq!(history.outstanding_ops(), 1);
+            w.open_gate("pipeline");
+            let reply = complete(&mut stop);
+            w.reply("auto-stop", &reply);
+            assert!(reply.is_ok(), "{reply:?}");
+            w.release_owner_clear();
+            assert_eq!(history.outstanding_ops(), 0, "nothing left outstanding");
+        },
+    });
+}
+
+/// A spawned auto-stop that never runs drops its owner, and `Drop` retires the op
+/// (a task that is cancelled, never polled or panics cannot leave it outstanding).
+#[test]
+fn an_auto_stop_that_never_runs_retires_its_owner_when_dropped() {
+    run_sub_run(&SubRun {
+        title: "dropped auto-stop",
+        setup: Setup::idle(),
+        body: |w| {
+            interrupted_with_a_carried_owner(w);
+            let history = &w.state().app_state.core_history;
+            let (token, stop) = w.owned_auto_stop(1);
+            assert!(history.is_outstanding(token));
+            drop(stop);
+            assert!(!history.is_outstanding(token), "Drop retired the op");
+            assert_eq!(history.outstanding_ops(), 0);
+            w.release_owner_clear();
+        },
+    });
+}
+
+/// The golden harness supplies its own host and scheduler to `auto_stop_dispatch`, so
+/// the two places a production-only change could hide are the host constructor and the
+/// scheduler. The scheduler is the named `spawn_auto_stop`, run for real by the test
+/// below; this pins `handle_audio_lifecycle` to it: the bridge's auto-stop goes through
+/// `auto_stop_dispatch`, and its scheduler hands the task it was given to
+/// `spawn_auto_stop` and does nothing else with it.
+#[test]
+fn the_production_bridge_hands_the_auto_stop_task_to_spawn_auto_stop() {
+    let source = include_str!("recording.rs");
+    let start = source
+        .find("pub(crate) fn handle_audio_lifecycle(")
+        .expect("the production bridge");
+    let body = &source[start..];
+    let body = &body[..body.find("\n}\n").expect("the end of the bridge")];
+    let code: String = body
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in [
+        "auto_stop_dispatch(",
+        "TauriHost::new(app_handle.clone(), state.performance.clone())",
+        "|recording_id, _owner, stop| {\n                spawn_auto_stop(recording_id, stop);\n            },",
+    ] {
+        assert!(code.contains(needle), "the production bridge lost `{needle}`");
+    }
+    for forbidden in [
+        "stop_native_recording",
+        "dispatch_auto_stop",
+        "drop(",
+        "let stop",
+        "async",
+        ".await",
+        "ContinuationGuard",
+        "refuse_reentrant_stop",
+    ] {
+        assert!(
+            !code.contains(forbidden),
+            "the production bridge must hand the auto-stop task to `spawn_auto_stop` untouched, not use `{forbidden}`"
+        );
+    }
+    // The task is built once, in `auto_stop_dispatch`, around the owner it is given.
+    assert_eq!(
+        source.matches("fn auto_stop_dispatch<").count(),
+        1,
+        "one constructor for the auto-stop task"
+    );
+}
+
+/// How long the scheduler's task may take. Plain `cargo test` has no per-test timeout,
+/// so a task that is never woken fails here instead of hanging the run.
+const SCHEDULER_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Wait for a spawned scheduler task to finish. Past [`SCHEDULER_BOUND`] the task is
+/// aborted and the test fails.
+fn join_within_the_bound(mut handle: tauri::async_runtime::JoinHandle<()>) {
+    let joined = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(SCHEDULER_BOUND, &mut handle).await
+    });
+    match joined {
+        Ok(result) => result.expect("the scheduler's task joins"),
+        Err(_) => {
+            handle.abort();
+            panic!(
+                "the scheduler's task did not finish within {SCHEDULER_BOUND:?} (a missed wake?)"
+            );
+        }
+    }
+}
+
+/// Production's scheduler runs the task it is handed to completion. The task records
+/// when it is polled and when it finishes, and a drop guard records an end that was
+/// not a completion (a scheduler that discarded the task would drop it unpolled).
+#[test]
+fn the_production_scheduler_polls_the_auto_stop_task_to_completion() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    for reply in [
+        Some(Ok(serde_json::json!({}))),
+        Some(Err("failed".to_string())),
+        None,
+    ] {
+        let (polled, finished, dropped) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let task: AutoStopTask = {
+            let (polled, finished, guard) = (
+                Arc::clone(&polled),
+                Arc::clone(&finished),
+                Dropped(Arc::clone(&dropped)),
+            );
+            Box::pin(async move {
+                let _guard = guard;
+                polled.store(true, Ordering::SeqCst);
+                // Suspend once: the scheduler must keep polling, not just start it.
+                let mut yielded = false;
+                std::future::poll_fn(|cx| {
+                    if yielded {
+                        std::task::Poll::Ready(())
+                    } else {
+                        yielded = true;
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                finished.store(true, Ordering::SeqCst);
+                reply
+            })
+        };
+        join_within_the_bound(spawn_auto_stop(1, task));
+        assert!(polled.load(Ordering::SeqCst), "the task was polled");
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the task was polled to completion"
+        );
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the task ended and released what it held"
+        );
+    }
+}
+
+static UNCLAIMED_WORLD: std::sync::Mutex<Option<std::sync::Weak<World>>> =
+    std::sync::Mutex::new(None);
+
+/// The bridge queues the stop task, which holds the `AutoStop` owner, in the world; a
+/// scenario that panics before it fetches the task must not leave the world alive
+/// through the task. The task holds a weak handle to its world and upgrades it only
+/// when polled, so when the scenario unwinds the world, the task and the owner all drop.
+#[test]
+fn an_unclaimed_auto_stop_task_does_not_keep_the_world_alive_after_a_panic() {
+    let outcome = std::panic::catch_unwind(|| {
+        run_sub_run(&SubRun {
+            title: "unclaimed auto-stop",
+            setup: Setup::idle(),
+            body: |w| {
+                interrupted_with_a_carried_owner(w);
+                *UNCLAIMED_WORLD.lock().expect("slot") = Some(Arc::downgrade(w));
+                panic!("the scenario fails before it fetches the queued auto-stop task");
+            },
+        })
+    });
+    assert!(outcome.is_err(), "the scenario's own panic propagates");
+    let world = UNCLAIMED_WORLD
+        .lock()
+        .expect("slot")
+        .take()
+        .expect("the scenario reached its failure");
+    assert!(
+        world.upgrade().is_none(),
+        "the queued task kept the world (and its AutoStop owner) alive after the scenario unwound"
+    );
+}
+
+/// What `run_auto_stop` logs. It runs on the test's own thread under a capturing
+/// subscriber (a spawned task's events come from a runtime worker thread).
+mod auto_stop_log {
+    use super::*;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    /// `(level, target, recording_id, message)` of each event.
+    type Event = (tracing::Level, String, Option<u64>, String);
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<Event>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Capture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            #[derive(Default)]
+            struct Fields {
+                recording_id: Option<u64>,
+                message: String,
+            }
+            impl tracing::field::Visit for Fields {
+                fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                    if field.name() == "recording_id" {
+                        self.recording_id = Some(value);
+                    }
+                }
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = format!("{value:?}");
+                    }
+                }
+            }
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            let meta = event.metadata();
+            self.0.lock().expect("log").push((
+                *meta.level(),
+                meta.target().to_string(),
+                fields.recording_id,
+                fields.message,
+            ));
+        }
+    }
+
+    fn logged_for(reply: Option<Result<serde_json::Value, String>>) -> Vec<Event> {
+        let capture = Capture::default();
+        let events = Arc::clone(&capture.0);
+        let subscriber = tracing_subscriber::Registry::default().with(capture);
+        let task: AutoStopTask = Box::pin(async move { reply });
+        tracing::subscriber::with_default(subscriber, || {
+            tauri::async_runtime::block_on(run_auto_stop(7, task));
+        });
+        let logged = events.lock().expect("log").clone();
+        logged
+    }
+
+    /// Only a failed stop is reported, as a `pipeline` error that names the recording.
+    #[test]
+    fn only_a_failed_auto_stop_logs_a_pipeline_error_with_its_recording_id() {
+        let failed = logged_for(Some(Err("transcription failed".to_string())));
+        assert_eq!(
+            failed,
+            vec![(
+                tracing::Level::ERROR,
+                "pipeline".to_string(),
+                Some(7),
+                "interrupted recording transcription failed".to_string()
+            )]
+        );
+        assert!(
+            logged_for(Some(Ok(serde_json::json!({})))).is_empty(),
+            "a successful stop logs nothing"
+        );
+        assert!(
+            logged_for(None).is_empty(),
+            "a refused (re-entrant) stop logs nothing"
+        );
+    }
 }

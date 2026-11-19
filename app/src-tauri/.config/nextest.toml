@@ -1,0 +1,24 @@
+# cargo-nextest settings for every nextest run in this workspace, CI's included
+# (nextest reads this file from the workspace root; CI passes no `--config-file`,
+# which would replace it).
+#
+# Every test gets a kill budget, so a test that deadlocks or never gets its wake fails
+# the step in minutes instead of holding the job until the runner's own timeout.
+# `period` x `terminate-after` is the limit: 30 s x 4 = 120 s. The slowest test in the
+# suite takes well under that, except the supervisor-mirror tests below. A test that
+# legitimately needs longer gets a named override below, with its reason.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# A golden dictation scenario never waits on a clock, so one still running after 60 s is
+# a missing wake or a deadlock; it gets a tighter budget than the default.
+[[profile.default.overrides]]
+filter = 'test(/golden_tests::golden_/)'
+slow-timeout = { period = "20s", terminate-after = 3 }
+
+# The supervisor-mirror tests parse and re-check the whole of `audio_lifecycle.rs` for
+# each case. They took 17 s to 58 s in a full parallel local run (an M-series Mac), so
+# the default 120 s would leave a slower CI runner too little headroom. 60 s x 4 = 240 s.
+[[profile.default.overrides]]
+filter = 'test(/audio_lifecycle_mirror_tests::/)'
+slow-timeout = { period = "60s", terminate-after = 4 }

@@ -1,0 +1,30 @@
+{
+ "name": "M388b-R102.3-noop",
+ "family": "start",
+ "bug": "#388",
+ "description": "R102.3: a failure for the current id at Recovering returns Continue with no effects.",
+ "edits": [
+  [
+   "crates/dictation-core/src/start.rs",
+   "    let mut effects = start_capture_failure_pre_effects(rid);\n    let (verdict, transition, row)",
+   "    if rid == core.current_id && core.status == Status::Recovering {\n        return with_reply(nothing(Verdict::Continue, \"R102.3\"), reply);\n    }\n    let mut effects = start_capture_failure_pre_effects(rid);\n    let (verdict, transition, row)"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug388",
+   "golden_"
+  ]
+ ]
+}

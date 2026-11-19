@@ -1,0 +1,30 @@
+{
+ "name": "M384-R211.3-noop",
+ "family": "lifecycle",
+ "bug": "#384",
+ "description": "R211.3 returns Continue: the supervisor Idle no longer ends Processing.",
+ "edits": [
+  [
+   "crates/dictation-core/src/lifecycle.rs",
+   "Status::Processing => \"R211.3\",",
+   "Status::Processing => return decision(Verdict::Continue, None, vec![], \"R211.3\"),"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug384",
+   "golden_"
+  ]
+ ]
+}

@@ -14,6 +14,7 @@ RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 RELEASE_START_WORKFLOW = ROOT / ".github/workflows/release-start.yml"
 OTA_CANARY_WORKFLOW = ROOT / ".github/workflows/ota-canary.yml"
 CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
+NEXTEST_CONFIG = ROOT / "app/src-tauri/.config/nextest.toml"
 
 CI_GUARD = (
     '"${{ github.event_name != \'push\' || '
@@ -258,6 +259,14 @@ def validate_ci(ci: str) -> int:
     nextest_install = named_step_block(rust_macos, "Install cargo-nextest", 6)
     assert "uses: taiki-e/install-action@v2" in nextest_install
     assert re.search(r"tool: cargo-nextest@[0-9]+\.[0-9]+\.[0-9]+\n", nextest_install)
+    # A `--config-file` argument replaces the workspace's `.config/nextest.toml`, and
+    # with it the per-test kill budget that keeps a hung test from holding the job.
+    ci_commands = "\n".join(
+        line for line in ci.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert (
+        "--config-file" not in ci_commands
+    ), "a nextest --config-file replaces the per-test timeout in .config/nextest.toml"
     macos_lib_tests = named_step_block(rust_macos, "Run tests", 6)
     # nextest runs each test in its own process, so shared process state stays
     # isolated exactly as `cargo test -- --test-threads=1` guaranteed.
@@ -324,6 +333,52 @@ def validate_ci(ci: str) -> int:
     for event_name, message, expected in cases:
         assert should_run_ci(event_name, message) is expected
     return len(cases)
+
+
+def _kill_budget(slow_timeout: object, where: str) -> int:
+    """The seconds a `slow-timeout` setting lets a test run before nextest kills it."""
+    assert isinstance(slow_timeout, dict), (
+        f"{where}: slow-timeout must be a table with a period and a terminate-after,"
+        f" not {slow_timeout!r} (a bare duration only warns and never kills the test)"
+    )
+    period = slow_timeout.get("period")
+    match = re.fullmatch(r"(\d+)s", period) if isinstance(period, str) else None
+    assert match and int(match.group(1)) > 0, f"{where}: period must be a positive \"Ns\""
+    terminate_after = slow_timeout.get("terminate-after")
+    assert (
+        isinstance(terminate_after, int)
+        and not isinstance(terminate_after, bool)
+        and terminate_after > 0
+    ), f"{where}: terminate-after must be a positive integer (a timeout without one never kills)"
+    return int(match.group(1)) * terminate_after
+
+
+def validate_nextest_config(config: str) -> None:
+    """Every nextest run must kill a test that runs for ever (30 s x 4 = 120 s).
+
+    The default profile needs a kill budget of at most 120 s, and every override (in any
+    profile) that sets `slow-timeout` needs a real one too: a warning-only override
+    would let a matching test run past the default.
+    """
+    import tomllib
+
+    parsed = tomllib.loads(config)
+    profiles = parsed.get("profile", {})
+    default = profiles.get("default")
+    assert default is not None, "nextest.toml needs a [profile.default] table"
+    assert "slow-timeout" in default, "[profile.default] needs a slow-timeout"
+    budget = _kill_budget(default["slow-timeout"], "[profile.default]")
+    assert budget <= 120, (
+        f"the default per-test kill budget is {budget} s; keep it at 120 s or less and"
+        " give a slower test a named override"
+    )
+    for name, profile in profiles.items():
+        for index, override in enumerate(profile.get("overrides", [])):
+            if "slow-timeout" in override:
+                _kill_budget(
+                    override["slow-timeout"],
+                    f"[[profile.{name}.overrides]] #{index + 1} ({override.get('filter', '?')})",
+                )
 
 
 def validate_release_build(workflow: str) -> int:
@@ -653,6 +708,7 @@ def main() -> None:
     cargo_toml = CARGO_TOML.read_text()
 
     ci_cases = validate_ci(ci)
+    validate_nextest_config(NEXTEST_CONFIG.read_text())
     release_build_cases = validate_release_build(release_build)
     rehearsal_jobs = validate_release_rehearsal(release_rehearsal)
     validate_release_profile(cargo_toml)

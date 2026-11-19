@@ -1,0 +1,30 @@
+{
+ "name": "M8r-handoff-shell-wiring",
+ "family": "admission",
+ "bug": "3c44d9e4 / PR #1128",
+ "description": "The shell stops reading the kept mic test and skips the KeyDownCapture handoff arm.",
+ "edits": [
+  [
+   "src/commands/recording.rs",
+   "    let kept_preview = state.app_state.microphone_preview.is_active();",
+   "    let kept_preview = false;"
+  ],
+  [
+   "src/dictation_admission.rs",
+   "            if request == Request::KeyDownCapture =>",
+   "            if false && request == Request::KeyDownCapture =>"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_preview_handoff",
+   "golden_s08",
+   "fn_key_down_takes_over"
+  ]
+ ]
+}

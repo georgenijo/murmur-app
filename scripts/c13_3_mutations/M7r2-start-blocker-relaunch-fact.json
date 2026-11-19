@@ -1,0 +1,24 @@
+{
+ "name": "M7r2-start-blocker-relaunch-fact",
+ "family": "admission",
+ "bug": "bb66238b",
+ "description": "Remove the committed-relaunch check from dictation_start_blocker.",
+ "edits": [
+  [
+   "src/dictation_admission.rs",
+   "        o.relaunch_committed = crate::commands::permissions::relaunch_committed();",
+   "        o.relaunch_committed = false;"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_relaunch",
+   "a_committed_permission_relaunch"
+  ]
+ ]
+}

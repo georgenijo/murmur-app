@@ -1,0 +1,30 @@
+{
+ "name": "M6-prep-preview-check",
+ "family": "admission",
+ "bug": "0b798457",
+ "description": "Delete the preview_active check from the preparation admission order.",
+ "edits": [
+  [
+   "crates/dictation-core/src/admission.rs",
+   "static DICTATION_PREPARE: &[Step] = &[\n    Step {\n        name: \"start_blocker\",\n        eval: |o| refuse_if(start_blocker(o), RefusalCode::DictationBusy),\n    },\n    Step {\n        name: \"preview_active\",\n        eval: |o| refuse_if(o.preview_active, RefusalCode::PreviewActive),\n    },",
+   "static DICTATION_PREPARE: &[Step] = &[\n    Step {\n        name: \"start_blocker\",\n        eval: |o| refuse_if(start_blocker(o), RefusalCode::DictationBusy),\n    },"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_prep_admission",
+   "connecting_preview_blocks_queued"
+  ]
+ ]
+}
