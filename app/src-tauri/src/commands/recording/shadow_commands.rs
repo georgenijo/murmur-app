@@ -12,7 +12,13 @@
 //! comes after an active-flight check; no spawned task reads it (a task-local is not
 //! inherited by `tokio::spawn` or `spawn_blocking`).
 
-use super::{audio_lifecycle, SmartAutoRequest, State};
+// One `use` per name, so a cutover that retires the one wrapper that needs a name can list
+// that name's own statement in its handler entry's `retire_imports`
+// (`scripts/check_shadow_diff.py`): `audio_lifecycle` is the stop wrapper's,
+// `SmartAutoRequest` the start wrapper's, `State` is shared.
+use super::audio_lifecycle;
+use super::SmartAutoRequest;
+use super::State;
 use crate::dictation_executor::shadow::commanded;
 
 #[tauri::command(rename = "start_native_recording")]

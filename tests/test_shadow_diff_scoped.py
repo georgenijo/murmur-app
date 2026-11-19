@@ -6,6 +6,7 @@ that changes a production file.
 """
 
 import unittest
+from pathlib import Path
 
 from tests.test_shadow_diff import LIVE, SHADOW_MARK, allowed, git, repo, run, shadow_repo
 
@@ -663,16 +664,20 @@ class LifecycleCutoverTests(unittest.TestCase):
     # so deleting `use crate::api::FastReply;` flips `Reply.reply()` from 1 to 2. Both
     # versions compile; only an explicit reviewed list can say an import is safe to drop.
     TRAIT_BASE = (
-        f"{IMPORT}\nuse crate::api::FastReply;\n\n" + RETIRED
+        f"{IMPORT}\nuse crate::api::FastReply;\nuse crate::reply::Reply;\n\n" + RETIRED
         + "trait Fallback {\n    fn reply(&self) -> u8 {\n        2\n    }\n}\nimpl Fallback for Reply {}\n\n"
         + "#[tauri::command]\npub async fn other_witnessed() -> u8 {\n    Reply.reply()\n}\n"
     )
-    TRAIT_AFTER = TRAIT_BASE.replace(f"{IMPORT}\nuse crate::api::FastReply;\n\n", "").replace(RETIRED, "")
+    # `Reply` stays imported in both revisions; `FastReply` (and the retired wrapper's import)
+    # go. `FastReply` supplies `reply` returning 1 for `Reply`, the fallback trait returns 2.
+    TRAIT_AFTER = TRAIT_BASE.replace(f"{IMPORT}\nuse crate::api::FastReply;\n", "").replace(RETIRED, "")
 
     def test_deleting_a_trait_import_a_retained_wrapper_resolves_through_is_a_shadow_change(self):
         self.assert_shadow(self.outcome(self.TRAIT_AFTER, self.TRAIT_BASE))
         # Only the reviewed list changes that: the trait import is not on it.
         keep = self.TRAIT_BASE.replace(f"{self.IMPORT}\n", "").replace(self.RETIRED, "")
+        self.assertIn("use crate::api::FastReply;", keep)
+        self.assertIn("use crate::reply::Reply;", keep)
         control = self.outcome(keep, self.TRAIT_BASE)
         self.assertEqual(control[0], 0, control[2])
 
@@ -690,6 +695,99 @@ class LifecycleCutoverTests(unittest.TestCase):
         # The glob removed, listed or not.
         no_glob = f"{brace}\n\n" + tail
         self.assert_shadow(self.outcome(no_glob, base, imports=[brace]))
+
+    def test_a_reexport_of_a_listed_path_is_a_different_item(self):
+        # Sol round 6: the approved `use crate::api::FastReply;` must not match the unlisted
+        # `pub(crate) use crate::api::FastReply;`, whose removal changes what a retained
+        # wrapper's `.reply()` binds to (1 became 2; both versions compile).
+        listed = [self.IMPORT, "use crate::api::FastReply;"]
+        retained = "use crate::reply::Reply;\n" + self.OTHER.replace("other().await", "Reply.reply()")
+        base = f"{self.IMPORT}\npub(crate) use crate::api::FastReply;\n\n" + self.RETIRED + retained
+        after = retained
+        self.assert_shadow(self.outcome(after, base, imports=listed))
+        # The same module with the listed plain `use` goes cleanly.
+        plain = f"{self.IMPORT}\nuse crate::api::FastReply;\n\n" + self.RETIRED + retained
+        clean = self.outcome(after, plain, imports=listed)
+        self.assertEqual(clean[0], 0, clean[2])
+        # An attribute in front of the import makes it another item too.
+        gated = f"{self.IMPORT}\n#[allow(unused)]\nuse crate::api::FastReply;\n\n" + self.RETIRED + retained
+        self.assert_shadow(self.outcome(after, gated, imports=listed))
+
+    def test_an_item_sharing_a_line_with_a_listed_import_is_not_exempt(self):
+        # Sol round 6: an unrelated `impl` on the import's own line went with it.
+        base = f"{self.IMPORT} impl Marker for Thing {{}}\n\n" + self.RETIRED + self.OTHER
+        self.assert_shadow(self.outcome(self.OTHER, base))
+        # And a retired wrapper's closing line shared with another item.
+        shared = self.RETIRED.rstrip().rstrip("\n")
+        base = f"{self.IMPORT}\n\n" + shared.rstrip("\n") + " impl Marker for Thing {}\n\n" + self.OTHER
+        self.assert_shadow(self.outcome(self.OTHER, base))
+
+    def test_a_scalar_retire_imports_is_refused_by_the_table_check(self):
+        from scripts.check_shadow_diff import twin_table_problems
+
+        def entry(value):
+            return {LIVE: [{"first": "a,", "form": "handler", "twin": "b::c,", "why": "x", "retire_imports": value}]}
+
+        for value in (self.IMPORT, "use a;", None, {"use a;"}, (self.IMPORT,)):
+            problems = twin_table_problems(entry(value))
+            self.assertTrue(any("must be a list of strings" in problem for problem in problems), (value, problems))
+
+    def test_the_real_lifecycle_cutover_probe_passes_with_the_listed_imports(self):
+        # Sol's probe on the real files: retire the stop handler pair, its wrapper and
+        # `use super::audio_lifecycle;`. It passes because the base entry lists that import,
+        # and is a shadow change without the list.
+        import copy
+
+        from scripts import check_shadow_diff as module
+
+        repo_root = Path(__file__).resolve().parents[1]
+        lib = (repo_root / self.LIB).read_text()
+        shadow = (repo_root / self.MODULE).read_text()
+        real = copy.deepcopy(module.SHADOW_TWINS)
+        pair = (
+            f"            {self.GATE}\n            commands::recording::stop_native_recording,\n"
+            f"            {self.FEATURE}\n"
+            "            commands::recording::shadow_commands::stop_native_recording_witnessed,\n"
+        )
+        self.assertEqual(lib.count(pair), 1)
+        wrapper_start = shadow.index('#[tauri::command(rename = "stop_native_recording")]')
+        wrapper_end = shadow.index('#[tauri::command(rename = "cancel_native_recording")]')
+        use = "use super::audio_lifecycle;\n"
+        self.assertEqual(shadow.count(use), 1)
+        lib_after = lib.replace(pair, "            commands::recording::stop_native_recording,\n")
+        shadow_after = (shadow[:wrapper_start] + shadow[wrapper_end:]).replace(use, "")
+        stop_entry = next(e for e in real[self.LIB] if e["first"] == "commands::recording::stop_native_recording,")
+        self.assertEqual(stop_entry["retire_imports"], [use.strip()])
+        after = copy.deepcopy(real)
+        after[self.LIB] = [e for e in after[self.LIB] if e is not stop_entry and e["first"] != stop_entry["first"]]
+
+        def probe(base_table):
+            root = repo("a\n", "a\nb\n")
+            git(root, "checkout", "-q", "main")
+            for rel, text in (
+                ("scripts/check_shadow_diff.py", f"SHADOW_TWINS = {base_table!r}\n"),
+                (self.LIB, lib),
+                (self.MODULE, shadow),
+            ):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text)
+            git(root, "add", ".")
+            git(root, "commit", "-m", "the reviewed tree")
+            git(root, "checkout", "-q", "branch")
+            git(root, "merge", "-q", "main", "-m", "merge main")
+            (root / self.LIB).write_text(lib_after)
+            (root / self.MODULE).write_text(shadow_after)
+            git(root, "commit", "-am", "the lifecycle cutover")
+            with allowed(after):
+                return run(root)
+
+        code, out, err = probe(real)
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+        unlisted = copy.deepcopy(real)
+        for entry in unlisted[self.LIB]:
+            entry.pop("retire_imports", None)
+        self.assert_shadow(probe(unlisted))
 
     def test_the_table_refuses_a_glob_or_a_non_use_retire_import(self):
         from scripts.check_shadow_diff import twin_table_problems

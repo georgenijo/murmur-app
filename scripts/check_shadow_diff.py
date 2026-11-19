@@ -103,7 +103,10 @@ SHADOW_DIFF_ALLOW: dict[str, tuple] = {
 # without making the PR a shadow change. Nothing is inferred (a trait import changes a method
 # call's binding without being named), and any other deleted `use` is a shadow edit. The list
 # is read from the **base** table, so it is added by an earlier reviewed PR, never by the
-# cutover itself. Every list is empty today: the module's imports are shared by the wrappers.
+# cutover itself. An item is compared whole (visibility and attributes included), and a line
+# is exempt only when every token on it belongs to a listed item or a retired wrapper.
+# Today: `SmartAutoRequest` is the start wrapper's and `audio_lifecycle` the stop wrapper's
+# (each has its own `use` statement); `State` and `commanded` are shared, so unlisted.
 SHADOW_TWINS: dict[str, list[dict]] = {
     "app/src-tauri/src/commands/recording.rs": [
         {"first": "fn spawn_dictation_partial_ticker(", "form": "frozen", "pair": "3ec58dd4b5441fa6", "why": "the shared ticker lookup (`ticker_start_check`) replaces the spawner's head, so the skip taken is the witness of that one lookup (D-S2c-10 R2)"},
@@ -157,8 +160,8 @@ SHADOW_TWINS: dict[str, list[dict]] = {
     ],
     "app/src-tauri/src/lib.rs": [
         {"first": "commands::recording::process_audio,", "form": "handler", "twin": "commands::recording::shadow_commands::process_audio_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
-        {"first": "commands::recording::start_native_recording,", "form": "handler", "twin": "commands::recording::shadow_commands::start_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
-        {"first": "commands::recording::stop_native_recording,", "form": "handler", "twin": "commands::recording::shadow_commands::stop_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
+        {"first": "commands::recording::start_native_recording,", "form": "handler", "retire_imports": ["use super::SmartAutoRequest;"], "twin": "commands::recording::shadow_commands::start_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
+        {"first": "commands::recording::stop_native_recording,", "form": "handler", "retire_imports": ["use super::audio_lifecycle;"], "twin": "commands::recording::shadow_commands::stop_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
         {"first": "commands::recording::cancel_native_recording,", "form": "handler", "twin": "commands::recording::shadow_commands::cancel_native_recording_witnessed,", "why": 'the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)'},
     ],
 }
@@ -893,7 +896,9 @@ def retired_wrappers(
             match = re.search(r"(\w+)\s*,?\s*$", entry.get("twin", ""))
             if match:
                 names.add(match.group(1))
-            imports.update(normalised_use(text) for text in entry.get("retire_imports", []))
+            listed = entry.get("retire_imports", [])
+            if isinstance(listed, list):
+                imports.update(normalised_use(text) for text in listed if isinstance(text, str))
     return names, imports
 
 
@@ -902,14 +907,54 @@ def normalised_use(text: str) -> str:
     return "".join(token for token, _ in tokenize(text))
 
 
-def function_line_span(tokens: list[tuple[str, int]], lines: list[str], name: str) -> set[int]:
-    """The lines of `fn <name>` in a text: its attributes and doc comments, the signature and
-    the body (empty when there is no such function)."""
+def attribute_starts_of(tokens: list[tuple[str, int]]) -> dict[int, int]:
+    """`end index -> start index` of every attribute, so the attributes in front of an item
+    can be walked back over."""
+    starts: dict[int, int] = {}
+    at = 0
+    while at < len(tokens):
+        end = attribute_at(tokens, at)
+        if end is None:
+            at += 1
+            continue
+        starts[end] = at
+        at = end
+    return starts
+
+
+_ITEM_QUALIFIERS = {"async", "unsafe", "const"}
+
+
+def item_start(tokens: list[tuple[str, int]], keyword: int, attributes: dict[int, int]) -> int:
+    """The index of the first token of the item whose keyword (`fn`, `use`) is at `keyword`:
+    its qualifiers, its visibility (`pub`, `pub(crate)`, `pub(in path)`) and its attributes
+    all belong to it, so an item is compared whole."""
+    start = keyword
+    while start > 0 and tokens[start - 1][0] in _ITEM_QUALIFIERS:
+        start -= 1
+    if start > 0 and tokens[start - 1][0] == ")":
+        depth = 0
+        for j in range(start - 1, -1, -1):
+            depth += {")": 1, "(": -1}.get(tokens[j][0], 0)
+            if depth == 0:
+                if j > 0 and tokens[j - 1][0] == "pub":
+                    start = j - 1
+                break
+    elif start > 0 and tokens[start - 1][0] == "pub":
+        start -= 1
+    while start in attributes:
+        start = attributes[start]
+    return start
+
+
+def function_item(tokens: list[tuple[str, int]], name: str) -> range | None:
+    """The token indexes of `fn <name>` as a whole item: attributes, visibility, signature and
+    body, up to its closing brace."""
+    attributes = attribute_starts_of(tokens)
     for k in range(len(tokens) - 1):
         if tokens[k][0] != "fn" or tokens[k + 1][0] != name:
             continue
-        depth, end = 0, None
-        started = False
+        depth, started = 0, False
         for j in range(k, len(tokens)):
             if tokens[j][0] == "{":
                 depth += 1
@@ -917,23 +962,19 @@ def function_line_span(tokens: list[tuple[str, int]], lines: list[str], name: st
             elif tokens[j][0] == "}":
                 depth -= 1
             if started and depth == 0:
-                end = tokens[j][1]
-                break
-        if end is None:
-            return set()
-        start = tokens[k][1]
-        while start > 1 and lines[start - 2].strip().startswith(("#[", "///", "//")):
-            start -= 1
-        return set(range(start, end + 1))
-    return set()
+                return range(item_start(tokens, k, attributes), j + 1)
+        return None
+    return None
 
 
-def module_use_statements(tokens: list[tuple[str, int]], lines: list[str]) -> list[dict]:
-    """The module-level `use` statements of a text (brace depth 0): their line set (leading
-    attribute lines included) and their normalised text, from `use` to `;`."""
-    statements = []
+def module_use_items(tokens: list[tuple[str, int]]) -> list[tuple[range, str]]:
+    """The module-level (brace depth 0) `use` items of a text, each whole (attributes,
+    visibility, `use`, the path, the closing `;`): its token range and its tokens joined. A
+    `pub(crate) use` is a different item from the `use` of the same path."""
+    attributes = attribute_starts_of(tokens)
+    items = []
     depth = 0
-    for k, (text, line) in enumerate(tokens):
+    for k, (text, _) in enumerate(tokens):
         if text == "{":
             depth += 1
         elif text == "}":
@@ -943,64 +984,64 @@ def module_use_statements(tokens: list[tuple[str, int]], lines: list[str]) -> li
         end = next((j for j in range(k, len(tokens)) if tokens[j][0] == ";"), None)
         if end is None:
             continue
-        first = line
-        while first > 1 and lines[first - 2].strip().startswith("#["):
-            first -= 1
-        statements.append(
-            {
-                "lines": set(range(first, tokens[end][1] + 1)),
-                "text": "".join(t for t, _ in tokens[k : end + 1]),
-            }
-        )
-    return statements
+        span = range(item_start(tokens, k, attributes), end + 1)
+        items.append((span, "".join(t for t, _ in tokens[span.start : span.stop])))
+    return items
 
 
-def only_listed_imports_go(
-    tokens: list[tuple[str, int]], lines: list[str], uncovered: set[int], listed: set[str]
+def only_retired_items_go(
+    tokens: list[tuple[str, int]],
+    removed: set[int],
+    wrappers: list[range],
+    listed: set[str],
 ) -> bool:
-    """Whether every removed line outside the retired wrappers is a blank line or a whole
-    module-level `use` statement a retired entry lists in `retire_imports` (compared as
-    tokens). Nothing is inferred: whether an import is exclusive to a wrapper (a trait
-    import, a glob, a name a method call resolves through) cannot be proved from text, so any
-    other deleted `use`, a local one included, is not part of the retirement."""
-    statements = module_use_statements(tokens, lines)
-    for line in sorted(uncovered):
-        shown = lines[line - 1].strip() if 0 < line <= len(lines) else ""
-        if not shown:
-            continue
-        owner = next((st for st in statements if line in st["lines"]), None)
-        if owner is None or owner["text"] not in listed:
+    """Whether every token on a removed line belongs to a retired wrapper or to a whole
+    module-level `use` item a retired entry lists in `retire_imports` (compared as complete
+    token sequences, visibility and attributes included). A line is exempt only when **every**
+    token on it is: an `impl` that shares the import's line, a `pub(crate) use` of an approved
+    path, a trait import, a glob, a local `use` are all shadow edits. Nothing is inferred:
+    whether an import is exclusive to a wrapper cannot be proved from text."""
+    approved = [span for span, text in module_use_items(tokens) if text in listed]
+    allowed: set[int] = set()
+    for span in (*wrappers, *approved):
+        allowed.update(span)
+    by_line: dict[int, list[int]] = {}
+    for index, (_, line) in enumerate(tokens):
+        by_line.setdefault(line, []).append(index)
+    for line in removed:
+        if any(index not in allowed for index in by_line.get(line, [])):
             return False
-        if not all(l in uncovered or not lines[l - 1].strip() for l in owner["lines"]):
+    # An approved import goes whole or not at all.
+    for span in approved:
+        lines = {tokens[index][1] for index in span}
+        if lines & removed and not lines <= removed:
             return False
     return True
 
 
 def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str], imports: set[str]) -> bool:
     """A feature-only module's change that only takes out the wrappers of retired handler
-    entries: no line is added, every removed line is inside such a wrapper (its attributes,
-    signature and body), a blank line, or a whole `use` statement the retired entry lists in
-    `retire_imports`, and the wrapper's name is gone from the whole tree (its handler entry and
-    call sites went with it). Anything else in the module, any other `use` included, is a
+    entries: no line is added, every token on a removed line belongs to such a wrapper (its
+    attributes, signature and body) or to a whole `use` item the retired entry lists in
+    `retire_imports`, and the wrapper's name is gone from the whole tree (its handler entry
+    and call sites went with it). Anything else in the module, any other `use` included, is a
     shadow edit."""
     if not names or added_lines(root, base, path):
         return False
     removed = removed_lines(root, base, path)
     if not removed:
         return False
-    text = show(root, base, path)
-    lines = text.splitlines()
-    tokens = tokenize(text)
-    covered: set[int] = set()
+    tokens = tokenize(show(root, base, path))
+    wrappers = []
     removed_names = set()
     for name in names:
-        span = function_line_span(tokens, lines, name)
-        if span:
-            covered |= span
+        span = function_item(tokens, name)
+        if span is not None:
+            wrappers.append(span)
             removed_names.add(name)
     if not removed_names:
         return False
-    if not only_listed_imports_go(tokens, lines, removed - covered, imports):
+    if not only_retired_items_go(tokens, removed, wrappers, imports):
         return False
     for name in removed_names:
         result = subprocess.run(
@@ -1410,13 +1451,18 @@ def twin_table_problems(allow: dict[str, list[dict]] | None = None) -> list[str]
                 found.append(f"{name} pins a function without naming its original")
             if entry.get("form") == "handler" and not str(entry.get("twin", "")).strip():
                 found.append(f"{name} is a handler entry without its witnessing wrapper (`twin`)")
-            imports = entry.get("retire_imports", [])
-            if imports and entry.get("form") != "handler":
-                found.append(f"{name} lists retire_imports, which only a handler entry may")
-            for statement in imports if isinstance(imports, list) else [imports]:
-                tokens = [t for t, _ in tokenize(statement)] if isinstance(statement, str) else []
-                if not tokens or tokens[0] != "use" or tokens[-1] != ";" or tokens.count(";") != 1 or "*" in tokens:
-                    found.append(f"{name} retire_imports {statement!r} is not one exact `use ...;` statement without a glob")
+            if "retire_imports" in entry:
+                imports = entry["retire_imports"]
+                if entry.get("form") != "handler":
+                    found.append(f"{name} lists retire_imports, which only a handler entry may")
+                if not isinstance(imports, list) or not all(isinstance(i, str) for i in imports):
+                    found.append(f"{name} retire_imports must be a list of strings, not {imports!r}")
+                    imports = []
+                for statement in imports:
+                    tokens = [t for t, _ in tokenize(statement)]
+                    use_at = tokens.index("use") if "use" in tokens else -1
+                    if use_at < 0 or tokens[-1] != ";" or tokens.count(";") != 1 or "*" in tokens:
+                        found.append(f"{name} retire_imports {statement!r} is not one exact `use ...;` item without a glob")
     return found
 
 
