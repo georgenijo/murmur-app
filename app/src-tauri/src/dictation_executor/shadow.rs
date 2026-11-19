@@ -858,6 +858,62 @@ where
         .await
 }
 
+/// The status the live op reported at a consume, kept for the flight's `decided` (the
+/// shell's `Cell` of D-S2c-9). Both the store and the read are gated on the flight being
+/// active, so a disarmed run neither writes nor reads it; both are counted shadow
+/// state accesses (D-S2c-10 amendment 1).
+pub(crate) struct SeenStatus(Cell<Option<murmur_dictation_core::decision::OpStatus>>);
+
+impl SeenStatus {
+    pub(crate) fn new() -> Self {
+        Self(Cell::new(None))
+    }
+
+    pub(crate) fn set(&self, flight: &Flight, status: murmur_dictation_core::decision::OpStatus) {
+        if flight.is_active() {
+            #[cfg(test)]
+            super::probe::shadow_read();
+            self.0.set(Some(status));
+        }
+    }
+
+    pub(crate) fn get(&self, flight: &Flight) -> Option<murmur_dictation_core::decision::OpStatus> {
+        if !flight.is_active() {
+            return None;
+        }
+        #[cfg(test)]
+        super::probe::shadow_read();
+        self.0.get()
+    }
+}
+
+/// The detached auto-stop's task, armed (the caller checked the enable flag and boxes the
+/// result): run it in a reply scope of its own, so its flights conclude with the result it
+/// returns at its return, and hand that result back **unchanged**. `None` is a stop
+/// refused as re-entrant before it began (no flight waits for a reply then).
+pub(crate) async fn witnessed_detached<F, E>(task: F) -> Option<Result<serde_json::Value, E>>
+where
+    F: std::future::Future<Output = Option<Result<serde_json::Value, E>>>,
+{
+    REPLY_SINK
+        .scope(
+            Sink {
+                flights: RefCell::new(Vec::new()),
+                replyless: false,
+            },
+            async move {
+                let result = task.await;
+                witness_kind(match &result {
+                    None => ReplyKind::Ok,
+                    Some(Err(_)) => ReplyKind::Err,
+                    Some(Ok(value)) => value_kind(value),
+                });
+                result
+            },
+        )
+        .await
+}
+
 /// Run the finish a drain took from the deferred queue. The command that queued it has
 /// already returned (or returns something else): the finish has no reply of its own, so
 /// its flights close as the named no-reply close (D-S2c-10 R6). The scope is the finish's
@@ -934,7 +990,10 @@ pub(crate) fn reply_sink_visible() -> bool {
 }
 
 fn witness_returned<T: RenderedValue, E>(result: &Result<T, E>) {
-    let kind = rendered_kind(result);
+    witness_kind(rendered_kind(result));
+}
+
+fn witness_kind(kind: ReplyKind) {
     let _ = REPLY_SINK.try_with(|sink| {
         let waiting = std::mem::take(&mut *sink.flights.borrow_mut());
         for live in waiting {
@@ -968,14 +1027,6 @@ pub(crate) trait RenderedValue {
 impl RenderedValue for () {
     fn rendered_kind(&self) -> ReplyKind {
         ReplyKind::Ok
-    }
-}
-
-/// The detached auto-stop's result: `None` is a stop refused before it began (no flight
-/// waits for a reply then).
-impl RenderedValue for Option<serde_json::Value> {
-    fn rendered_kind(&self) -> ReplyKind {
-        self.as_ref().map_or(ReplyKind::Ok, value_kind)
     }
 }
 

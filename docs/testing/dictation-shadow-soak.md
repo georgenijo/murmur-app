@@ -191,7 +191,7 @@ How E7 counts, so a missed site cannot hide:
 * **Nothing is inferred.** The speculative-flow observation is the boolean the port read
   returned; the comparator checks it against the independently witnessed branch. Every
   reply is witnessed where the production code returns it (`*_witnessed` wrapper commands;
-  the detached auto-stop records its real result at the return of `run_auto_stop`, and `a_wrong_auto_stop_return_is_a_reply_mismatch` drives that by behaviour: a wrong return is `diff_kind=4`). A finish a drain ran from the deferred queue (closed inside a no-reply scope;
+  the detached auto-stop's task is rebound once before the original await in `run_auto_stop`: disarmed it is the same task, armed it is wrapped so its result is witnessed at its return and passed through; the original await and diagnostic run in both builds, and `a_wrong_auto_stop_return_is_a_reply_mismatch` drives that by behaviour: a wrong return is `diff_kind=4`). A finish a drain ran from the deferred queue (closed inside a no-reply scope;
   a command nested in it keeps its own reply) and a parent whose reply is another site's
   (R201.4 / R205.4, an explicit `Delegated` disposition; the comparison stays at R206)
   close as a **named no-reply close**, never with a kind filled in. The import's pipeline
@@ -223,7 +223,11 @@ How E7 counts, so a missed site cannot hide:
   (`ticker_skip_of`, `registered`, the guards' `take_retired`, and `keyboard_sequence::read`,
   which is the only way to read the keyboard write sequence, the bracket's opener and
   closer), so an argument evaluated before its check, or a sequence read before the hook's
-  check, fails the disarmed pin.
+  check, fails the disarmed pin. The status a consume reported (`seen_status`) is kept in
+  `SeenStatus`, whose store and read both take the site's flight and touch the cell only
+  when it is active (a counted state access), so a disarmed start neither writes nor reads
+  it. The detached auto-stop's reply witness is a gated rebinding (`witness_detached`) in
+  front of the original await: disarmed it returns the very task it was given.
 * **Reads are pinned.** `the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned`
   counts `core_now()` calls and live-field view projections per entry (disarmed and armed),
   and `a_disarmed_keyboard_write_reads_no_shadow_state` the disarmed shadow's reads of its

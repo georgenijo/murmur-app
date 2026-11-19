@@ -2220,4 +2220,39 @@ mod auto_stop_reply_witness {
             assert_eq!(diff_kinds(wrong.clone()), vec![4], "{wrong:?}");
         }
     }
+
+    /// Disarmed, the rebinding hands back the very task it was given (same allocation),
+    /// after exactly one enable-flag load, and polls nothing of its own.
+    #[test]
+    fn a_disarmed_auto_stop_is_the_same_task() {
+        use super::super::witness_detached;
+        use crate::dictation_executor::probe;
+        let task: AutoStopTask = Box::pin(async { Some(Ok(serde_json::json!({"state": "idle"}))) });
+        let before = &*task as *const _ as *const ();
+        let loads = probe::flag_loads();
+        let again = witness_detached(task);
+        assert_eq!(probe::flag_loads() - loads, 1, "one enable-flag load");
+        assert_eq!(&*again as *const _ as *const (), before, "the same task");
+    }
+
+    /// Armed, the wrapper witnesses and passes the result through untouched, in every shape.
+    #[test]
+    fn an_armed_auto_stop_wrapper_passes_the_result_through() {
+        use super::super::witness_detached;
+        for result in [
+            None,
+            Some(Ok(serde_json::json!({"state": "idle"}))),
+            Some(Ok(
+                serde_json::json!({"type": "transcription", "text": "a"}),
+            )),
+            Some(Err("failed".to_string())),
+        ] {
+            let replay = Replay::begin();
+            let expected = result.clone();
+            let task: AutoStopTask = Box::pin(async move { result });
+            let got = tauri::async_runtime::block_on(witness_detached(task));
+            replay.end();
+            assert_eq!(got, expected);
+        }
+    }
 }

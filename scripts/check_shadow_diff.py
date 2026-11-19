@@ -22,6 +22,14 @@ It also rejects an always-false gate (`#[cfg(any())]`, `cfg(not(all()))`, `cfg(a
 and the like) in front of a statement the base already had: that disables an original
 statement without deleting a line, which is a removal by another name (D-S2c-10 R8).
 
+An original live statement must never be disabled **in the feature build** either
+(D-S2c-8 amendment 1): a gate that is false once `feature = "dictation-shadow"` is on
+(`#[cfg(not(feature = "dictation-shadow"))]`, `all(not(feature = ..), ..)` and the like)
+in front of a statement the base already had runs a *different* statement in the feature
+build. Such a gate is rejected unless the statement is named in `SHADOW_GATED_OFF_ALLOW`
+(path, the statement's first line, how many, and why); the only entries meant to be there
+are `lib.rs`'s `generate_handler!` entries.
+
 A file's additions are checked by the Rust tests (`shadow_off_by_default` reads every
 `cfg` attribute): this check is the other half, that nothing was taken out.
 """
@@ -59,6 +67,46 @@ SHADOW_DIFF_ALLOW: dict[str, tuple[int, str]] = {
         "first `]`; the shadow's `#[cfg(..)]` entries inside the macro carry their own `]`, so "
         "that one line now stops at the macro's closing `]))`. No production statement changes.",
     ),
+}
+
+# Existing statements the feature build may switch off, because a feature twin runs in
+# their place: `path -> {the statement's first line (stripped): (how many, why)}`. The
+# only entries D-S2c-8 amendment 1 allows are the `generate_handler!` entries of `lib.rs`
+# (the wrapper command has the same name and calls the original). The rest are the
+# statement twins of the earlier rounds, each of which re-runs the same call with the
+# flight attached: kept here by name, so a new one (the auto-stop's was one) is rejected,
+# and listed so that converting them to the borrowed `ports.shadow_flight()` slot removes
+# the entry. A reviewer weighs every line below.
+_HANDLER = "the wrapper command of the same name is inserted with the opposite gate and calls this one (D-S2c-8 amendment 1)"
+_TWIN = "statement twin (rounds 1-7): the feature build runs the same call with the flight attached; to be converted to the ports slot"
+SHADOW_GATED_OFF_ALLOW: dict[str, dict[str, tuple[int, str]]] = {
+    f"{TAURI}/src/lib.rs": {
+        "commands::recording::process_audio,": (1, _HANDLER),
+        "commands::recording::start_native_recording,": (1, _HANDLER),
+        "commands::recording::stop_native_recording,": (1, _HANDLER),
+        "commands::recording::cancel_native_recording,": (1, _HANDLER),
+    },
+    f"{TAURI}/src/commands/recording.rs": {
+        "fn spawn_dictation_partial_ticker(": (1, _TWIN + "; the feature twin is the one shared ticker lookup"),
+        "self.history.ret_pipeline(self.rid);": (1, _TWIN + "; the twin keeps the same retirement and its answer"),
+        "let pre = stop_ports::try_run_phase(": (1, _TWIN),
+        "let decide = || {": (1, _TWIN),
+        "stop_ports::run_phase(": (2, _TWIN),
+        "if entry.retire_only {": (1, _TWIN),
+        "let decision = stop_ports::decide(|| match kind {": (1, _TWIN),
+        "return start_ports::release_and_reply(": (2, _TWIN),
+        "run_phase(": (4, _TWIN),
+        "run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);": (1, _TWIN),
+        "let decision = capture_stop.consume(|op_status| {": (1, _TWIN),
+    },
+    f"{TAURI}/src/core_history.rs": {
+        "pub(crate) fn consume<R>(&mut self, decide: impl FnOnce(OpStatus) -> R) -> R {": (1, _TWIN + "; the twin also reports the status it saw"),
+    },
+    f"{TAURI}/src/dictation_executor/executor.rs": {
+        "FieldAdapter::cancel_through(ports.app_state(), id.0);": (1, _TWIN),
+        "FieldAdapter::clear_context(ports.app_state(), id.0);": (1, _TWIN),
+        "FieldAdapter::set_context(ports.app_state(), id.0, snapshot);": (1, _TWIN),
+    },
 }
 
 _PRODUCTION = re.compile(rf"^{re.escape(TAURI)}/(src|crates/[^/]+/src)/.+\.rs$")
@@ -132,10 +180,16 @@ def guarded_paths(stats: dict[str, tuple[int, int]], root: Path, base: str) -> l
     return guarded
 
 
-def _cfg_value(predicate: str) -> bool | None:
+_SHADOW_FEATURE = re.compile(r'feature\s*=\s*"dictation-shadow"')
+
+
+def _cfg_value(predicate: str, shadow: bool | None = None) -> bool | None:
     """The constant value of a `cfg` predicate: `True`, `False`, or `None` when it depends on
-    the build (a feature, a target, `test`)."""
+    the build (a feature, a target, `test`). With `shadow` given, the shadow feature itself is
+    that constant: `_cfg_value(p, shadow=True)` is the predicate in a feature build."""
     predicate = predicate.strip()
+    if shadow is not None and _SHADOW_FEATURE.fullmatch(predicate):
+        return shadow
     match = re.fullmatch(r"(all|any|not)\((.*)\)", predicate, re.S)
     if not match:
         return None
@@ -150,7 +204,7 @@ def _cfg_value(predicate: str) -> bool | None:
         current += char
     if current.strip():
         parts.append(current)
-    values = [_cfg_value(part) for part in parts]
+    values = [_cfg_value(part, shadow) for part in parts]
     if kind == "not":
         return None if len(values) != 1 or values[0] is None else not values[0]
     if kind == "all":
@@ -259,10 +313,19 @@ def added_lines(root: Path, base: str, path: str) -> set[int]:
     return lines
 
 
-def disabled_originals(root: Path, base: str, path: str) -> list[str]:
+def disabled_originals(
+    root: Path,
+    base: str,
+    path: str,
+    allow: dict[str, dict[str, tuple[int, str]]] | None = None,
+) -> list[str]:
     """Gates the branch put on code the base already had, that switch it off in a production
     build: an always-false gate, a gate that holds only in a test build, and any file-level
-    (`#![cfg(..)]`) gate added to a file the base had."""
+    (`#![cfg(..)]`) gate added to a file the base had; and a gate that is false in the
+    feature build (`cfg(not(feature = "dictation-shadow"))`), unless the statement is named
+    in `SHADOW_GATED_OFF_ALLOW`."""
+    allow = SHADOW_GATED_OFF_ALLOW if allow is None else allow
+    permitted = {line: count for line, (count, _) in allow.get(path, {}).items()}
     head = show(root, "HEAD", path)
     text = head.splitlines()
     added = added_lines(root, base, path)
@@ -278,7 +341,9 @@ def disabled_originals(root: Path, base: str, path: str) -> list[str]:
                     f"{path}:{start}: `{shown}` gates the whole of a file the base already had"
                 )
             continue
-        if _cfg_value(predicate) is not False and not _requires_test(predicate):
+        always_off = _cfg_value(predicate) is False or _requires_test(predicate)
+        off_in_feature = _cfg_value(predicate, shadow=True) is False
+        if not always_off and not off_in_feature:
             continue
         # The item the attribute gates: the next line that is not another attribute or a comment.
         target = after + 1
@@ -286,9 +351,14 @@ def disabled_originals(root: Path, base: str, path: str) -> list[str]:
             target += 1
         # An item on the attribute's own line is new text with it.
         if target <= len(text) and target not in added:
+            statement = text[target - 1].strip()
+            if not always_off and permitted.get(statement, 0) > 0:
+                permitted[statement] -= 1
+                continue
+            where = "" if always_off else " in the feature build"
             found.append(
                 f"{path}:{start}: `{shown}` disables the existing statement "
-                f"at line {target} without deleting it"
+                f"at line {target}{where} without deleting it"
             )
     return found
 
@@ -330,6 +400,12 @@ def main(root: Path = ROOT, base: str = "origin/main") -> int:
     problems = violations(stats, guarded)
     for path in guarded:
         problems.extend(disabled_originals(root, base, path))
+    for path, statements in SHADOW_GATED_OFF_ALLOW.items():
+        for statement, (count, reason) in statements.items():
+            if count < 1 or not reason.strip():
+                problems.append(f"SHADOW_GATED_OFF_ALLOW[{path}][{statement!r}] needs a count and a reason")
+        if not is_production_path(path):
+            problems.append(f"SHADOW_GATED_OFF_ALLOW[{path}] names a file that is not a production file")
     for path in guarded:
         added, removed = stats[path]
         print(f"{added}\t{removed}\t{path}")

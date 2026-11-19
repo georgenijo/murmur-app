@@ -222,14 +222,110 @@ class ShadowDiffTests(unittest.TestCase):
         code, _, err = run(root)
         self.assertEqual(code, 0, err)
 
-    def test_a_real_gate_on_an_existing_statement_passes(self):
-        root = repo(
-            "a\nb\n",
-            "a\n#[cfg(not(feature = \"dictation-shadow\"))]\nb\n"
-            "#[cfg(feature = \"dictation-shadow\")]\nb2();\n",
+    def test_a_gate_that_holds_in_the_feature_build_on_an_existing_statement_passes(self):
+        for gate in [
+            '#[cfg(feature = "dictation-shadow")]',
+            "#[cfg(not(test))]",
+            '#[cfg(any(not(feature = "dictation-shadow"), unix))]',
+        ]:
+            root = repo("a\nb\n", f"a\n{gate}\nb\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 0, f"{gate}: {err}")
+
+    def test_the_shadow_feature_is_a_constant_for_the_feature_build(self):
+        feature = 'feature = "dictation-shadow"'
+        for predicate in [
+            f"not({feature})",
+            f"all(not({feature}), unix)",
+            f"all(unix, not({feature}))",
+            f"any(not({feature}), not({feature}))",
+        ]:
+            self.assertIs(_cfg_value(predicate, shadow=True), False, predicate)
+            self.assertIsNot(_cfg_value(predicate), False, predicate)
+        for predicate in [feature, f"not(not({feature}))", f"any(not({feature}), unix)", "not(test)"]:
+            self.assertIsNot(_cfg_value(predicate, shadow=True), False, predicate)
+
+    def test_a_negated_shadow_gate_on_an_existing_statement_fails(self):
+        feature = 'feature = "dictation-shadow"'
+        for gate in [
+            f"#[cfg(not({feature}))]",
+            f"#[cfg(all(not({feature}), unix))]",
+            f"#[cfg(not({feature}))] // keep",
+            f"#[cfg(\n    not({feature})\n)]",
+        ]:
+            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 1, f"{gate!r}: {err}")
+            self.assertIn("in the feature build", err)
+
+    def test_the_auto_stop_pattern_of_dca44211_fails(self):
+        # The original await and its diagnostic switched off in the feature build, a twin
+        # beside it that runs the witnessed result instead.
+        base = (
+            "async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {\n"
+            "    if let Some(Err(_)) = stop.await {\n"
+            "        tracing::error!(recording_id, \"failed\");\n"
+            "    }\n"
+            "}\n"
         )
-        code, _, err = run(root)
+        branch = (
+            "async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {\n"
+            '    #[cfg(not(feature = "dictation-shadow"))]\n'
+            "    if let Some(Err(_)) = stop.await {\n"
+            "        tracing::error!(recording_id, \"failed\");\n"
+            "    }\n"
+            '    #[cfg(feature = "dictation-shadow")]\n'
+            "    if let Some(Err(_)) = witnessed_auto_stop(stop).await {\n"
+            "        tracing::error!(recording_id, \"failed\");\n"
+            "    };\n"
+            "}\n"
+        )
+        code, _, err = run(repo(base, branch))
+        self.assertEqual(code, 1, err)
+        self.assertIn("in the feature build", err)
+        # The accepted shape: the original kept in both builds, one gated rebinding before it.
+        branch = (
+            "async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {\n"
+            '    #[cfg(feature = "dictation-shadow")]\n'
+            "    let stop = witness_detached(stop);\n"
+            "    if let Some(Err(_)) = stop.await {\n"
+            "        tracing::error!(recording_id, \"failed\");\n"
+            "    }\n"
+            "}\n"
+        )
+        code, _, err = run(repo(base, branch))
         self.assertEqual(code, 0, err)
+
+    def test_only_a_named_statement_may_be_gated_off_and_only_that_many_times(self):
+        from unittest import mock
+
+        import scripts.check_shadow_diff as module
+
+        gate = '#[cfg(not(feature = "dictation-shadow"))]'
+        twin = '#[cfg(feature = "dictation-shadow")]'
+        branch = f"a\n{gate}\nhandler,\n{twin}\nwrapper,\nb\n"
+        base = "a\nhandler,\nb\n"
+        allow = {LIVE: {"handler,": (1, "wrapper of the same name")}}
+        with mock.patch.dict(module.SHADOW_GATED_OFF_ALLOW, allow, clear=True):
+            code, _, err = run(repo(base, branch))
+            self.assertEqual(code, 0, err)
+            # A second statement of the same text, or any other statement, is not named.
+            two = f"{gate}\nhandler,\n{twin}\nwrapper,\n"
+            code, _, err = run(repo("handler,\nhandler,\n", two + two))
+            self.assertEqual(code, 1, err)
+            code, _, err = run(repo("a\nb\n", f"{gate}\na\n{twin}\nx,\nb\n"))
+            self.assertEqual(code, 1, err)
+
+    def test_the_gated_off_allow_list_names_a_production_file_a_count_and_a_reason(self):
+        from scripts.check_shadow_diff import SHADOW_GATED_OFF_ALLOW
+
+        for path, statements in SHADOW_GATED_OFF_ALLOW.items():
+            self.assertTrue(is_production_path(path), path)
+            for statement, (count, reason) in statements.items():
+                self.assertGreaterEqual(count, 1, statement)
+                self.assertTrue(reason.strip(), statement)
+        # D-S2c-8 amendment 1: the generate_handler! entries are the named exceptions.
+        self.assertEqual(len(SHADOW_GATED_OFF_ALLOW["app/src-tauri/src/lib.rs"]), 4)
 
     def test_adding_cfg_test_to_an_existing_production_file_does_not_exempt_it(self):
         root = repo("fn a() {}\nfn b() {}\n", "#![cfg(test)]\nfn a() {}\n")

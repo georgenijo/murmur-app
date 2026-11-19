@@ -1751,7 +1751,7 @@ pub(super) mod under_d {
         (
             "start accepted (R104.2, the ticker spawner under D)",
             (0, 23),
-            (10, 16),
+            (14, 16),
         ),
     ];
 

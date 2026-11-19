@@ -7879,11 +7879,11 @@ async fn start_native_recording_inner(
             #[cfg(feature = "dictation-shadow")]
             capture::entry();
             #[cfg(feature = "dictation-shadow")]
-            let seen_status = std::cell::Cell::new(None);
+            let seen_status = capture::SeenStatus::new();
             let facts = FieldAdapter::lock_free_facts(&state.app_state);
             let decision = capture_guard.consume(|op_status| {
                 #[cfg(feature = "dictation-shadow")]
-                seen_status.set(Some(op_status));
+                seen_status.set(&flight_102, op_status);
                 decide(|| {
                     core_start::decide_start_capture_result_nolock(
                         facts,
@@ -7915,7 +7915,7 @@ async fn start_native_recording_inner(
             // R102.1 decides no effect and takes no D: the decision, the retirement of
             // the capture's op and the registration of the context's are the header.
             #[cfg(feature = "dictation-shadow")]
-            if let Some(op_status) = seen_status.get() {
+            if let Some(op_status) = seen_status.get(&flight_102) {
                 flight_102.history_of(|| capture_guard.take_retired());
                 flight_102.history_of(|| Some(capture::registered(context_guard.token())));
                 crate::shadow_site!(issue = 1154);
@@ -7995,13 +7995,13 @@ async fn start_native_recording_inner(
             let mut dictation = state.app_state.dictation.lock_or_recover();
             let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
             #[cfg(feature = "dictation-shadow")]
-            let seen_status = std::cell::Cell::new(None);
+            let seen_status = capture::SeenStatus::new();
             #[cfg(feature = "dictation-shadow")]
             let seen_error = flight_102.is_active().then(|| error.clone());
             let decision = capture_guard
                 .consume(|op_status| {
                     #[cfg(feature = "dictation-shadow")]
-                    seen_status.set(Some(op_status));
+                    seen_status.set(&flight_102, op_status);
                     decide(|| {
                         core_start::decide_start_capture_result(
                             &view,
@@ -8017,7 +8017,8 @@ async fn start_native_recording_inner(
                 .after_pre();
             expect_valid(&decision);
             #[cfg(feature = "dictation-shadow")]
-            if let (Some(op_status), Some(seen_error)) = (seen_status.get(), seen_error) {
+            if let (Some(op_status), Some(seen_error)) = (seen_status.get(&flight_102), seen_error)
+            {
                 flight_102.history_of(|| capture_guard.take_retired());
                 crate::shadow_site!(issue = 1154);
                 if flight_102.is_active() {
@@ -8191,10 +8192,10 @@ async fn start_after_capture(
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         #[cfg(feature = "dictation-shadow")]
-        let seen_status = std::cell::Cell::new(None);
+        let seen_status = capture::SeenStatus::new();
         let decision = context_guard.consume(|op_status| {
             #[cfg(feature = "dictation-shadow")]
-            seen_status.set(Some(op_status));
+            seen_status.set(&flight_103, op_status);
             decide(|| {
                 core_start::decide_start_context(
                     &view,
@@ -8212,7 +8213,7 @@ async fn start_after_capture(
             .continuation
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
         #[cfg(feature = "dictation-shadow")]
-        if let Some(op_status) = seen_status.get() {
+        if let Some(op_status) = seen_status.get(&flight_103) {
             flight_103.history_of(|| context_guard.take_retired());
             flight_103.history_of(|| {
                 ready_op
@@ -8433,7 +8434,11 @@ fn spawn_auto_stop(recording_id: u64, stop: AutoStopTask) -> tauri::async_runtim
 /// failed. A separate function so a test can run it on its own thread under a
 /// capturing subscriber (a spawned task's events are emitted on a runtime worker).
 async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {
-    #[cfg(not(feature = "dictation-shadow"))]
+    // The detached stop is its own invocation: the result it returns is the reply its
+    // flights wait for. Disarmed this is the same task; armed it is wrapped so the result
+    // is witnessed at the stop's actual return and passed through (D-S2c-9 d).
+    #[cfg(feature = "dictation-shadow")]
+    let stop = witness_detached(stop);
     if let Some(Err(_)) = stop.await {
         tracing::error!(
             target: "pipeline",
@@ -8441,36 +8446,19 @@ async fn run_auto_stop(recording_id: u64, stop: AutoStopTask) {
             "interrupted recording transcription failed"
         );
     }
-    // The detached stop is its own invocation: the result it returns is the reply its
-    // flights wait for, witnessed at the stop's actual return (D-S2c-9 d).
-    #[cfg(feature = "dictation-shadow")]
-    if let Some(Err(_)) = witnessed_auto_stop(stop).await {
-        tracing::error!(
-            target: "pipeline",
-            recording_id,
-            "interrupted recording transcription failed"
-        );
-    };
 }
 
-/// [`AutoStopTask`] run as its own command invocation: its flights conclude with the
-/// result it returns (`None`: refused before it began, no flight waits). What
-/// [`run_auto_stop`] awaits, and what the golden harness runs the task through.
+/// The detached auto-stop's task, rebound for the one place that awaits it (D-S2c-8
+/// amendment 1: the original await and its diagnostic stay, byte for byte, in both builds).
+/// Disarmed it is the **same task** handed back, after one enable-flag load; armed it is
+/// wrapped so its flights conclude with the result it returns, which is passed through
+/// unchanged.
 #[cfg(feature = "dictation-shadow")]
-async fn witnessed_auto_stop(stop: AutoStopTask) -> Option<Result<serde_json::Value, String>> {
-    match capture::commanded(async move {
-        match stop.await {
-            None => Ok(None),
-            Some(Ok(reply)) => Ok(Some(reply)),
-            Some(Err(error)) => Err(error),
-        }
-    })
-    .await
-    {
-        Ok(None) => None,
-        Ok(Some(reply)) => Some(Ok(reply)),
-        Err(error) => Some(Err(error)),
+fn witness_detached(stop: AutoStopTask) -> AutoStopTask {
+    if !crate::dictation_shadow::enabled() {
+        return stop;
     }
+    Box::pin(capture::witnessed_detached(stop))
 }
 
 /// R215.2 `RS`: what the lifecycle bridge does with the `AutoStop` owner it
@@ -8816,13 +8804,13 @@ async fn stop_native_recording_admitted(
                 #[cfg(feature = "dictation-shadow")]
                 capture::entry();
                 #[cfg(feature = "dictation-shadow")]
-                let seen_status = std::cell::Cell::new(None);
+                let seen_status = capture::SeenStatus::new();
                 // Site 206 is D-less and reads nothing live (C2.3): T is released, so
                 // a newer generation may already be starting; the token and the
                 // capture result are the original ones.
                 let cancel_decision = guard.consume(|op_status| {
                     #[cfg(feature = "dictation-shadow")]
-                    seen_status.set(Some(op_status));
+                    seen_status.set(&flight_206, op_status);
                     stop_ports::decide(|| {
                         core_cancel::decide_cancel_capture_result_nolock(
                             LockFreeFacts::default(),
@@ -8843,7 +8831,7 @@ async fn stop_native_recording_admitted(
                 stop_ports::expect_valid(&cancel_decision);
                 #[cfg(feature = "dictation-shadow")]
                 {
-                    if let Some(op_status) = seen_status.get() {
+                    if let Some(op_status) = seen_status.get(&flight_206) {
                         flight_206.history_of(|| guard.take_retired());
                         crate::shadow_site!(issue = 1154);
                         if flight_206.is_active() {
@@ -8935,10 +8923,10 @@ async fn stop_native_recording_admitted(
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         #[cfg(feature = "dictation-shadow")]
-        let seen_status = std::cell::Cell::new(None);
+        let seen_status = capture::SeenStatus::new();
         let decision = op_guard.consume(|op_status| {
             #[cfg(feature = "dictation-shadow")]
-            seen_status.set(Some(op_status));
+            seen_status.set(&flight_202, op_status);
             stop_ports::decide(|| {
                 core_stop::decide_stop_context(
                     &view,
@@ -8954,7 +8942,7 @@ async fn stop_native_recording_admitted(
             })
         });
         #[cfg(feature = "dictation-shadow")]
-        if let Some(op_status) = seen_status.get() {
+        if let Some(op_status) = seen_status.get(&flight_202) {
             flight_202.history_of(|| op_guard.take_retired());
             crate::shadow_site!(issue = 1154);
             if flight_202.is_active() {
@@ -8999,11 +8987,11 @@ async fn stop_native_recording_admitted(
     #[cfg(feature = "dictation-shadow")]
     capture::entry();
     #[cfg(feature = "dictation-shadow")]
-    let seen_status = std::cell::Cell::new(None);
+    let seen_status = capture::SeenStatus::new();
     let facts = FieldAdapter::lock_free_facts(&state.app_state);
     let decision = op_guard.consume(|op_status| {
         #[cfg(feature = "dictation-shadow")]
-        seen_status.set(Some(op_status));
+        seen_status.set(&flight_202n, op_status);
         stop_ports::decide(|| {
             core_stop::decide_stop_context_nolock(
                 facts,
@@ -9042,7 +9030,7 @@ async fn stop_native_recording_admitted(
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
         // D-less (202 nolock): the header goes out before any effect runs.
         #[cfg(feature = "dictation-shadow")]
-        if let Some(op_status) = seen_status.get() {
+        if let Some(op_status) = seen_status.get(&flight_202n) {
             crate::shadow_site!(issue = 1154);
             if flight_202n.is_active() {
                 flight_202n.decided(
@@ -9207,11 +9195,11 @@ async fn stop_native_recording_admitted(
     #[cfg(feature = "dictation-shadow")]
     capture::entry();
     #[cfg(feature = "dictation-shadow")]
-    let seen_status = std::cell::Cell::new(None);
+    let seen_status = capture::SeenStatus::new();
     let facts = FieldAdapter::lock_free_facts(&state.app_state);
     let decision = stop_guard.consume(|op_status| {
         #[cfg(feature = "dictation-shadow")]
-        seen_status.set(Some(op_status));
+        seen_status.set(&flight_203n, op_status);
         stop_ports::decide(|| {
             core_stop::decide_stop_capture_result_nolock(
                 facts,
@@ -9257,7 +9245,7 @@ async fn stop_native_recording_admitted(
         // D-less (203 nolock): the header goes out before `PE(Vad)` and the awaited
         // `PS`; the flight (a local of this future) stays open across the pipeline await.
         #[cfg(feature = "dictation-shadow")]
-        if let Some(op_status) = seen_status.get() {
+        if let Some(op_status) = seen_status.get(&flight_203n) {
             crate::shadow_site!(issue = 1154);
             if flight_203n.is_active() {
                 flight_203n.decided(
@@ -9655,7 +9643,7 @@ fn run_stop_capture_rows<'a>(
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
     #[cfg(feature = "dictation-shadow")]
-    let seen_status = std::cell::Cell::new(None);
+    let seen_status = capture::SeenStatus::new();
     #[cfg(not(feature = "dictation-shadow"))]
     let decision = capture_stop.consume(|op_status| {
         stop_ports::decide(|| {
@@ -9670,7 +9658,7 @@ fn run_stop_capture_rows<'a>(
     let decided_at = std::cell::Cell::new(None);
     #[cfg(feature = "dictation-shadow")]
     let decision = capture_stop.consume(|op_status| {
-        seen_status.set(Some(op_status));
+        seen_status.set(&flight, op_status);
         stop_ports::decide(|| {
             let at = core_now();
             decided_at.set(Some(at));
@@ -9682,7 +9670,7 @@ fn run_stop_capture_rows<'a>(
         })
     });
     #[cfg(feature = "dictation-shadow")]
-    if let Some(op_status) = seen_status.get() {
+    if let Some(op_status) = seen_status.get(&flight) {
         flight.history_of(|| capture_stop.take_retired());
         crate::shadow_site!(issue = 1154);
         if let (true, Some(at)) = (flight.is_active(), decided_at.get()) {
@@ -9891,13 +9879,13 @@ async fn cancel_native_recording_inner(
     #[cfg(feature = "dictation-shadow")]
     capture::entry();
     #[cfg(feature = "dictation-shadow")]
-    let seen_status = std::cell::Cell::new(None);
+    let seen_status = capture::SeenStatus::new();
     // Site 206 is D-less and reads nothing live (C2.3): T is released, so a newer
     // generation may already be starting; the token and the capture result are the
     // original ones.
     let decision = op_guard.consume(|op_status| {
         #[cfg(feature = "dictation-shadow")]
-        seen_status.set(Some(op_status));
+        seen_status.set(&flight_206, op_status);
         cancel_ports::decide(|| {
             core_cancel::decide_cancel_capture_result_nolock(
                 LockFreeFacts::default(),
@@ -9914,7 +9902,7 @@ async fn cancel_native_recording_inner(
     });
     // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
     #[cfg(feature = "dictation-shadow")]
-    if let Some(op_status) = seen_status.get() {
+    if let Some(op_status) = seen_status.get(&flight_206) {
         flight_206.history_of(|| op_guard.take_retired());
         crate::shadow_site!(issue = 1154);
         if flight_206.is_active() {

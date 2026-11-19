@@ -834,7 +834,7 @@ impl World {
         // flights conclude with the result it returns.
         #[cfg(feature = "dictation-shadow")]
         let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
-            witnessed_auto_stop(task)
+            crate::commands::recording::witness_detached(task)
                 .await
                 .expect("the auto-stop was not refused as re-entrant")
         });
