@@ -31,9 +31,9 @@ use murmur_dictation_core::ids::RecordingId;
 
 use super::ring::{Rejection, Ring};
 use super::types::{
-    CondWitness, Inline, LiveOp, MirrorWitness, ObservedFact, PredId, RecorderId, ReplyKind,
-    ShadowHeader, ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect, COND_CAPACITY,
-    MIRROR_CAPACITY, PRE_CAPACITY,
+    CondWitness, Inline, LiveOp, MirrorWitness, NoReplyReason, ObservedFact, PredId, RecorderId,
+    ReplyKind, ShadowHeader, ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect,
+    COND_CAPACITY, MIRROR_CAPACITY, PRE_CAPACITY,
 };
 
 /// The queue's capacity (C8.2, D-S2c-1 a).
@@ -98,6 +98,15 @@ pub(crate) struct Transport {
     seq: AtomicU64,
     /// Next recorder id.
     rec: AtomicU64,
+    /// Shutdown has begun (D-S2c-15 review, major 2): a push after it is refused and
+    /// counted in `after_close`, so nothing can enter the queue behind the final drain.
+    closing: AtomicBool,
+    /// Pushes between their entry and their end. Shutdown waits for it to reach 0
+    /// after it sets `closing`, so a push that passed the check is queued before the
+    /// final drain looks.
+    inflight: AtomicU64,
+    /// Messages refused because shutdown had begun.
+    after_close: AtomicU64,
     #[cfg(test)]
     sync: AtomicBool,
     #[cfg(test)]
@@ -115,6 +124,9 @@ impl Transport {
             overflow: AtomicU64::new(0),
             seq: AtomicU64::new(1),
             rec: AtomicU64::new(REC_BASE),
+            closing: AtomicBool::new(false),
+            inflight: AtomicU64::new(0),
+            after_close: AtomicU64::new(0),
             #[cfg(test)]
             sync: AtomicBool::new(false),
             #[cfg(test)]
@@ -232,12 +244,51 @@ impl Transport {
     /// The live path: one `try_push`, one attempt. A rejected message is counted
     /// against its flight's site and nothing else is done with it.
     fn push(&self, msg: ShadowMsg, site: u16) {
-        if let Err(rejected) = self.queue.try_push(msg) {
+        // Enter, then check `closing` (both `SeqCst`): either shutdown sees this push
+        // in `inflight` and waits for it, or this push sees `closing` and refuses.
+        self.inflight.fetch_add(1, Ordering::SeqCst);
+        if self.closing.load(Ordering::SeqCst) {
+            self.after_close.fetch_add(1, Ordering::Relaxed);
+        } else if let Err(rejected) = self.queue.try_push(msg) {
             if rejected.reason == Rejection::Contention {
                 self.contended.fetch_add(1, Ordering::Relaxed);
             }
             self.lose(site);
         }
+        self.inflight.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Shutdown, the consumer's side: refuse every later push, then wait (up to `limit`)
+    /// for the pushes already past the check to finish. Returns whether the producers
+    /// were quiet in time. After `true`, the queue holds every message that will ever
+    /// be published; after `false` the summary says a push may still land.
+    pub(crate) fn close_and_quiesce(&self, limit: std::time::Duration) -> bool {
+        self.closing.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + limit;
+        while self.inflight.load(Ordering::SeqCst) > 0 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        true
+    }
+
+    /// Messages refused because shutdown had begun.
+    pub(crate) fn after_close(&self) -> u64 {
+        self.after_close.load(Ordering::Relaxed)
+    }
+
+    /// Test seam: a push paused between its entry and its end.
+    #[cfg(test)]
+    pub(crate) fn hold_inflight_for_test(&self) {
+        self.inflight.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Test seam: the paused push ends.
+    #[cfg(test)]
+    pub(crate) fn release_inflight_for_test(&self) {
+        self.inflight.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// One message lost: the site's counter, then the global one (`Release`), so a
@@ -502,6 +553,8 @@ pub(crate) enum Mark {
     History(LiveOp),
     /// The command's reply kind.
     Reply(ReplyKind),
+    /// The flight closes with no reply of its own, for this reason.
+    NoReply(NoReplyReason),
 }
 
 /// Submit the header right after D is released and before the first `PostDT` effect
@@ -563,6 +616,10 @@ pub(crate) fn mark(rec: &ShadowRecorder, mark: Mark) {
         },
         Mark::History(op) => ShadowMsg::History { rec: rec_id, op },
         Mark::Reply(kind) => ShadowMsg::Reply { rec: rec_id, kind },
+        Mark::NoReply(reason) => ShadowMsg::NoReply {
+            rec: rec_id,
+            reason,
+        },
     };
     rec.send(msg);
 }

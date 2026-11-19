@@ -717,6 +717,7 @@ pub(super) fn retarget(msg: ShadowMsg, to: RecorderId) -> ShadowMsg {
         },
         ShadowMsg::History { op, .. } => ShadowMsg::History { rec: to, op },
         ShadowMsg::Reply { kind, .. } => ShadowMsg::Reply { rec: to, kind },
+        ShadowMsg::NoReply { reason, .. } => ShadowMsg::NoReply { rec: to, reason },
         ShadowMsg::Close { completed, .. } => ShadowMsg::Close { rec: to, completed },
         ShadowMsg::PreAbandoned { .. } => ShadowMsg::PreAbandoned { rec: to },
     }
@@ -771,10 +772,28 @@ pub(super) fn send_later(recorder: &ShadowRecorder, flight: &Flight) {
             }
             ShadowMsg::History { op, .. } => mark(recorder, Mark::History(op)),
             ShadowMsg::Reply { kind, .. } => mark(recorder, Mark::Reply(kind)),
+            ShadowMsg::NoReply { reason, .. } => mark(recorder, Mark::NoReply(reason)),
             ShadowMsg::Close { .. } => recorder.finish(),
             other => panic!("unexpected {other:?}"),
         }
     }
+}
+
+/// R301.1: `process_audio` refused while a meeting is active: no effect, and the reply
+/// `Err(ErrText::ProcessAudio(MeetingActive))`.
+pub(super) fn process_audio_refused(seq: u64, rec: u64) -> Flight {
+    flight(
+        seq,
+        rec,
+        view(Status::Idle, RID),
+        Input::ProcessAudioStart(ProcessAudioStartInput {
+            occupancy: Occupancy {
+                meeting_active: true,
+                ..Occupancy::default()
+            },
+            benchmark_running: Some(false),
+        }),
+    )
 }
 
 /// The index of the first later `Witness` whose effect satisfies `matches`.

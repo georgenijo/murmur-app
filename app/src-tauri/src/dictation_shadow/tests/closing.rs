@@ -533,7 +533,7 @@ fn a_wrong_owner_token_and_a_wrong_reply_are_one_close_with_the_lowest_diff_kind
         ShadowMsg::Reply { kind, .. } => Some(*kind),
         _ => None,
     });
-    let wrong = if decided == Some(ReplyKind::Err) {
+    let wrong = if matches!(decided, Some(ReplyKind::Err | ReplyKind::ErrAs(_))) {
         ReplyKind::Ok
     } else {
         ReplyKind::Err

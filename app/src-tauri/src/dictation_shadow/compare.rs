@@ -67,8 +67,8 @@ use super::summary::Stats;
 use super::transport::Transport;
 use super::types::{
     CondWitness, DiffKind, EffectResult, HistoryAction, HistoryTable, LiveOp, MirrorField,
-    MirrorValue, MirrorWitness, ObservedFact, PredId, RecorderId, ReplyKind, ShadowHeader,
-    ShadowMsg, TickerGate, WitnessedEffect,
+    MirrorValue, MirrorWitness, NoReplyReason, ObservedFact, PredId, RecorderId, ReplyKind,
+    ShadowHeader, ShadowMsg, TickerGate, WitnessedEffect,
 };
 
 /// Early headers held while a gap is open (C8.3).
@@ -438,6 +438,8 @@ struct Record {
     /// A `PipelineGuardFinish(Completed)` ran: the successful performance outcome.
     perf_success: bool,
     reply: Option<ReplyKind>,
+    /// The producer announced that this flight closes with no reply of its own.
+    no_reply: Option<NoReplyReason>,
     /// Some comparison reported a mismatch for this record.
     mismatched: bool,
 }
@@ -524,6 +526,7 @@ impl Record {
             perf_success: false,
             token: input_token(&header.input),
             reply: None,
+            no_reply: None,
             mismatched: false,
         }
     }
@@ -1016,31 +1019,60 @@ impl Record {
             // witnessed exactly once; a missing one is `EffectSet`. A record that
             // already mismatched left its unmatched effects pending on purpose:
             // reporting them again would be the same fault twice.
-            if !self.mismatched
-                && (self.slots.contains(&Slot::Pending)
-                    || self.later_cond_cursor < self.later_conds.len()
-                    || self
-                        .later_mirrors
-                        .iter()
-                        .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran)
-                    || self
-                        .side_tickers
-                        .iter()
-                        .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran))
-            {
+            if !self.mismatched && !self.all_effects_ran() {
                 diffs.push(DiffKind::EffectSet);
             }
             if !self.mismatched && self.missing_history(true) {
                 diffs.push(DiffKind::Continuation);
             }
-            if expected_reply != self.reply {
+            if !reply_agrees(expected_reply, self.reply) {
                 diffs.push(DiffKind::Reply);
             }
-        } else if self.reply.is_some() && expected_reply != self.reply {
+        } else if self.reply.is_some() && !reply_agrees(expected_reply, self.reply) {
             // An abandoned flight may never have replied; one that did must agree.
             diffs.push(DiffKind::Reply);
         }
         diffs.into_iter().min()
+    }
+
+    /// Every decided effect, conditional, mirror and ticker attempt of the flight was
+    /// witnessed: nothing is outstanding but, possibly, the reply.
+    fn all_effects_ran(&self) -> bool {
+        !(self.slots.contains(&Slot::Pending)
+            || self.later_cond_cursor < self.later_conds.len()
+            || self
+                .later_mirrors
+                .iter()
+                .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran)
+            || self
+                .side_tickers
+                .iter()
+                .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran))
+    }
+
+    /// The **named no-reply close** (D-S2c-9 b): the producer announced it
+    /// ([`ShadowMsg::NoReply`], sent only at the three paths that omit a reply), the
+    /// decision does have a reply that never came, every decided effect ran, and every
+    /// history operation the row requires was witnessed. A flight that merely closed
+    /// after its effects, with no announcement or a missing witness, is unexpected.
+    fn grants_no_reply_exemption(&self) -> Option<NoReplyReason> {
+        let reason = self.no_reply?;
+        (self.decision.reply.is_some()
+            && self.reply.is_none()
+            && self.all_effects_ran()
+            && !self.missing_history(true))
+        .then_some(reason)
+    }
+}
+
+/// The decided reply against the one the command returned: the kind, and for a typed
+/// or transcription reply its `state`, and for an error its [`super::types::ErrClass`]
+/// (D-S2c-15 S7). Both sides absent agree.
+fn reply_agrees(expected: Option<ReplyKind>, live: Option<ReplyKind>) -> bool {
+    match (expected, live) {
+        (None, None) => true,
+        (Some(expected), Some(live)) => expected.agrees(live),
+        _ => false,
     }
 }
 
@@ -1360,11 +1392,24 @@ impl Comparator {
         match kind {
             CloseKind::Matched => self.stats.matched += 1,
             CloseKind::Mismatched => self.stats.closed_mismatched += 1,
-            CloseKind::Unverifiable => self.stats.unverifiable += 1,
-            CloseKind::AbandonedByLoss => self.stats.abandoned_by_loss += 1,
-            CloseKind::AbandonedByPanic => self.stats.abandoned_by_panic += 1,
+            CloseKind::Unverifiable => {
+                self.stats.unverifiable += 1;
+                self.stats.note_incomplete("unverifiable");
+            }
+            CloseKind::AbandonedByLoss => {
+                self.stats.abandoned_by_loss += 1;
+                self.stats.note_incomplete("abandoned_by_loss");
+            }
+            CloseKind::AbandonedByPanic => {
+                self.stats.abandoned_by_panic += 1;
+                self.stats.note_incomplete("abandoned_by_panic");
+            }
+            // `run(Pre)` began and D was never entered: a named expected kind.
             CloseKind::PreAbandoned => self.stats.abandoned_pre_d += 1,
-            CloseKind::Incomplete => self.stats.skipped_incomplete += 1,
+            CloseKind::Incomplete => {
+                self.stats.skipped_incomplete += 1;
+                self.stats.note_incomplete("skipped_incomplete");
+            }
         }
     }
 
@@ -1411,8 +1456,8 @@ impl Comparator {
         assert_eq!(self.closed.len(), self.close_counts.len());
     }
 
-    /// Recorders open now (test visibility for the conservation check).
-    #[cfg(test)]
+    /// Recorders open now: the summary's `outstanding_at_exit` at the final write, and
+    /// the conservation check's still-open count in tests.
     pub(crate) fn open_flights(&self) -> usize {
         self.live.len()
     }
@@ -1665,6 +1710,10 @@ impl Comparator {
                     record.reply = Some(kind);
                     None
                 }
+                ShadowMsg::NoReply { reason, .. } => {
+                    record.no_reply = Some(reason);
+                    None
+                }
                 ShadowMsg::Close {
                     completed: done, ..
                 } => {
@@ -1693,6 +1742,26 @@ impl Comparator {
                 CloseKind::Unverifiable
             } else {
                 self.credit_pd(&record, completed);
+                if completed {
+                    // E3 credit: only a flight that ran to its end and matched (D-S2c-15
+                    // S2), never a header that was compared and then abandoned.
+                    self.stats.row(site, row).matched += 1;
+                    let decided = record.decision.reply.as_ref().map(ReplyKind::of);
+                    if let (Some(decided), Some(live)) = (decided, record.reply) {
+                        if decided.is_unclassified_agreement(live) {
+                            self.stats.unclassified_err_replies += 1;
+                        }
+                    }
+                } else if let Some(reason) = record.grants_no_reply_exemption() {
+                    self.stats.named_no_reply += 1;
+                    if reason == NoReplyReason::Delegated {
+                        // A delegated row's coverage: its effects and history verified
+                        // here, its reply verified at the site that returns it.
+                        self.stats.row(site, row).delegated += 1;
+                    }
+                } else {
+                    self.stats.note_incomplete("abandoned");
+                }
                 CloseKind::Matched
             };
             self.close(rec, kind);

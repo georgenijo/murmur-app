@@ -18,8 +18,9 @@ use crate::dictation_shadow::transport::{
     mark, submit, witness, Mark, ShadowRecorder, QUEUE_CAPACITY,
 };
 use crate::dictation_shadow::types::{
-    CondWitness, LiveOp, MirrorField, MirrorValue, MirrorWitness, PredId, Projection, ReplyKind,
-    ShadowHeader, ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect, PRE_CAPACITY,
+    CondWitness, ErrClass, LiveOp, MirrorField, MirrorValue, MirrorWitness, NoReplyReason, PredId,
+    Projection, ReplyKind, ShadowHeader, ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect,
+    PRE_CAPACITY,
 };
 use crate::dictation_shadow::{run, Control, POLL_INTERVAL};
 
@@ -961,27 +962,54 @@ fn reply_and_close(messages: &[ShadowMsg]) -> (Vec<ReplyKind>, Vec<bool>) {
 #[test]
 fn a_command_reply_is_witnessed_as_the_value_the_command_returned() {
     use crate::dictation_executor::shadow::commanded;
-    use murmur_dictation_core::replies::{Reply, ReplyType};
+    use murmur_dictation_core::replies::{ProcessAudioRefusal, Reply, ReplyType};
     use serde_json::json;
 
     let decided = Reply::typed(ReplyType::NotRecording, Status::Idle);
     let cases: Vec<(Result<serde_json::Value, String>, ReplyKind)> = vec![
         (
             Ok(json!({"type": ReplyType::NotRecording.as_str(), "state": "idle"})),
-            ReplyKind::Typed(ReplyType::NotRecording),
+            ReplyKind::TypedAt(ReplyType::NotRecording, Status::Idle),
         ),
         (
             Ok(json!({"type": ReplyType::AlreadyRecording.as_str(), "state": "recording"})),
-            ReplyKind::Typed(ReplyType::AlreadyRecording),
+            ReplyKind::TypedAt(ReplyType::AlreadyRecording, Status::Recording),
         ),
-        (Err("failed".to_string()), ReplyKind::Err),
+        // An error text no fixed class names is the live side's own class (never a
+        // match for a fixed one); a fixed text is classified.
+        (
+            Err("failed".to_string()),
+            ReplyKind::ErrAs(ErrClass::Unclassified),
+        ),
+        (
+            Err(ProcessAudioRefusal::Benchmark.message().to_string()),
+            ReplyKind::ErrAs(ErrClass::ProcessAudio(ProcessAudioRefusal::Benchmark)),
+        ),
+        (
+            Err("Missing dictation context for recording 12".to_string()),
+            ReplyKind::ErrAs(ErrClass::MissingContext),
+        ),
         (
             Ok(json!({"type": "no_such_reply", "state": "idle"})),
             ReplyKind::Unrecognized,
         ),
         (
             Ok(json!({"type": "transcription", "text": "", "state": "idle"})),
+            ReplyKind::TranscriptionAt(Status::Idle),
+        ),
+        // The normal `process_audio` transcription returns no `state`: the kind alone.
+        (
+            Ok(json!({"type": "transcription", "text": ""})),
             ReplyKind::Transcription,
+        ),
+        // A typed reply with no readable state names a kind no decision does (S7).
+        (
+            Ok(json!({"type": ReplyType::NotRecording.as_str()})),
+            ReplyKind::Unrecognized,
+        ),
+        (
+            Ok(json!({"type": ReplyType::NotRecording.as_str(), "state": "bogus"})),
+            ReplyKind::Unrecognized,
         ),
         (Ok(json!({"state": "idle"})), ReplyKind::Ok),
     ];
@@ -1283,7 +1311,7 @@ fn a_queued_finish_closes_with_no_reply_and_a_nested_command_keeps_its_own() {
     let (replies, mut closes) = reply_and_close(&pop_all(&transport));
     assert_eq!(
         replies,
-        vec![ReplyKind::Typed(ReplyType::NotRecording)],
+        vec![ReplyKind::TypedAt(ReplyType::NotRecording, Status::Idle)],
         "only the nested command's flight has a reply"
     );
     closes.sort_unstable();
@@ -1379,4 +1407,160 @@ fn the_live_capture_module_keeps_no_ambient_flight_or_stash() {
             "a thread-local names a flight: {head}"
         );
     }
+}
+
+fn no_reply_reasons(messages: &[ShadowMsg]) -> Vec<NoReplyReason> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ShadowMsg::NoReply { reason, .. } => Some(*reason),
+            _ => None,
+        })
+        .collect()
+}
+
+/// D-S2c-15 review, major 1: each of the three paths that intentionally omit a reply says
+/// why, **before** the close; a flight that merely has no reply says nothing.
+#[test]
+fn the_three_no_reply_paths_announce_their_reason_before_the_close() {
+    use crate::dictation_executor::shadow::{commanded, import_pipeline_error, unreplied};
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+    use NoReplyReason::{Deferred, Delegated, ImportPipelineError};
+
+    fn assert_announced_before_close(messages: &[ShadowMsg], reason: NoReplyReason) {
+        let at = |wanted: fn(&ShadowMsg) -> bool| messages.iter().position(wanted);
+        let announced = at(|m| matches!(m, ShadowMsg::NoReply { .. })).expect("announced");
+        let closed = at(|m| {
+            matches!(
+                m,
+                ShadowMsg::Close {
+                    completed: false,
+                    ..
+                }
+            )
+        })
+        .expect("closed");
+        assert!(
+            announced < closed,
+            "the reason precedes the close: {messages:?}"
+        );
+        assert_eq!(no_reply_reasons(messages), vec![reason]);
+    }
+    let decided = Reply::typed(ReplyType::RecordingCancelled, Status::Idle);
+
+    // A reply another site returns.
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let _: Result<(), String> = block_on(commanded(async {
+        let flight = replying_flight(&decided);
+        flight.delegated_reply();
+        drop(flight);
+        assert_announced_before_close(&pop_all(&transport), Delegated);
+        Ok(())
+    }));
+    drop(_armed);
+
+    // A finish a queued drain ran.
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let _: Result<(), String> = block_on(commanded(async {
+        unreplied(|| drop(replying_flight(&decided)));
+        assert_announced_before_close(&pop_all(&transport), Deferred);
+        Ok(())
+    }));
+    drop(_armed);
+
+    // The import's own pipeline error, returned: announced. Any other return: the flight
+    // concludes with a reply the comparator reports, and announces nothing.
+    for (returned, reason) in [
+        (
+            Err("the pipeline failed".to_string()),
+            Some(ImportPipelineError),
+        ),
+        (
+            Ok(serde_json::json!({"type": "not_recording", "state": "idle"})),
+            None,
+        ),
+    ] {
+        let transport = default_transport();
+        let _armed = Armed::on(&transport);
+        let _ = block_on(commanded(async {
+            drop(replying_flight(&decided));
+            import_pipeline_error();
+            returned.clone()
+        }));
+        let messages = pop_all(&transport);
+        match reason {
+            Some(reason) => assert_announced_before_close(&messages, reason),
+            None => assert!(no_reply_reasons(&messages).is_empty(), "{messages:?}"),
+        }
+    }
+
+    // A flight with no command around it, or one that was just dropped, announces nothing.
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    drop(replying_flight(&Reply::typed(
+        ReplyType::NotRecording,
+        Status::Idle,
+    )));
+    assert!(no_reply_reasons(&pop_all(&transport)).is_empty());
+}
+
+/// D-S2c-15 review, major 3, through the production wrapper: the refusal a blocked
+/// `process_audio` decides is a meeting's; a command that returns the **benchmark**
+/// refusal text instead is classified from the text it returned, and the comparison
+/// reports it (`diff_kind 4`). A text no fixed class names agrees only with a class whose
+/// text the shell owns, and is counted.
+#[test]
+fn a_wrong_error_text_returned_by_the_command_is_a_reply_mismatch() {
+    use crate::dictation_executor::shadow::commanded;
+    use murmur_dictation_core::replies::ProcessAudioRefusal;
+
+    let live_kind = |returned: &str| -> ReplyKind {
+        let transport = default_transport();
+        let _armed = Armed::on(&transport);
+        let decided = process_audio_refused(1, 1).decision.reply.unwrap();
+        let _ = block_on(commanded(async {
+            drop(replying_flight(&decided));
+            Err::<serde_json::Value, String>(returned.to_string())
+        }));
+        reply_and_close(&pop_all(&transport))
+            .0
+            .pop()
+            .expect("a reply")
+    };
+    let feed = |kind: ReplyKind| {
+        let mut h = harness();
+        let mut flight = process_audio_refused(1, 1);
+        *flight
+            .later
+            .iter_mut()
+            .find_map(|msg| match msg {
+                ShadowMsg::Reply { kind, .. } => Some(kind),
+                _ => None,
+            })
+            .unwrap() = kind;
+        h.feed(&flight);
+        h
+    };
+
+    // The right text is a match; the wrong fixed text is a reply mismatch.
+    let right = live_kind(ProcessAudioRefusal::MeetingActive.message());
+    assert_eq!(
+        right,
+        ReplyKind::ErrAs(ErrClass::ProcessAudio(ProcessAudioRefusal::MeetingActive))
+    );
+    assert_clean(&feed(right));
+    let wrong = live_kind(ProcessAudioRefusal::Benchmark.message());
+    assert_eq!(
+        feed(wrong).only_event().diff_kind,
+        crate::dictation_shadow::types::DiffKind::Reply.code()
+    );
+    // A text the producer cannot place never satisfies a fixed class.
+    let unplaced = live_kind("something else");
+    assert_eq!(unplaced, ReplyKind::ErrAs(ErrClass::Unclassified));
+    assert_eq!(
+        feed(unplaced).only_event().diff_kind,
+        crate::dictation_shadow::types::DiffKind::Reply.code()
+    );
 }

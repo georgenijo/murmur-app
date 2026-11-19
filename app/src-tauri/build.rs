@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// The dictation lock's site rules, shared with `dictation_shadow/sites.rs`.
+include!("src/dictation_shadow/site_rules.in");
+
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "macos" {
@@ -11,7 +14,114 @@ fn main() {
     // (commands::permissions::check_microphone_permission). AppKit does not load it.
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     build_foundation_models_bridge();
+    // Only a `dictation-shadow` build records its identity and site map: a default or
+    // release build consults neither git nor the sources, and its rebuild triggers do
+    // not change.
+    if std::env::var_os("CARGO_FEATURE_DICTATION_SHADOW").is_some() {
+        export_build_identity();
+        generate_lock_site_map();
+    }
     tauri_build::build()
+}
+
+/// Export the build's identity to the dictation shadow's session record
+/// (`MURMUR_GIT_SHA`, `MURMUR_BUILD_PROFILE`; read with `option_env!`). The shadow's
+/// summary names the revision and profile that produced it, so a soak pass can tell a
+/// stale file from this build's. A checkout with no `git`, or no repository, gives
+/// `"unknown"`; `MURMUR_GIT_SHA` set in the environment wins (a packaged build).
+fn export_build_identity() {
+    println!("cargo:rerun-if-env-changed=MURMUR_GIT_SHA");
+    let sha = std::env::var("MURMUR_GIT_SHA")
+        .ok()
+        .filter(|sha| is_full_sha(sha))
+        .or_else(|| git_output(&["rev-parse", "HEAD"]).filter(|sha| is_full_sha(sha)))
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=MURMUR_GIT_SHA={sha}");
+
+    // Re-run when HEAD moves: the file that names the branch, and the branch's ref.
+    for path in [
+        git_output(&["rev-parse", "--git-path", "HEAD"]),
+        git_output(&["symbolic-ref", "-q", "HEAD"])
+            .and_then(|head| git_output(&["rev-parse", "--git-path", &head])),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        println!("cargo:rerun-if-changed={path}");
+    }
+
+    // `PROFILE` is only `debug` or `release`; a custom profile (`shadow-soak`) is the
+    // directory name under `target/`: OUT_DIR is `target/<profile>/build/<pkg>/out`.
+    let profile = std::env::var("OUT_DIR")
+        .ok()
+        .and_then(|out| {
+            Path::new(&out)
+                .ancestors()
+                .nth(3)
+                .and_then(|dir| dir.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .or_else(|| std::env::var("PROFILE").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=MURMUR_BUILD_PROFILE={profile}");
+}
+
+/// Write `OUT_DIR/dictation_lock_sites.rs`: every `.lock_or_recover()` call site in
+/// `src/`, as `(file, line, class)` per the shared rules, for the shadow's summary to
+/// classify the dictation lock's acquisitions without reading a file at run time.
+fn generate_lock_site_map() {
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=src/dictation_shadow/site_rules.in");
+    let mut files = Vec::new();
+    collect_sources(Path::new("src"), &mut files);
+    files.sort();
+    let mut entries = String::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let name = path.to_string_lossy().replace('\\', "/");
+        for (index, line) in text.lines().enumerate() {
+            if !line.contains(".lock_or_recover()") {
+                continue;
+            }
+            let class = classify_text(&name, &text, index + 1).code();
+            entries.push_str(&format!("    ({name:?}, {}, {class}),\n", index + 1));
+        }
+    }
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(
+        out_dir.join("dictation_lock_sites.rs"),
+        format!("pub(super) const SITES: &[(&str, u32, u8)] = &[\n{entries}];\n"),
+    )
+    .expect("write the dictation lock site map");
+}
+
+fn collect_sources(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_sources(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
+        }
+    }
+}
+
+fn is_full_sha(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// Compile the small Swift bridge used by the optional homophone context pass
