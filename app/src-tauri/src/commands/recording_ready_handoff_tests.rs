@@ -219,6 +219,14 @@ fn callee(call: &syn::ExprCall) -> String {
     }
 }
 
+/// The final segment of a callee path: `x`, `self::x`, `super::x`, `Self::x` and
+/// `crate::a::b::x` are all `x`, so a qualified spelling of a receiver or a spawner counts
+/// as that receiver or spawner and cannot hide a second one. (An alias import, a macro or a
+/// function pointer is deliberate evasion and out of scope, D-S2c-11 (b).)
+fn last_segment(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
 /// An executed call: its callee, its line, whether the call is `.await`ed, and the call.
 type Executed<'a> = (String, usize, bool, &'a syn::ExprCall);
 
@@ -378,7 +386,7 @@ fn ready_callback<'a>(
     let executed = executed_in_fn(function);
     let calls: Vec<_> = executed
         .iter()
-        .filter(|(path, _, _, _)| path == receiver)
+        .filter(|(path, _, _, _)| last_segment(path) == receiver)
         .collect();
     let [(_, _, _, call)] = calls.as_slice() else {
         return Err(format!(
@@ -427,7 +435,9 @@ fn handoff_defects(source: &str) -> Vec<String> {
             };
             executed_in_block(&task.block)
                 .iter()
-                .any(|(inner, _, awaited, _)| inner == "run_partial_ticker_loop" && *awaited)
+                .any(|(inner, _, awaited, _)| {
+                    last_segment(inner) == "run_partial_ticker_loop" && *awaited
+                })
                 .then_some(*line)
         });
         match (register, spawned) {
@@ -531,13 +541,13 @@ fn handoff_defects(source: &str) -> Vec<String> {
         let mut exec = Exec(Vec::new());
         exec.visit_expr(&closure.body);
         let vad = exec.0.iter().any(|(path, _, _, call)| {
-            path == "spawn_vad_stream"
+            last_segment(path) == "spawn_vad_stream"
                 && call.args.len() == 2
                 && is_path_or_clone(&call.args[0], handle)
                 && is_path(&call.args[1], id)
         });
         let ticker = exec.0.iter().any(|(path, _, _, call)| {
-            path == "spawn_dictation_partial_ticker"
+            last_segment(path) == "spawn_dictation_partial_ticker"
                 && call.args.len() == 3
                 && is_path_or_clone(&call.args[0], handle)
                 && is_path(&call.args[1], id)
@@ -803,6 +813,42 @@ const SPLIT_R104_2: Control = (
     &["R104.2 ready callback"],
 );
 
+/// Sol's round-4 plant, in two spellings of the default branch's receiver: the bridge's
+/// `Ready` call split by `cfg`, the original callback kept first under `dictation-shadow`, and
+/// a path-qualified call in the default branch whose callback omits VAD startup. A lookup that
+/// counts only the bare receiver name saw one call and passed every digest.
+macro_rules! split_bridge {
+    ($name:literal, $receiver:literal) => {
+        (
+            $name,
+            &[
+                (
+                    "    event: AudioLifecycleEvent,\n) {\n    handle_audio_lifecycle_events(",
+                    "    event: AudioLifecycleEvent,\n) {\n    #[cfg(feature = \"dictation-shadow\")]\n    {\n    handle_audio_lifecycle_events(",
+                ),
+                (
+                    "            spawn_dictation_partial_ticker(app_handle, recording_id, register);\n        },\n    );\n}\n\n/// [`handle_audio_lifecycle`] with its spawns",
+                    concat!(
+                        "            spawn_dictation_partial_ticker(app_handle, recording_id, register);\n        },\n    );\n    }\n    #[cfg(not(feature = \"dictation-shadow\"))]\n    {\n        ",
+                        $receiver,
+                        "(\n            app_handle,\n            recording_id,\n            event,\n            auto_stop_dispatch(\n                |app_handle, state| TauriHost::new(app_handle.clone(), state.performance.clone()),\n                |recording_id, _owner, stop| {\n                    spawn_auto_stop(recording_id, stop);\n                },\n            ),\n            |app_handle, recording_id, register| {\n                spawn_dictation_partial_ticker(app_handle, recording_id, register);\n            },\n        );\n    }\n}\n\n/// [`handle_audio_lifecycle`] with its spawns"
+                    ),
+                ),
+            ] as &[(&str, &str)],
+            &["the bridge `Ready` ready callback"] as &[&str],
+        )
+    };
+}
+
+const SPLIT_BRIDGE_SELF: Control = split_bridge!(
+    "bridge `Ready` split by cfg, `self::`-qualified default branch without VAD",
+    "self::handle_audio_lifecycle_events"
+);
+const SPLIT_BRIDGE_CRATE: Control = split_bridge!(
+    "bridge `Ready` split by cfg, `crate::`-qualified default branch without VAD",
+    "crate::commands::recording::handle_audio_lifecycle_events"
+);
+
 /// A second `spawn_vad_stream`: a pinned function found twice must fail, not resolve to one.
 const DUPLICATE_VAD: Control = (
     "a second `spawn_vad_stream`",
@@ -868,6 +914,8 @@ const CONTROLS: &[Control] = &[
         &["the bridge `Ready` ready callback"],
     ),
     SPLIT_R104_2,
+    SPLIT_BRIDGE_SELF,
+    SPLIT_BRIDGE_CRATE,
     DUPLICATE_VAD,
     (
         "the start command's ready callback starts the VAD only `if false`",
@@ -1049,6 +1097,14 @@ fn a_second_match_fails_the_structural_check_and_names_the_count() {
         (
             SPLIT_R104_2,
             "expected exactly one call to `publish_recording_ready_with`",
+        ),
+        (
+            SPLIT_BRIDGE_SELF,
+            "expected exactly one call to `handle_audio_lifecycle_events`",
+        ),
+        (
+            SPLIT_BRIDGE_CRATE,
+            "expected exactly one call to `handle_audio_lifecycle_events`",
         ),
         (DUPLICATE_VAD, "expected one `spawn_vad_stream`, found 2"),
     ] {
