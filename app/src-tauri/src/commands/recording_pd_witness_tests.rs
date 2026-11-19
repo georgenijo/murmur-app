@@ -1584,7 +1584,8 @@ pub(super) mod under_d {
     /// the same armed. The disarmed shadow reads nothing for any entry; the armed one
     /// reads exactly what its header needs. An extra read added under D allocates nothing,
     /// so the allocation pins cannot see it; one of these does (D-S2c-10 R4).
-    const READS: [(&str, (u64, u64), (u64, u64)); 16] = [
+    type Reads = (u64, u64);
+    const READS: [(&str, Reads, Reads); 16] = [
         (
             "start refused before D (Smart Auto with a fixed device)",
             (1, 0),

@@ -354,22 +354,18 @@ pub(crate) fn register_partial_ticker_locked_observed(
     registered
 }
 
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::types::TickerSkipReason as SkipReason;
+#[cfg(feature = "dictation-shadow")]
+type TickerStart = Result<(Arc<DictationContextSnapshot>, bool), SkipReason>;
+
 /// The ticker spawner's own synchronous preconditions, from its one lookup: the recorded
 /// context and a model that supports a live preview. `Err(reason)` is the skip the spawner
 /// takes before it calls `register`, and is handed to the port that called it (D-S2c-10 R2).
 /// The production spawner and the golden harness's spawner both go through it, so the
 /// replay exercises the production check.
 #[cfg(feature = "dictation-shadow")]
-pub(crate) fn ticker_start_check(
-    app_state: &AppState,
-    recording_id: u64,
-) -> Result<
-    (
-        Arc<crate::dictation_context::DictationContextSnapshot>,
-        bool,
-    ),
-    crate::dictation_shadow::types::TickerSkipReason,
-> {
+pub(crate) fn ticker_start_check(app_state: &AppState, recording_id: u64) -> TickerStart {
     use crate::dictation_shadow::types::TickerSkipReason;
     let Some(context) = app_state.active_context(recording_id) else {
         crate::dictation_executor::shadow::ticker_skipped(TickerSkipReason::NoContext);
