@@ -3180,10 +3180,10 @@ mod clipboard_delivery_tests {
                     .store(cancelled_through, Ordering::SeqCst);
                 let mut dictation = app_state.dictation.lock_or_recover();
                 dictation.status = status;
+                crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
                 let cancelled = app_state.is_cancelled(id);
-                let view = crate::dictation_executor::FieldAdapter::project_lifecycle_view(
-                    &app_state, &dictation,
-                );
+                let view =
+                    crate::dictation_executor::FieldAdapter::start_view(&app_state, &mut dictation);
                 let at =
                     format!("{status:?} id={id} current={current} cancelled={cancelled_through}");
                 assert_eq!(
@@ -3243,6 +3243,7 @@ mod clipboard_delivery_tests {
         app_state.recording_id.store(9_000_001, Ordering::SeqCst);
         let mut dictation = app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Recording;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         // A stale generation is refused even while the lock shows Recording.
         assert!(!register_partial_ticker_locked(
             &app_state, &dictation, 9_000_000
@@ -3254,25 +3255,36 @@ mod clipboard_delivery_tests {
         // the stop already claimed (or declined) the hide under this lock.
         app_state.recording_id.store(9_000_002, Ordering::SeqCst);
         dictation.status = DictationStatus::Processing;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         assert!(!register_partial_ticker_locked(
             &app_state, &dictation, 9_000_002
         ));
         dictation.status = DictationStatus::Recording;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         assert!(register_partial_ticker_locked(
             &app_state, &dictation, 9_000_002
         ));
         // The predecessor resuming now cannot overwrite its successor.
         app_state.recording_id.store(9_000_001, Ordering::SeqCst);
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         assert!(!register_partial_ticker_locked(
             &app_state, &dictation, 9_000_001
         ));
+    }
+
+    /// A fixture's live write, followed by the seed of the persisted core the delivery fence
+    /// reads (the fence decides on M1/M2 of the core since the start cutover).
+    fn set_live(app_state: &AppState, status: DictationStatus) {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        crate::dictation_executor::FieldAdapter::seed_core(app_state, &mut dictation);
     }
 
     #[test]
     fn queued_delivery_rechecks_ownership_before_running_its_side_effect() {
         let app_state = AppState::default();
         app_state.recording_id.store(12, Ordering::SeqCst);
-        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        set_live(&app_state, DictationStatus::Processing);
 
         let mut calls = 0;
         assert_eq!(
@@ -3287,7 +3299,7 @@ mod clipboard_delivery_tests {
             Some(42)
         );
 
-        app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+        set_live(&app_state, DictationStatus::Idle);
         assert_eq!(
             with_current_delivery_owner(&app_state, 12, || {
                 calls += 1;
@@ -3296,8 +3308,12 @@ mod clipboard_delivery_tests {
             None
         );
 
-        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        set_live(&app_state, DictationStatus::Processing);
         app_state.recording_id.store(13, Ordering::SeqCst);
+        crate::dictation_executor::FieldAdapter::seed_core(
+            &app_state,
+            &mut app_state.dictation.lock_or_recover(),
+        );
         assert_eq!(
             with_current_delivery_owner(&app_state, 12, || {
                 calls += 1;
@@ -3309,7 +3325,7 @@ mod clipboard_delivery_tests {
 
         let cancelled_state = AppState::default();
         cancelled_state.recording_id.store(12, Ordering::SeqCst);
-        cancelled_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        set_live(&cancelled_state, DictationStatus::Processing);
         cancelled_state.cancel_recording(12);
         assert_eq!(
             with_current_delivery_owner(&cancelled_state, 12, || 45),

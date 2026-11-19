@@ -491,7 +491,11 @@ fn cases() -> Vec<Case> {
             body: import_with_destination,
             entries: &[E301, E3016, E204A, E204B],
             queries: 0,
-            plant: Some((Plant::AtPort("import.capture"), 1)),
+            // Not planted any more: a divergence planted at the capture is now read first by
+            // the import's capture check (402), which moved with the start cutover and
+            // re-syncs it, so 301.6 reads an equal core. 402 and 301.6 are the same
+            // `persisted_view` body; the start cutover's tests plant at this port.
+            plant: None,
         },
         Case {
             name: "an import that does not parse (301, 204a legacy parse)",
@@ -676,7 +680,9 @@ fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
         );
         covered.insert(name.clone());
     }
-    for entry in [E201, E202, E203, E204A, E204B, E301, E3016] {
+    // 301.6 (E3016) is not planted any more: the import's capture check (402), which moved with
+    // the start cutover, reads and re-syncs a divergence planted at the capture before it.
+    for entry in [E201, E202, E203, E204A, E204B, E301] {
         assert!(covered.contains(entry), "{entry} was never planted");
     }
 }

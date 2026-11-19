@@ -247,7 +247,12 @@ const E1030: &str = "start_after_capture#1";
 const E103: &str = "start_after_capture#2";
 const E104: &str = "publish_recording_ready_with#0";
 const E402_IMPORT: &str = "process_audio_inner#0";
+/// The ticker registration query (401/404): the shadow build's ports register through the
+/// observed copy of the same gate.
+#[cfg(not(feature = "dictation-shadow"))]
 const Q401: &str = "register_partial_ticker_locked#0";
+#[cfg(feature = "dictation-shadow")]
+const Q401: &str = "register_partial_ticker_locked_observed#0";
 
 // ------------------------------------------------------------------------ probes
 
@@ -1025,7 +1030,7 @@ fn the_queries_follow_the_persisted_core() {
         );
         assert_eq!(core_divergences() - before, 1, "counted once");
         let reads = queries_read();
-        assert_eq!(names(&reads), [Q401]);
+        assert_eq!(names(&reads), ["register_partial_ticker_locked#0"]);
         assert_eq!(reads[0].1, (Status::Processing, RecordingId(5)));
         assert_eq!(reads[0].2, (Status::Recording, RecordingId(5)));
     }
