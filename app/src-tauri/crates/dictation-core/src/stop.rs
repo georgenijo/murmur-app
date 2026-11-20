@@ -35,8 +35,7 @@
 //!
 //! Rows that reproduce a preserved defect keep it: PD-3 (R202.3/.4), PD-6
 //! (R203.2r, R203.5r, R203.7r, R204a.3, R204b.2), PD-7 (R202.2, R203.2,
-//! R203.3, R203.10), PD-13 (R204a.6), PD-15 (R201.1, R201.7), PD-18 (c) (R203.4,
-//! R203.6).
+//! R203.3, R203.10), PD-13 (R204a.6), PD-15 (R201.1, R201.7).
 
 use crate::decision::{
     ContKind, ContinuationSpec, Decision, ObsKind, Refusal, RowId, StaleKind, Verdict,
@@ -454,8 +453,7 @@ fn row_203(kind: Capture, core: &DictationCore, rid: RecordingId) -> &'static st
 /// `PGF(NoSpeech)` for a short or empty capture (reply `transcription ""`). A
 /// supervisor `RuntimeInterruption` terminal replaces the `NoSpeech` / `TooShort`
 /// one. Rows by (result, status, id): see [`row_203`]; `Idle` / `Recovering`
-/// with the current id keep the defects **PD-6** / **PD-7**; **PD-18 (c)** for
-/// R203.4 / R203.6.
+/// with the current id keep the defects **PD-6** / **PD-7**.
 ///
 /// A capture of at least [`MIN_RECORDING_SAMPLES`] samples takes no D: this
 /// delegates to [`decide_stop_capture_result_nolock`] (R203.9/.10).

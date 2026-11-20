@@ -477,7 +477,7 @@ fn r211_1_idle_for_a_non_current_recording_is_superseded() {
 #[test]
 fn r211_2_idle_while_already_idle_claims_no_terminal_and_resets_no_keyboard() {
     // PD-22 (and PD-2, the same claim): the recording is over, so the path that ended it
-    // owns the terminal. PD-18 (b): no KB reset either.
+    // owns the terminal. No KB reset either.
     let d = decide_sup_idle(&core(Status::Idle, RID), RID, NOW);
     row(&d, "R211.2", Verdict::Applied, None, &[]);
 }
@@ -493,8 +493,8 @@ const FORCED_IDLE: [&str; 6] = [
 
 #[test]
 fn r211_3_to_6_idle_forces_idle_over_any_live_status() {
-    // PD-7 (Processing: the supervisor forces Idle over a running pipeline) and
-    // PD-18 (b) (Recovering) keep their literal behaviour.
+    // PD-7 (Processing: the supervisor forces Idle over a running pipeline) keeps its
+    // literal behaviour; so does the `Recovering` row.
     for (status, id) in [
         (Status::Processing, "R211.3"),
         (Status::Starting, "R211.4"),
@@ -702,8 +702,8 @@ fn short_idle_effects() -> Vec<&'static str> {
 
 #[test]
 fn r216_1_to_4_short_idle_has_no_status_guard_and_writes_idle_over_any_status() {
-    // PD-1 (no guard), PD-15 (TI is destructive), PD-7 (Processing), PD-18 (a)
-    // (Recovering): the literal behaviour is kept.
+    // PD-1 (no guard), PD-15 (TI is destructive), PD-7 (Processing): the literal
+    // behaviour is kept.
     for (status, id) in [
         (Status::Recovering, "R216.1"),
         (Status::Idle, "R216.2"),

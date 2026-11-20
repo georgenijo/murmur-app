@@ -382,7 +382,7 @@ pub enum RefusalCode {
     AlreadyRecording,
     AudioRecovering,
     AlreadyProcessing,
-    /// R101.12: `audio_recovering` + the start publishes `Recovering`.
+    /// R101.12: `audio_recovering`; a pure refusal (the status stays `Idle`).
     AudioRecoveringCleanupPending,
     /// `Err("Smart Auto cannot be combined with a fixed microphone.")` (5491).
     SmartAutoWithFixedDevice,
@@ -598,11 +598,6 @@ impl RefusalCode {
             Self::AlreadyProcessing => (ReplyType::AlreadyProcessing, Status::Processing),
             _ => return None,
         })
-    }
-
-    /// R101.12 publishes `Recovering` (5535) before refusing.
-    pub fn publishes_recovering(&self) -> bool {
-        matches!(self, Self::AudioRecoveringCleanupPending)
     }
 }
 

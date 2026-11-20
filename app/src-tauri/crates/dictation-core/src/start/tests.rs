@@ -335,18 +335,23 @@ fn the_cleanup_read_is_requested_only_after_the_blockers_and_status_passed() {
 }
 
 #[test]
-fn r101_12_cleanup_pending_writes_recovering_with_the_old_id_then_refuses() {
+fn r101_12_cleanup_pending_refuses_and_leaves_the_status_idle() {
+    // PD-18 / PD-19 fix: the row used to write `Idle→Recovering` (old id) and publish it,
+    // and nothing restored `Idle` after a teardown that sends no `Idle`. It is a pure
+    // refusal now: no transition, no status write, no `recovering` emit.
     let mut input = start();
     input.cleanup_pending = Some(true);
     let decided = d_101(Status::Idle, input);
     assert_eq!(decided.row.0, "R101.12");
-    assert_eq!(decided.verdict, Verdict::Applied);
-    assert_eq!(decided.transition, Some((Status::Idle, Status::Recovering)));
-    // No `ID+` (the id is unchanged), no terminal, no perf, no `GenStarted`, no KB.
     assert_eq!(
-        tags(&decided),
-        ["In:ST→Recovering", "In:EM(recovering)", "PT:REL"]
+        decided.verdict,
+        Verdict::Refused(Refusal::Admission(
+            RefusalCode::AudioRecoveringCleanupPending
+        ))
     );
+    assert_eq!(decided.transition, None);
+    // No `ID+` (the id is unchanged), no status write, no event, no terminal, no perf.
+    assert_eq!(tags(&decided), ["PT:REL"]);
     assert_eq!(decided.continuation, None);
     assert_eq!(
         decided.reply,

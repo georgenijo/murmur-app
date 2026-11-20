@@ -105,7 +105,7 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
 
 
 def e7_dump(**overrides) -> dict:
-    pds = {f"PD-{n}": 3 for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18)}
+    pds = {f"PD-{n}": 3 for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16)}
     dump = {"git_sha": SHA, "dirty": False, "golden_repeat": 100, "per_row": {}, "pd_witness": pds}
     dump.update(overrides)
     return dump

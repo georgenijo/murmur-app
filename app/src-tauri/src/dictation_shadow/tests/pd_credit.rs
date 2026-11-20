@@ -1,11 +1,11 @@
 //! A preserved defect is credited only after its defining behaviour was witnessed
 //! (D-S2c-1 d; Sol 6.2 major 3). The old rule credited every PD of a row at CP1, so
-//! `PD-16` counted although the later terminal never ran and `PD-18` counted on an
-//! ordinary short idle.
+//! `PD-16` counted although the later terminal never ran. PD-18 and PD-19 are fixed: a
+//! start during a retiring capture's cleanup (R101.12, a pure refusal now) credits nothing
+//! (the dead PD-18 entry of `PD_DEFS` stays until the shadow's retirement removes it).
 
 use murmur_dictation_core::decision::OpStatus;
 use murmur_dictation_core::effects::Effect;
-use murmur_dictation_core::status::Status;
 
 use super::harness::*;
 use crate::dictation_shadow::pd::{credited, PdEvidence, PD_DEFS};
@@ -16,7 +16,7 @@ fn credited_count(h: &Harness, pd: u8) -> u64 {
 }
 
 #[test]
-fn a_clean_short_idle_credits_pd_1_and_pd_15_and_not_pd_18() {
+fn a_clean_short_idle_credits_pd_1_and_pd_15_and_nothing_for_the_fixed_pd_18() {
     let mut h = harness();
     h.feed(&short_idle(1, 1));
     assert_clean(&h);
@@ -25,7 +25,7 @@ fn a_clean_short_idle_credits_pd_1_and_pd_15_and_not_pd_18() {
     assert_eq!(
         credited_count(&h, 18),
         0,
-        "PD-18 is a start in the teardown tail, not an ordinary short idle: {:?}",
+        "PD-18 is fixed: nothing credits it: {:?}",
         h.stats().pd_witness
     );
     let row = h.stats().per_row[&(216_u16, 1)];
@@ -70,33 +70,29 @@ fn a_pd_row_with_a_different_effect_list_is_a_mismatch_and_not_credited() {
 }
 
 #[test]
-fn pd_18_needs_a_clean_teardown_row_before_the_start() {
-    // The start alone (R101.12 with nothing before it) is not the defect.
+fn a_start_during_cleanup_is_a_clean_refusal_and_credits_no_pd() {
+    // PD-18 / PD-19 fix: R101.12 refuses and writes nothing (no `ST`, no `EM`), so there is
+    // no defect to credit, with or without an earlier teardown row of the same recording.
     let mut h = harness();
     h.feed(&start_during_cleanup(1, 1));
     assert_clean(&h);
-    assert_eq!(credited_count(&h, 18), 0);
+    assert!(
+        h.stats().pd_witness.is_empty(),
+        "{:?}",
+        h.stats().pd_witness
+    );
 
-    // After the attempt's clean teardown (R216.1, same recording) it is.
     let mut h = harness();
     h.feed(&short_idle(1, 1));
     h.feed(&start_during_cleanup(2, 2));
     assert_clean(&h);
-    assert_eq!(credited_count(&h, 18), 1);
-
-    // A teardown that mismatched is not a clean window.
-    let mut h = harness();
-    let mut bad = short_idle(1, 1);
-    bad.header.live_post_d.status = Status::Recording;
-    h.feed(&bad);
-    h.feed(&start_during_cleanup(2, 2));
     assert_eq!(credited_count(&h, 18), 0);
-
-    // Another recording's teardown does not open it.
-    let mut h = harness();
-    h.feed(&idle_for(1, 1, 41));
-    h.feed(&start_during_cleanup(2, 2));
-    assert_eq!(credited_count(&h, 18), 0);
+    assert_eq!(
+        h.stats().pd_witness.get(&1).copied(),
+        Some(1),
+        "only the short idle's own PD-1 is credited: {:?}",
+        h.stats().pd_witness
+    );
 }
 
 #[test]
@@ -130,8 +126,9 @@ fn a_repeat_ready_for_a_live_recording_credits_no_pd() {
 #[test]
 fn a_reset_drops_the_windows_that_depended_on_what_it_gave_up() {
     // A preserved defect is credited only from evidence the comparison saw whole. A
-    // reset (a loss was counted) forgets the clean rows that open a two-flight window
-    // (PD-18): it could have depended on a message that was lost.
+    // reset (a loss was counted) forgets the clean rows that open a two-flight window: it
+    // could have depended on a message that was lost. PD-18 is fixed, so nothing credits it
+    // either way; the reset must still not credit it.
     let transport = default_transport();
     let mut h = harness();
     h.feed(&short_idle(1, 1));

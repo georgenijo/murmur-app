@@ -1190,10 +1190,9 @@ fn matrix_refusal_codes_match_the_literals_where_the_matrix_names_them() {
     assert_eq!(code("DictationStart", 0), RefusalCode::AlreadyRecording);
     assert_eq!(code("DictationStart", 1), RefusalCode::AlreadyProcessing);
     assert_eq!(code("DictationStart", 2), RefusalCode::AudioRecovering);
-    // R101.12: refuses with `audio_recovering` and publishes Recovering.
+    // R101.12: refuses with `audio_recovering` and writes nothing.
     let retiring = code("DictationStart", 3);
     assert_eq!(retiring, RefusalCode::AudioRecoveringCleanupPending);
-    assert!(retiring.publishes_recovering());
     assert_eq!(retiring.text(), "audio_recovering");
     assert_eq!(code("DictationStart", 5), RefusalCode::BusyTranscribingFile);
     assert_eq!(code("DictationStart", 6), RefusalCode::BusyMeeting);

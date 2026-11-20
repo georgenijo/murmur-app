@@ -217,7 +217,7 @@ fn s03c_auto_stop_wins_the_race(world: &Arc<World>) {
 }
 
 // -------------------------------------- 4: interruption under 8,000 samples
-// Witnesses PD-1 (4b), PD-15 and PD-18 (a) (4d is the golden witness).
+// Witnesses PD-1 (4b) and PD-15; 4d is the golden of the fixed PD-18 (a).
 
 /// (a) The plain path: the bridge restores Idle itself.
 fn s04a_plain_short_interruption(world: &Arc<World>) {
@@ -265,12 +265,13 @@ fn s04c_no_idle_follows_an_interrupted_end(world: &Arc<World>) {
     );
 }
 
-/// (d) PD-18 (a): S12 writes Idle and releases D; a start then takes D (the
+/// (d) The fixed PD-18 (a): S12 writes Idle and releases D; a start then takes D (the
 /// hook runs at S12's tail, before its keyboard/emit statements), reads
-/// cleanup pending because the supervisor still holds its owner, and writes
-/// `Idle -> Recovering` with the old id. S12 then emits its trailing `idle`:
-/// the frontend's last status is idle while the backend is Recovering, and
-/// nothing is left to restore Idle.
+/// cleanup pending because the supervisor still holds its owner, and is refused
+/// `audio_recovering` with nothing written (R101.12 used to write `Idle -> Recovering`
+/// with the old id and nothing restored Idle). S12 then emits its trailing `idle`,
+/// which matches the backend's `Idle`, and the start after the owner clears is
+/// accepted.
 fn s04d_start_before_the_owner_is_cleared(world: &Arc<World>) {
     recording(world);
     world.runtime_failure(1);
@@ -593,9 +594,10 @@ fn verify_s03(text: &str) {
 
 /// PD-1 (4b): a user stop commits Processing between S12's currency check and
 /// its unguarded Idle write, which then overwrites Processing while the
-/// pipeline is still running. PD-15 (4b): that stop took the capture. PD-18 (a)
-/// (4d): a start refused `audio_recovering`, the run ends `Recovering`, and the
-/// frontend's last status is `idle`.
+/// pipeline is still running. PD-15 (4b): that stop took the capture. The fixed PD-18 (a)
+/// (4d): the start is refused `audio_recovering` with the status left `Idle` and nothing
+/// published for the refusal, the start after the owner clears is accepted, and the run
+/// ends `Recording`.
 fn verify_s04(text: &str) {
     let race = section(text, "4b");
     let interrupted = at(race, "emit recording-interrupted");
@@ -608,28 +610,36 @@ fn verify_s04(text: &str) {
     let overwritten = at_after(race, parked, "~ status Processing -> Idle");
     at_after(race, overwritten, "pipeline 1 returns");
     let section = section(text, "4d");
-    assert!(section.contains("~ status Idle -> Recovering"));
-    assert_eq!(
-        count(section, "audio_recovering"),
-        2,
-        "4d: the start is refused audio_recovering and so is every later start"
-    );
-    // The start's refusal, not the runtime failure's earlier recovering emit.
+    // The first start is refused `audio_recovering` while the supervisor still holds the
+    // owner (R101.12), and writes no status: the refusal is a pure refusal.
     let pending = at(section, "supervisor.is_dictation_cleanup_pending 1 -> true");
-    let recovering = at_after(
-        section,
-        pending,
-        "emit recording-status-changed \"recovering\"",
+    let refused = at_after(section, pending, "audio_recovering");
+    assert!(
+        !section[pending..].contains("~ status Idle -> Recovering"),
+        "4d: a refused start writes no Recovering"
     );
-    let trailing_idle = at_after(section, recovering, IDLE_EMIT);
+    assert!(
+        !section[pending..refused].contains("emit recording-status-changed \"recovering\""),
+        "4d: the refusal publishes no recovering"
+    );
+    // S12's trailing idle matches the backend, which is Idle all along.
+    let trailing_idle = at_after(section, refused, IDLE_EMIT);
     at_after(
         section,
         trailing_idle,
         "supervisor.hold_before_owner_clear 1",
     );
+    assert_eq!(
+        count(section, "audio_recovering"),
+        1,
+        "4d: only the start in the gap is refused"
+    );
+    // The start after the owner clears is accepted (id 2), and nothing is left stuck.
+    let cleared = at_after(section, trailing_idle, "supervisor.clear_owner 1");
+    at_after(section, cleared, "reply start again Ok");
     assert!(
-        section.contains("= final status=Recovering"),
-        "4d: nothing restores Idle"
+        section.contains("= final status=Recording"),
+        "4d: the start after the owner cleared is accepted"
     );
 }
 
@@ -826,7 +836,7 @@ pub(super) fn golden_s04_interruption_under_8000_samples() {
     check_golden(
         "s04-interruption-under-8000",
         "4 interruption under 8,000 samples",
-        "PD-1 (4b), PD-15, PD-18 (a) (4d is the golden witness for the family)",
+        "PD-1 (4b), PD-15; 4d is the golden of the fixed PD-18 (a)",
         None,
         &[
             sub("4a plain S12", s04a_plain_short_interruption),
@@ -839,7 +849,7 @@ pub(super) fn golden_s04_interruption_under_8000_samples() {
                 s04c_no_idle_follows_an_interrupted_end,
             ),
             sub(
-                "4d start takes R101.12 before the owner is cleared (PD-18 a)",
+                "4d a start before the owner is cleared is refused (the fixed PD-18 a)",
                 s04d_start_before_the_owner_is_cleared,
             ),
         ],
@@ -991,7 +1001,7 @@ pub(super) fn golden_s11_idle_on_a_finished_recording() {
     check_golden(
         "s11-idle-on-finished-recording",
         "11 Idle on an already-finished recording (C9)",
-        "PD-2",
+        "none (PD-2, retired with PD-22: R211.2 claims no terminal)",
         None,
         &[
             sub("11a after S3 wrote Idle", s11a_idle_after_a_failed_start),

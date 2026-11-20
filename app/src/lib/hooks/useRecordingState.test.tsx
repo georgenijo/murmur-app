@@ -556,6 +556,48 @@ describe('useRecordingState transition ordering', () => {
     expect(current.error).toBe('');
   });
 
+  // A start refused during the retiring capture's cleanup leaves the app Idle and
+  // publishes no status, so nothing takes the notice away through the status path.
+  describe('the notice for a start refused during cleanup', () => {
+    const refusedStart = async () => {
+      mocks.startRecording.mockResolvedValueOnce({ type: 'audio_recovering', state: 'recovering' });
+      await act(async () => current.handleStart());
+      expect(current.status).toBe('idle');
+      expect(current.error).toBe('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+    };
+
+    it('clears when the recording\'s cleanup finishes, with no status change', async () => {
+      await refusedStart();
+      await act(async () => {
+        mocks.listeners.get('recording-cleanup-finished')?.({ payload: { recordingId: 7 } });
+      });
+      expect(current.error).toBe('');
+      expect(current.status).toBe('idle');
+    });
+
+    it('expires on its own when no signal follows the owner clearing', async () => {
+      vi.useFakeTimers();
+      await refusedStart();
+      await act(async () => { vi.advanceTimersByTime(4_900); });
+      expect(current.error).toContain('Microphone cleanup is still in progress');
+      await act(async () => { vi.advanceTimersByTime(200); });
+      expect(current.error).toBe('');
+      expect(current.status).toBe('idle');
+    });
+
+    it('does not expire a newer distinct error', async () => {
+      vi.useFakeTimers();
+      await refusedStart();
+      await act(async () => { vi.advanceTimersByTime(3_000); });
+      await act(async () => {
+        mocks.listeners.get('file-output-failed')?.({ payload: 'Saving the transcript failed.' });
+      });
+      // The refusal's expiry fires at 5 s and must leave the newer notice alone.
+      await act(async () => { vi.advanceTimersByTime(3_000); });
+      expect(current.error).toBe('Saving the transcript failed.');
+    });
+  });
+
   it('dismisses the current notice while allowing a later distinct error', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'busy_benchmarking',

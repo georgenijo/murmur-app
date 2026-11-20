@@ -41,7 +41,7 @@ pub enum Delivery {
     /// `OwnerClear`.
     Sealed,
     /// No seal: `finish_attempt` delivers at the worker's exit: no `Idle`, no
-    /// `CleanupFinished` (PD-18 (c)).
+    /// `CleanupFinished`.
     Unsealed,
 }
 

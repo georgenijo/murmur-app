@@ -1,6 +1,6 @@
 # golden: s11-idle-on-finished-recording
 # scenario: 11 Idle on an already-finished recording (C9)
-# witnesses: PD-2
+# witnesses: none (PD-2, retired with PD-22: R211.2 claims no terminal)
 # lines: `~` is shared state seen to change since the previous line; `#` is a
 # scenario step; everything else is a port call, an emit or a reply, in order.
 
