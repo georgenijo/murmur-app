@@ -506,7 +506,7 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     `Starting` completes performance only for a run that exists (`PerfComplete::only_if_run`),
     and a bare claim by R209.3 or R209.5 is a failure. PD-20 (the cancel of a `Processing` recording) is
     fixed and has no signature: its `PC` is the second half of its terminal claim
-    (`PerfComplete::follows_terminal`, one model step, only while the claim stands), so a split of
+    (`PerfComplete::follows_terminal`: one model step, and in the shell one port call, `Ports::terminal_then_perf`, inside one critical section of the terminal ledger, only while the claim stands), so a split of
     R205.5 with a stop's or the pipeline's row is a failure. PD-22 needs the winning `Idle` claim and the losing named
     claim in the same cancel tail and is judged when that tail closes, because the window's
     events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)

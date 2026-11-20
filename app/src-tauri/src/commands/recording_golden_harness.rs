@@ -1846,6 +1846,30 @@ impl PerformancePort for World {
             runtimes,
         );
     }
+
+    fn complete_claiming(
+        &self,
+        recording_id: u64,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> bool {
+        // The same trace line as `complete`: the call is the effect that ran; whether it took
+        // the claim shows in the `perf-claim` lines.
+        self.push(format!(
+            "performance.complete {recording_id} {}",
+            serde_json::to_string(&outcome).expect("outcome serializes")
+        ));
+        claim_dictation_performance_completion(
+            &self.state().performance,
+            recording_id,
+            outcome,
+            stages,
+            input,
+            runtimes,
+        )
+    }
 }
 
 /// The `DictationHost` the commands run against.

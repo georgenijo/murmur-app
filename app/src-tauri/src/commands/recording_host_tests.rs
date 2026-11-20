@@ -662,6 +662,20 @@ impl PerformancePort for Shared {
             ),
         );
     }
+
+    fn complete_claiming(
+        &self,
+        recording_id: u64,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> bool {
+        // The recorder has no coordinator: the claim is always taken, and recorded as the
+        // completion it is.
+        self.complete(recording_id, outcome, stages, input, runtimes);
+        true
+    }
 }
 
 fn fixture(status: DictationStatus, recording_id: u64) -> (Arc<State>, FakeHost) {

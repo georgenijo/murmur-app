@@ -58,11 +58,12 @@ fn with_reply(mut decided: Decision, reply: Reply) -> Decision {
 ///   arrives from the supervisor (R209). The capture cancel's result is site 206.
 /// * R205.5 `Processing`: `In:ST→Idle`; `PDT:CX-`, `MC`, `TERM(UserCancelledProcessing /
 ///   CancelledProcessing)`, `PC(Cancelled, InferenceDecode)`, `KB(false)`, `EM(idle)`,
-///   `EV(Cancelled)`. The `PC` is the claim's second half (`follows_terminal`): the pair is
-///   one step, and the completion runs only while the claim stands (it won, or it lost to
-///   a stale-owner `Superseded`), so a stop's or the pipeline's completion cannot land
-///   between the claim and the cancel's, and a claim lost to the recording's own end
-///   completes nothing: the terminal and the performance record agree (**PD-20**, fixed).
+///   `EV(Cancelled)`. The `PC` is the claim's second half (`follows_terminal`): the shell runs
+///   the pair as one port call in one critical section of the terminal ledger, and the
+///   completion runs only while the claim stands (it won, or it lost to a stale-owner
+///   `Superseded`), so a stop's or the pipeline's completion cannot land between the claim
+///   and the cancel's, and a claim lost to the recording's own end completes nothing: the
+///   terminal and the performance record agree (**PD-20**, fixed).
 ///   `pipelines[rid]` is left in place: it is draining until R204a (**PD-16**: the
 ///   post-D clears and emits run with no recheck).
 pub fn decide_cancel_request(core: &DictationCore, input: CancelInput, _now: Now) -> Decision {
@@ -106,9 +107,10 @@ pub fn decide_cancel_request(core: &DictationCore, input: CancelInput, _now: Now
                     ErrCode::CancelledProcessing,
                 ),
                 // PD-20 (fixed): the cancel's performance completion is the second half of
-                // its terminal claim (one atomic step, only while the claim stands), so no
-                // other path completes performance between the two, and a claim lost to
-                // the recording's own end completes nothing.
+                // its terminal claim (one port call, one critical section of the terminal
+                // ledger, only while the claim stands), so no other path completes
+                // performance between the two, and a claim lost to the recording's own end
+                // completes nothing.
                 placed(
                     At::PostDT,
                     Effect::PerfComplete(PerfComplete {
