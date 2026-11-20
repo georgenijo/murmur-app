@@ -191,6 +191,12 @@ pub struct StopInput {
     pub interrupted: Option<Option<InterruptedMeta>>,
     /// Stamp at 5897.
     pub entered: Now,
+    /// An earlier take of the *expected* recording's preserved capture found it
+    /// (`take_interrupted_dictation(expected)` returned `Some` for some caller before
+    /// this stop's own take). Read by the stale path only (R201.1): a stop that took
+    /// the capture owns that recording's terminal and claims it itself, so a stale stop
+    /// whose own take found nothing must not claim `Superseded` ahead of it (PD-25).
+    pub taken_earlier: bool,
 }
 
 impl StopInput {
@@ -730,6 +736,7 @@ mod tests {
                 observed_current_id: rid,
                 interrupted: None,
                 entered: Now(0),
+                taken_earlier: false,
             }),
             stop_context(false),
             stop_context(true),
@@ -845,6 +852,7 @@ mod tests {
                 observed_current_id: rid,
                 interrupted: None,
                 entered: Now(0),
+                taken_earlier: false,
             })
             .recording_id(),
             Some(RecordingId(2)),

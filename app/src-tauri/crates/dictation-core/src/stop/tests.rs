@@ -79,6 +79,7 @@ fn stop(expected: Option<RecordingId>, observed: RecordingId) -> StopInput {
         observed_current_id: observed,
         interrupted: None,
         entered: NOW,
+        taken_earlier: false,
     }
 }
 
@@ -111,18 +112,36 @@ fn r201_1_stale_expected_asks_for_the_take_then_supersedes_whatever_the_status()
         );
         assert_eq!(first.row, RowId("R201.1"));
         assert!(first.effects.is_empty() && first.reply.is_none());
-        for answer in [None, Some(meta())] {
+        // PD-25 fixed: the terminal is left to an earlier taker only when this stop's take
+        // found nothing *and* an earlier take had consumed the capture. A take that found
+        // it, or found nothing nobody had taken, still claims.
+        for (answer, taken_earlier, claims) in [
+            (None, false, true),
+            (None, true, false),
+            (Some(meta()), false, true),
+            (Some(meta()), true, true),
+        ] {
             let second = decide_stop_request(
                 &core(status, RID),
                 StopInput {
                     interrupted: Some(answer),
+                    taken_earlier,
                     ..input
                 },
                 NOW,
             );
             assert_eq!(second.verdict, Verdict::Stale(StaleKind::StaleRecording));
             assert_eq!(second.row, RowId("R201.1"));
-            assert_eq!(tags(&second), ["Pre:TERM(Superseded/StaleOwner)"]);
+            let expected: &[&str] = if claims {
+                &["Pre:TERM(Superseded/StaleOwner)"]
+            } else {
+                &[]
+            };
+            assert_eq!(
+                tags(&second),
+                expected,
+                "{status:?} answer={answer:?} taken_earlier={taken_earlier}"
+            );
             assert_eq!(second.transition, None);
             assert_eq!(second.continuation, None);
             assert_eq!(

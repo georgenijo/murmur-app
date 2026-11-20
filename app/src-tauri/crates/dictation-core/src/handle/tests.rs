@@ -128,6 +128,7 @@ fn inputs() -> Vec<Input> {
                 duration_ms: 5,
             })),
             entered: Now(1),
+            taken_earlier: false,
         }),
         Input::StopRequest(StopInput {
             expected: Some(RecordingId(2)),
@@ -135,6 +136,7 @@ fn inputs() -> Vec<Input> {
             observed_current_id: rid,
             interrupted: Some(None),
             entered: Now(1),
+            taken_earlier: false,
         }),
         stop_ctx(false),
         stop_ctx(true),
