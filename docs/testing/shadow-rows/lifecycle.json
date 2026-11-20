@@ -2,7 +2,7 @@
   "family": "lifecycle",
   "sites": [207, 208, 209, 210, 211, 212, 213, 214, 215, 216],
   "basis": "E3 (appendix C8.5): every row id of the family is hit >= 5 times in the union of the native checklist runs and the golden replay, or is listed in not_natively_reachable with the golden or unit test that drives it. Keys are `<site>.<row ordinal>` as in the summary's per_row (a suffixed row keeps its number and adds 100 per suffix step: R203.3a is 203.103). The list is reviewed with each cutover PR.",
-  "pds": [1, 2, 4, 5, 7, 15],
+  "pds": [1, 2, 5, 7, 15],
   "runbook_driven": [{"row": "209.5", "step": "Default input switch"}],
   "rows": [
     {"row": "212.1", "id": "R212.1"},
@@ -46,7 +46,7 @@
   "not_natively_reachable": [
     {"row": "207.1", "id": "R207.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r207_1_ready_for_a_non_current_recording_is_superseded_under_d", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
     {"row": "207.2", "id": "R207.2", "kind": "golden", "file": "app/src-tauri/src/commands/recording_pd_witness_tests.rs", "name": "pd05_supervisor_events_for_the_current_id_claim_superseded", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
-    {"row": "207.3", "id": "R207.3", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r207_3_a_repeat_ready_for_a_live_recording_is_superseded_and_still_starts_side_tasks", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
+    {"row": "207.3", "id": "R207.3", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r207_3_a_repeat_ready_for_a_live_recording_claims_no_terminal_and_still_starts_side_tasks", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
     {"row": "208.1", "id": "R208.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r208_1_still_connecting_while_starting_emits_the_stall_under_d", "why": "needs a supervisor event the checklist does not produce (sleep, deadline or still-connecting)"},
     {"row": "208.2", "id": "R208.2", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r208_2_still_connecting_is_silent_otherwise", "why": "needs a newer recording to have run against this one (a stale id), which the checklist cannot arrange"},
     {"row": "209.1", "id": "R209.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r209_1_recovering_for_a_non_current_recording_is_superseded", "why": "needs a supervisor event the checklist does not produce (sleep, deadline or still-connecting)"},

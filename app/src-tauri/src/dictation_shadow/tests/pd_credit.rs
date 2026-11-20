@@ -7,8 +7,6 @@
 use murmur_dictation_core::decision::OpStatus;
 use murmur_dictation_core::effects::Effect;
 
-use murmur_dictation_core::ids::RecordingId;
-
 use super::harness::*;
 use crate::dictation_shadow::pd::{credited, PdEvidence, PD_DEFS};
 use crate::dictation_shadow::types::{EffectResult, ShadowMsg};
@@ -98,11 +96,11 @@ fn a_start_during_cleanup_is_a_clean_refusal_and_credits_no_pd() {
 }
 
 #[test]
-fn pd_4_needs_the_rendezvous_a_second_ticker_and_the_later_success() {
-    // R104.2 completes the rendezvous (and registers the ticker), then the late
-    // `Ready` for the same recording wins a stale terminal and re-registers the
-    // ticker: the duplicate. PD-4 is credited only once the recording's later
-    // successful performance outcome (`PGF(Completed)`) is witnessed (D-S2c-2 g).
+fn a_repeat_ready_for_a_live_recording_credits_no_pd() {
+    // R104.2 completes the rendezvous (and registers the ticker), then the late `Ready` for
+    // the same recording re-registers the ticker: PD-4's second ticker. The repeat `Ready`
+    // claims no terminal any more (PD-23 is fixed), so the `TERM` PD-4's allowlist entry
+    // needs never runs and the entry credits nothing, with or without the duplicate.
     let duplicate = Live {
         ticker_before: RID,
         ..Live::default()
@@ -110,82 +108,34 @@ fn pd_4_needs_the_rendezvous_a_second_ticker_and_the_later_success() {
     let mut h = harness();
     h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
     h.feed(&ready_while_recording(2, 2, duplicate));
+    h.feed(&pipeline_success(3, 3));
     assert_clean(&h);
-    assert_eq!(
-        credited_count(&h, 4),
-        0,
-        "the outcome has not been witnessed yet: {:?}",
-        h.stats().pd_witness
+    assert_eq!(credited_count(&h, 4), 0, "{:?}", h.stats().pd_witness);
+
+    // The decision itself carries no terminal.
+    let flight = ready_while_recording(1, 1, duplicate);
+    assert!(
+        flight.later.iter().all(|msg| !matches!(
+            msg,
+            ShadowMsg::Witness { effect, .. } if matches!(effect.effect, Effect::Terminal(_))
+        )),
+        "R207.3 claims no terminal"
     );
-    h.feed(&pipeline_success(3, 3));
-    assert_clean(&h);
-    assert_eq!(credited_count(&h, 4), 1, "{:?}", h.stats().pd_witness);
-
-    // Without the rendezvous before it, it is not.
-    let mut h = harness();
-    h.feed(&ready_while_recording(1, 1, duplicate));
-    h.feed(&pipeline_success(2, 2));
-    assert_clean(&h);
-    assert_eq!(credited_count(&h, 4), 0);
-
-    // Without a second ticker (the gate suppressed it) the defect did not happen.
-    let mut h = harness();
-    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
-    h.feed(&ready_while_recording(2, 2, Live::default()));
-    h.feed(&pipeline_success(3, 3));
-    assert_clean(&h);
-    assert_eq!(credited_count(&h, 4), 0);
-
-    // Another recording's success does not settle it: the stop tail of recording 41
-    // completes 41's performance, although RID is the one that is current.
-    let mut h = harness();
-    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
-    h.feed(&ready_while_recording(2, 2, duplicate));
-    h.feed(&pipeline_success_for(3, 3, RecordingId(41)));
-    assert_eq!(
-        credited_count(&h, 4),
-        0,
-        "borrowed another recording's success: {:?}",
-        h.stats().pd_witness
-    );
-    // Its own recording's success still does.
-    h.feed(&pipeline_success(4, 4));
-    assert_eq!(credited_count(&h, 4), 1, "{:?}", h.stats().pd_witness);
-
-    // A losing terminal claim is not the defect: the stale terminal did not win.
-    let mut h = harness();
-    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
-    h.feed(&ready_while_recording(
-        2,
-        2,
-        Live {
-            ticker_before: RID,
-            term_won: false,
-            ..Live::default()
-        },
-    ));
-    h.feed(&pipeline_success(3, 3));
-    assert_clean(&h);
-    assert_eq!(credited_count(&h, 4), 0, "a losing claim credits nothing");
 }
 
 #[test]
-fn a_reset_drops_the_windows_and_the_deferred_credits_that_depended_on_what_it_gave_up() {
+fn a_reset_drops_the_windows_that_depended_on_what_it_gave_up() {
     // A preserved defect is credited only from evidence the comparison saw whole. A
-    // reset (a loss was counted) forgets the credits still waiting for a later outcome
-    // (PD-4): they could have depended on a message that was lost.
+    // reset (a loss was counted) forgets the clean rows that open a two-flight window: it
+    // could have depended on a message that was lost. PD-18 is fixed, so nothing credits it
+    // either way; the reset must still not credit it.
     let transport = default_transport();
-    let duplicate = Live {
-        ticker_before: RID,
-        ..Live::default()
-    };
     let mut h = harness();
-    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
-    h.feed(&ready_while_recording(2, 2, duplicate));
+    h.feed(&short_idle(1, 1));
     transport.lose_for_test(216);
     h.comparator.drain(&transport);
-    h.feed(&at_epoch(pipeline_success(3, 3), 1));
-    assert_eq!(credited_count(&h, 4), 0, "{:?}", h.stats().pd_witness);
+    h.feed(&at_epoch(start_during_cleanup(2, 2), 1));
+    assert_eq!(credited_count(&h, 18), 0, "{:?}", h.stats().pd_witness);
 }
 
 #[test]

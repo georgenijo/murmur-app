@@ -395,7 +395,8 @@ fn s10b_ready_then_context(world: &Arc<World>) {
     started(world);
 }
 
-/// (c) C8 forced (C9.5), known-bad. The fake supervisor sets the phase to
+/// (c) C8 forced (C9.5), known-bad (the second ticker; the `Superseded` terminal R207.3
+/// claimed is fixed with PD-23). The fake supervisor sets the phase to
 /// `Recording` and holds before notifying `Ready`. The command's continuation
 /// publishes `Recording`; only then is the hold released, so the bridge sees
 /// `Ready` for a recording that is already `Recording`.
@@ -941,8 +942,9 @@ pub(super) fn golden_s09_supervisor_idle_during_processing() {
     );
 }
 
-/// G5 (C9.5): the C8 trace holds a `Superseded` terminal for an id whose
-/// status is `Recording` at that moment, and two ticker registrations.
+/// G5 (C9.5): the C8 trace holds two ticker registrations (PD-4's remaining half) and no
+/// terminal for an id whose status is `Recording` at that moment: R207.3 claims none
+/// (PD-23 is fixed), so the recording's own end owns the terminal.
 fn assert_c8_recorded(text: &str) {
     let section = text
         .split("=== ")
@@ -954,11 +956,11 @@ fn assert_c8_recorded(text: &str) {
             .unwrap_or_else(|| panic!("10c lacks `{needle}`"))
     };
     let recording = position("~ status Starting -> Recording");
-    let superseded = position("~ terminal 1 Superseded/StaleOwner");
     let processing = position("~ status Recording -> Processing");
+    assert!(recording < processing);
     assert!(
-        recording < superseded && superseded < processing,
-        "the Superseded terminal must be claimed while the status is Recording"
+        !section.contains("~ terminal 1 Superseded/StaleOwner"),
+        "R207.3's repeat Ready claims no Superseded terminal for the live recording"
     );
     assert_eq!(
         section.matches("SD ticker 1 registered=true").count(),
@@ -977,7 +979,7 @@ pub(super) fn golden_s10_ready_vs_context_rendezvous() {
         "s10-ready-vs-context",
         "10 ready vs context rendezvous, both orders",
         "PD-4",
-        Some("10c records C8 under today's behaviour; it flips only in BC-2's fix PR (C11.1)"),
+        Some("10c records C8's second ticker under today's behaviour; it flips only in BC-2's fix PR (C11.1)"),
         &[
             sub(
                 "10a context first, then Ready (R207.5)",
