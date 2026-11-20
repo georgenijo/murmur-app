@@ -38,9 +38,31 @@ use std::sync::Arc;
 /// the live fields directly.
 static CORE_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
-/// The divergences counted so far.
+/// The divergences counted so far (in a test build, less the ones a test planted on purpose:
+/// [`forgive_planted_divergences`]).
 pub(crate) fn core_divergences() -> u64 {
+    let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
+    #[cfg(test)]
+    let counted = counted.saturating_sub(FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
+    counted
+}
+
+/// Divergences a test planted on purpose, which the golden harness's invariant
+/// (`core_divergences() <= baseline`) must not count (cancel cutover tests).
+#[cfg(test)]
+static FORGIVEN_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
+
+/// Test builds: every divergence counted, planted ones included.
+#[cfg(test)]
+pub(crate) fn core_divergences_counted() -> u64 {
     CORE_DIVERGENCES.load(Ordering::SeqCst)
+}
+
+/// Test builds: allow `planted` more divergences to be counted without the harness's
+/// invariant seeing them; `0` clears the allowance.
+#[cfg(test)]
+pub(crate) fn forgive_planted_divergences(planted: u64) {
+    FORGIVEN_DIVERGENCES.store(planted, Ordering::SeqCst);
 }
 
 /// The app's status for a core status (the inverse of [`core_status`]): how the
@@ -297,6 +319,27 @@ impl FieldAdapter {
             dictation,
             #[cfg(test)]
             super::probe::stop_entry,
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
+    /// The decision view of the cancel family's one D entry after the cutover (C9.7 b,
+    /// C8.6): site 205 (`decide_cancel_request`, R205.1-.5), decided under the D hold the
+    /// section already takes with T held. Site 206 (the capture-cancel result, shared by the
+    /// cancel command and the stop's R201.4) is D-less and keeps its lock-free reads. Only
+    /// the cancel family's own wrapper over [`Self::persisted_view`] (D-S2c-18): the same
+    /// persisted M1/M2, the same M3 atomic, M4 left `None` (no cancel decide reads it), the
+    /// same C8.6 count-and-re-sync.
+    /// A test build records its reads apart, with the caller (`probe::cancel_entry`), so a
+    /// cancel test sees only cancel entries and which one.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn cancel_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            super::probe::cancel_entry,
             #[cfg(test)]
             std::panic::Location::caller(),
         )

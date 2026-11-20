@@ -150,6 +150,49 @@ pub(crate) fn take_stop_entries() -> Vec<StopEntryRead> {
     )
 }
 
+/// What a cancel entry's C8.6 assertion read ([`EntryRead`]) and where the entry is: the
+/// `(file, line)` of its `FieldAdapter::cancel_view` call.
+pub(crate) type CancelEntryRead = (EntryRead, (&'static str, u32));
+
+static CANCEL_ENTRIES: std::sync::Mutex<Vec<CancelEntryRead>> = std::sync::Mutex::new(Vec::new());
+static CANCEL_ENTRIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`record_lifecycle_entries`] for the cancel family's entry (`FieldAdapter::cancel_view`).
+pub(crate) fn record_cancel_entries(on: bool) {
+    CANCEL_ENTRIES_ON.store(on, Ordering::Relaxed);
+}
+
+/// What a cancel entry's C8.6 assertion read, as read at the entry, with the entry's call
+/// site.
+pub(crate) fn cancel_entry(
+    persisted: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    live: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    caller: &'static std::panic::Location<'static>,
+) {
+    if !CANCEL_ENTRIES_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    CANCEL_ENTRIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(((persisted, live), (caller.file(), caller.line())));
+}
+
+/// Every cancel entry's read since the last call, oldest first.
+pub(crate) fn take_cancel_entries() -> Vec<CancelEntryRead> {
+    std::mem::take(
+        &mut *CANCEL_ENTRIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// The shadow read its own per-thread state (the keyboard write sequence, the ticker
 /// mailbox). A disarmed shadow makes none (D-S2c-10 R4).
 #[cfg(feature = "dictation-shadow")]

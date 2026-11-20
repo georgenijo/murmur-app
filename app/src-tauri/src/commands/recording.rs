@@ -209,6 +209,10 @@ mod lifecycle_cutover_tests;
 mod stop_cutover_tests;
 
 #[cfg(test)]
+#[path = "recording_cancel_cutover_tests.rs"]
+mod cancel_cutover_tests;
+
+#[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
 
@@ -9777,15 +9781,15 @@ async fn cancel_native_recording_inner(
     _drain = DrainDeferredFinishes::new(&state.app_state);
     let now = core_now();
     // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
-    // line. The view is built from the live fields under the D hold the section
-    // already takes.
+    // line. The view is built from the persisted core (M1/M2, C8.6: counted and
+    // re-synced against live) under the D hold the section already takes.
     // Declared before D, so a return submits the header after D is released.
     #[cfg(feature = "dictation-shadow")]
     let flight_205 = Flight::begin();
     #[cfg(feature = "dictation-shadow")]
     let after_d = AfterD::new();
     let mut dictation = state.app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let view = FieldAdapter::cancel_view(&state.app_state, &mut dictation);
     let rid = view.current_id.0;
     let decision = cancel_ports::decide(|| {
         core_cancel::decide_cancel_request(

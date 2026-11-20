@@ -390,6 +390,19 @@ impl CoreHistoryLock {
         })
     }
 
+    /// The `(recording, kind)` of every outstanding operation, oldest first (test builds):
+    /// which operations are outstanding, not only how many.
+    #[cfg(test)]
+    pub(crate) fn outstanding_for_test(&self) -> Vec<(RecordingId, ContKind)> {
+        self.critical(|history| {
+            history
+                .pending_ops
+                .values()
+                .map(|pending| (pending.recording_id, pending.kind))
+                .collect()
+        })
+    }
+
     /// Registered pipeline count.
     pub(crate) fn pipeline_count(&self) -> usize {
         self.critical(|history| history.pipelines.len())
