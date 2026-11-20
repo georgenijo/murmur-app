@@ -502,7 +502,7 @@ fn s05(world: &Arc<World>) {
     stopped(world, "stop", None);
 }
 
-/// 4d (PD-18 a): a start takes the dictation lock after S12 wrote Idle and before its
+/// 4d (the fixed PD-18 a): a start takes the dictation lock after S12 wrote Idle and before its
 /// tail, and again after the owner is cleared; id 1 still ends with one terminal.
 fn s04d(world: &Arc<World>) {
     recording(world);

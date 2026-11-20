@@ -271,15 +271,18 @@ manifest's `not_natively_reachable` list. Each entry names the golden or unit te
 drives it; the verdict script accepts those rows without native hits and a CI test
 checks that every named test exists.
 
-### PD-19 and the `Recovering` state
+### The `Recovering` state
 
 If the app is left in `Recovering` (the lifecycle state after an interruption or a
 cleanup that has not finished) when a session ends, the exit leaves
 `outstanding_at_exit > 0` and the session is **tainted**. Do not let it count. Quit
 cleanly with Cmd-Q (never kill), keep that summary in `$SOAK` (a tainted summary is
 evidence, not noise), relaunch with a fresh set of files, and restart the pass from its
-first step. PD-19 is witnessed through `pd_witness["PD-19"]`; seeing it is information,
-not a failure, but a decision that differs from the core is `mismatched_root`.
+first step. A start that arrives while a stopped or interrupted capture is still being
+cleaned up is answered "Microphone cleanup is still in progress" and leaves the app in
+`Idle`; it never leaves it in `Recovering` (the PD-18 / PD-19 fix). An app that stays in
+`Recovering` after the cleanup is therefore a real finding, not a known preserved defect:
+report it. A decision that differs from the core is `mismatched_root`.
 
 ### The checklist record
 

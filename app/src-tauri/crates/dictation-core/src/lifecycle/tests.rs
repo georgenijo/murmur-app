@@ -482,7 +482,7 @@ fn r211_1_idle_for_a_non_current_recording_is_superseded() {
 
 #[test]
 fn r211_2_idle_while_already_idle_is_superseded_without_a_keyboard_reset() {
-    // PD-2 / PD-18 (b): no KB reset, the terminal only wins if none was claimed.
+    // PD-2: no KB reset, the terminal only wins if none was claimed.
     let d = decide_sup_idle(&core(Status::Idle, RID), RID, NOW);
     row(
         &d,
@@ -504,8 +504,8 @@ const FORCED_IDLE: [&str; 6] = [
 
 #[test]
 fn r211_3_to_6_idle_forces_idle_over_any_live_status() {
-    // PD-7 (Processing: the supervisor forces Idle over a running pipeline) and
-    // PD-18 (b) (Recovering) keep their literal behaviour.
+    // PD-7 (Processing: the supervisor forces Idle over a running pipeline) keeps its
+    // literal behaviour; so does the `Recovering` row.
     for (status, id) in [
         (Status::Processing, "R211.3"),
         (Status::Starting, "R211.4"),
@@ -713,8 +713,8 @@ fn short_idle_effects() -> Vec<&'static str> {
 
 #[test]
 fn r216_1_to_4_short_idle_has_no_status_guard_and_writes_idle_over_any_status() {
-    // PD-1 (no guard), PD-15 (TI is destructive), PD-7 (Processing), PD-18 (a)
-    // (Recovering): the literal behaviour is kept.
+    // PD-1 (no guard), PD-15 (TI is destructive), PD-7 (Processing): the literal
+    // behaviour is kept.
     for (status, id) in [
         (Status::Recovering, "R216.1"),
         (Status::Idle, "R216.2"),

@@ -216,7 +216,7 @@ pub(super) struct Knobs {
     pub(super) stop_result: Result<usize, &'static str>,
     /// A stop that returns `Ok` without sealing its delivery: the supervisor
     /// still owns the capture (phase `Stopping`) and parks at
-    /// `hold_before_owner_clear` until the scenario releases it (PD-18 (c)).
+    /// `hold_before_owner_clear` until the scenario releases it (the PD-18 (c) schedule).
     pub(super) stop_unsealed: bool,
     pub(super) cancel_result: Result<bool, &'static str>,
     /// The pipeline's delivery step takes the ownership fence D through the
@@ -1248,7 +1248,7 @@ impl World {
 
     /// Park the supervisor just before `clear_owner` (`audio_lifecycle.rs:2460`)
     /// with the owner and its phase untouched: the gap `finish_attempt` has
-    /// between its last notification and the owner clear (PD-18 (b), (c)).
+    /// between its last notification and the owner clear (the PD-18 (b), (c) schedules).
     pub(super) fn hold_owner_clear(&self, recording_id: u64) {
         locked(&self.supervisor).held_owner_clear = Some(recording_id);
         self.push(format!("supervisor.hold_before_owner_clear {recording_id}"));
@@ -1602,7 +1602,7 @@ impl SupervisorPort for World {
                     // The reply is delivered without `RecordingSealed`
                     // (`audio_lifecycle.rs:2361-2362`): no `CleanupFinished`
                     // follows, and the supervisor parks before `clear_owner`
-                    // (PD-18 (c)).
+                    // (the PD-18 (c) schedule).
                     self.hold_owner_clear(recording_id);
                 } else {
                     // `RecordingSealed`: the samples leave the supervisor, which

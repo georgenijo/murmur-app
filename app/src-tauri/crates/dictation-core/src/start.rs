@@ -26,15 +26,16 @@
 //!   Both answers are `Option`s on the input; no function builds a fully populated
 //!   occupancy up front. The appendix's `cleanup_pending: bool [in]` is therefore an
 //!   `Option<bool>` here.
-//! * **R101.12 is `Applied`, not `Refused`**: it writes `Idle→Recovering` (with the
-//!   old id) before it refuses, so its verdict is the one of a row that mutates.
+//! * **R101.12 is a pure refusal**: a start that finds the retiring capture's
+//!   cleanup still pending answers `audio_recovering` and changes nothing (it no
+//!   longer writes `Idle→Recovering`, the PD-18 / PD-19 stranding).
 //! * **R102.1 (capture `Ok`)** is D-less ([`decide_start_capture_result_nolock`]);
 //!   the failure rows read status under D ([`decide_start_capture_result`]).
 //!
 //! Rows that reproduce a preserved defect keep it: PD-3 (R102.2-.6: the idle emit
 //! is unconditional), PD-6 (R102.3: `Recovering` is overwritten with `Idle`),
 //! PD-9 (R101.15: the perf entry is orphaned if the future is dropped), PD-10
-//! (R102.x `TERM` is dropped before `accepted`), PD-18 (R101.12).
+//! (R102.x `TERM` is dropped before `accepted`).
 
 use crate::admission::{admit, Admission, Occupancy, RefusalCode, Request, SmartAutoObservation};
 use crate::decision::{
@@ -122,29 +123,18 @@ fn refusal_row(code: &RefusalCode, status: Status) -> Decision {
         RefusalCode::AlreadyRecording => typed("R101.9"),
         RefusalCode::AudioRecovering => typed("R101.10"),
         RefusalCode::AlreadyProcessing => typed("R101.11"),
-        // R101.12 (PD-18 family): a retiring capture of the current generation.
-        // The row writes `Idle→Recovering` with the *old* id (no id bump, no
-        // terminal, no perf, no `GenStarted`, no `KB`), publishes it, then
-        // refuses. `ST` is the status write of `Idle`, the only status this
-        // check is reached in.
+        // R101.12: a retiring capture of the current generation. The start is
+        // refused with `audio_recovering` and nothing else happens: no status
+        // write, no event, no id bump. The row used to write `Idle→Recovering`
+        // with the *old* id (the PD-18 / PD-19 stranding): the retiring
+        // attempt's owner clears without notifying anything that restores
+        // `Idle` after an `Interrupted` end, an unsealed delivered stop or an
+        // Idle-arm tail, so that write left the app in `Recovering` forever.
+        // Status is `Idle` here, the only status this check is reached in, and
+        // it stays `Idle`: the user retries once the cleanup is over.
         RefusalCode::AudioRecoveringCleanupPending => {
-            let (ty, state) = code
-                .reply()
-                .unwrap_or_else(|| unreachable!("{code:?} has a typed reply"));
             debug_assert_eq!(status, Status::Idle, "the cleanup check follows status");
-            with_reply(
-                decision(
-                    Verdict::Applied,
-                    Some((status, Status::Recovering)),
-                    vec![
-                        set_status(Status::Recovering),
-                        emit_status(At::In, Status::Recovering),
-                        release_claims(),
-                    ],
-                    "R101.12",
-                ),
-                Reply::typed(ty, state),
-            )
+            typed("R101.12")
         }
         // R101.14: the resolve's own text, no id burned.
         RefusalCode::SmartAutoFailed(_) => with_reply(
@@ -182,8 +172,8 @@ fn start_occupancy(core: &DictationCore, input: &StartInput) -> Occupancy {
 ///   `Processing`: `PT:REL`, a typed `{"type","state"}` reply. No mutation.
 /// * status `Idle`, no blocker, `cleanup_pending` unread:
 ///   `NeedObservation(CleanupPending)`, before any mutation.
-/// * R101.12 cleanup pending: `In:ST→Recovering` (old id), `In:EM(recovering)`,
-///   `PT:REL`; reply `audio_recovering` / `recovering`.
+/// * R101.12 cleanup pending: `PT:REL`, reply `audio_recovering` / `recovering`.
+///   A pure refusal: the status stays `Idle` (PD-18 / PD-19 fix).
 /// * R101.13 `device == SmartAuto`, result absent: `NeedObservation(SmartAutoSelection)`.
 /// * R101.14 the resolve failed: `PT:REL`, `Err(text)`, **no id burned**.
 /// * R101.15 (`Idle`, admitted): `current_id + 1`; `In:ID+, GA, PCC, TRQ, ST→Starting,

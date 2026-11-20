@@ -4,7 +4,9 @@
 //! with the schedule of the harness seed that found the behaviour, and asserts
 //! what the code does today. A test that reproduces makes the behaviour a
 //! preserved defect (a PD row in C7.1); a fix deletes the row and its test in the
-//! same PR (C7.0). Ordering is by causal barriers only: no clock, no sleep.
+//! same PR (C7.0), and the test becomes an assertion of the fixed behaviour (PD-19:
+//! the three tests below, which keep PD-19's driving sequences). Ordering is by
+//! causal barriers only: no clock, no sleep.
 //!
 //! D-S2b-9 (b): the fixtures drive the shell commands through the Stage 0b fake host.
 //! The real supervisor cannot be reached from the shell without a production seam, so
@@ -54,6 +56,11 @@ fn audio_recovering() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "type": "audio_recovering", "state": "recovering" }))
 }
 
+/// The stop reply of an empty capture: an idle, empty transcription.
+fn empty_transcription() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({ "type": "transcription", "state": "idle", "text": "" }))
+}
+
 /// The terminal the ledger holds once the failure and the stop with no context have
 /// run: the failure's `InitializationFailed` bridge arm claimed it first.
 const TERMINAL_AFTER_MISSING_CONTEXT: Option<(DictationTerminalOutcome, DictationErrorCode)> =
@@ -62,14 +69,67 @@ const TERMINAL_AFTER_MISSING_CONTEXT: Option<(DictationTerminalOutcome, Dictatio
         DictationErrorCode::TerminationUnconfirmed,
     ));
 
-/// The stop reply of an empty capture: an idle, empty transcription.
-fn empty_transcription() -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({ "type": "transcription", "state": "idle", "text": "" }))
+// ------------------------------------------------- the retiring capture (PD-19, fixed)
+// PD-19 (and its sibling PD-18, whose shell witnesses are in `recording_pd_witness_tests.rs`
+// and golden 4d) left the app in `Recovering` for good: a start that read the retiring
+// capture's cleanup pending (R101.12) wrote `Idle -> Recovering` with the old id, and an
+// `Interrupted` end (or an unsealed stop, or the Idle arm's tail) notifies nothing after the
+// owner clears that restores `Idle`. The fix makes R101.12 a pure refusal: the start is
+// answered `audio_recovering`, the status stays `Idle`, nothing is published, and the next
+// start after the owner clears is accepted. The three tests below keep PD-19's three
+// driving sequences (harness seeds 492,192, 81,584 and 2,071,065 found them) and assert the
+// fixed replies, statuses and ledger outcomes. A fourth test, after them, adds the sequence
+// where the auto-stop itself takes the retained capture before the owner clears.
+
+/// After the refusal: the status is `Idle`, no `Recovering` was written or published for the
+/// refused start, and (when `after_clear`) the next start after the owner clears is accepted
+/// with a new id.
+fn the_start_was_refused_without_a_status_write(world: &Arc<World>) {
+    assert_eq!(status(world), DictationStatus::Idle);
+    let trace = world.trace();
+    let pending = position(&trace, "supervisor.is_dictation_cleanup_pending 1 -> true");
+    assert!(
+        !trace[pending..].iter().any(|line| {
+            line.starts_with("~ status Idle -> Recovering")
+                || line == "emit recording-status-changed \"recovering\""
+        }),
+        "a refused start writes and publishes nothing: {trace:#?}"
+    );
 }
 
-// ----------------------------------------------------------------- PD-19
-// Harness seed 492,192 (`FINDING_SEEDS`; 10,882 after #1160 and #1162, 39,219 before). The worker's exit is unconfirmed while a dictation records.
-// The real supervisor handles `TerminationUnconfirmed` outside `Stopping` with
+/// After the owner is cleared the app is `Idle` and usable: a stop and a cancel find
+/// nothing to act on, and a start is accepted with the next id.
+fn the_app_is_idle_and_usable_after_the_owner_clears(world: &Arc<World>) {
+    assert_eq!(status(world), DictationStatus::Idle);
+    assert_eq!(
+        world.state().app_state.recording_id.load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        stop_reply(world, None),
+        Ok(serde_json::json!({ "type": "not_recording", "state": "idle" })),
+        "a stop with nothing to stop is refused at Idle"
+    );
+    let mut cancel = world.cancel(None);
+    let reply = complete(&mut cancel);
+    world.reply_unit("cancel", &reply);
+    assert_eq!(reply, Ok(()));
+    assert_eq!(status(world), DictationStatus::Idle);
+    assert_eq!(
+        start_reply(world),
+        Ok(serde_json::json!({
+            "recordingId": 2,
+            "state": "starting",
+            "type": "recording_starting"
+        })),
+        "the start after the owner clears is accepted"
+    );
+    assert_eq!(status(world), DictationStatus::Recording);
+}
+
+// Harness seed 492,192 (`FINDING_SEEDS` before the fix; 10,882 after #1160 and #1162, 39,219
+// before). The worker's exit is unconfirmed while a dictation records. The real supervisor
+// handles `TerminationUnconfirmed` outside `Stopping` with
 // `StartupDiagnostic(WorkerInvariantViolation)` (`audio_lifecycle.rs:2036-2046`, no
 // standby deadline), then `begin_recovery(RuntimeFailure, Some(failure))`
 // (`2056-2062`, `2630-2760`): `Recovering{RuntimeFailure}`, then
@@ -79,12 +139,12 @@ fn empty_transcription() -> Result<serde_json::Value, String> {
 // PCM: it stores the preserved capture and only then notifies `Interrupted`
 // (`2405-2432`), so a user stop on another thread can land in between: it takes the
 // capture (R201.5), and with no context writes Idle (R202.3, PD-3) while the owner
-// is still `Recovering`; a start then reads cleanup pending and takes R101.12
-// (`Idle -> Recovering`, old id). The `Interrupted` arm schedules the auto-stop
-// (R215.2); it finds `Recovering` and no capture (R201.6) and restores nothing.
-// Every later command is refused or answered as asserted below.
+// is still `Recovering`; a start then reads cleanup pending and takes R101.12, which
+// refuses and leaves the status `Idle`. The `Interrupted` arm schedules the auto-stop
+// (R215.2); it finds `Idle` and no capture and is refused. The owner clears and the
+// app is usable.
 
-fn pd19_user_stop_then_start_before_interrupted(world: &Arc<World>) {
+fn the_user_stop_takes_the_capture_then_a_start_before_interrupted(world: &Arc<World>) {
     recording(world);
     let failure = audio::AudioFailure::new(
         audio::AudioFailureKind::TerminationUnconfirmed,
@@ -130,9 +190,9 @@ fn pd19_user_stop_then_start_before_interrupted(world: &Arc<World>) {
         TERMINAL_AFTER_MISSING_CONTEXT,
         "the terminal after the failure and the stop"
     );
-    // A start takes D while the owner is still `Recovering`.
+    // A start takes D while the owner is still `Recovering`: refused, `Idle` stays.
     assert_eq!(start_reply(world), audio_recovering());
-    assert_eq!(status(world), DictationStatus::Recovering);
+    the_start_was_refused_without_a_status_write(world);
     // The Interrupted arm: 9,000 samples >= 8,000, so it schedules the auto-stop
     // (`2417-2432`).
     world.notify(
@@ -148,57 +208,33 @@ fn pd19_user_stop_then_start_before_interrupted(world: &Arc<World>) {
     assert_eq!(requests, vec![1], "the arm scheduled the auto-stop");
     assert_eq!(
         stop_reply(world, Some(1)),
-        audio_recovering(),
-        "the auto-stop is refused: nothing to take"
+        Ok(serde_json::json!({ "type": "not_recording", "state": "idle" })),
+        "the auto-stop is refused at Idle: nothing to take"
     );
+    assert_eq!(status(world), DictationStatus::Idle);
     world.release_owner_clear();
-    nothing_restores_idle(world);
-}
-
-/// After the owner is cleared nothing can restore Idle: every command is refused.
-fn nothing_restores_idle(world: &Arc<World>) {
-    assert_eq!(status(world), DictationStatus::Recovering);
-    assert_eq!(
-        world.state().app_state.recording_id.load(Ordering::SeqCst),
-        1
-    );
-    assert_eq!(stop_reply(world, None), audio_recovering());
-    let mut cancel = world.cancel(None);
-    let reply = complete(&mut cancel);
-    world.reply_unit("cancel", &reply);
-    assert_eq!(reply, Ok(()), "a cancel answers Ok and changes nothing");
-    assert_eq!(status(world), DictationStatus::Recovering);
-    assert_eq!(start_reply(world), audio_recovering());
-    assert_eq!(status(world), DictationStatus::Recovering);
-    let trace = world.trace();
-    let cleared = position(&trace, "supervisor.clear_owner 1");
-    assert!(
-        !trace[cleared..]
-            .iter()
-            .any(|line| line.starts_with("supervisor.notify 1 ")),
-        "no notification follows the owner clear: {trace:#?}"
-    );
+    the_app_is_idle_and_usable_after_the_owner_clears(world);
 }
 
 #[test]
-pub(super) fn pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering() {
+pub(super) fn a_start_after_the_stop_took_a_retained_capture_is_refused_and_the_app_stays_idle() {
     repeat(&sub(
-        "PD-19: TerminationUnconfirmed after retained PCM; a user stop and a start land before Interrupted",
-        pd19_user_stop_then_start_before_interrupted,
+        "retiring capture: TerminationUnconfirmed after retained PCM; a user stop and a start land before Interrupted",
+        the_user_stop_takes_the_capture_then_a_start_before_interrupted,
     ));
 }
 
-// PD-19, second entry (harness seed 81,584; 179,248 after #1160 and #1162, 262,762 before). The same defect with the context missing
-// for another reason: the start future was dropped at its await after the supervisor's
-// ack (PD-9, `smart_capture`), so no context was ever installed and the status stays
-// `Starting`. The worker then fails at runtime with 8,000 samples retained
-// (`Recovering{RuntimeFailure}`, `2630-2698`; the helper's exit stores the capture
-// before `Interrupted`, `2405-2432`). The user's stop takes the capture (R201.5), finds
-// no context and writes `Idle` while the owner is still `Recovering` (R202.3, PD-3);
-// a start reads cleanup pending and takes R101.12; `Interrupted` schedules the auto-stop,
-// which finds nothing to take. Nothing restores `Idle`.
+// Second entry (harness seed 81,584; 179,248 after #1160 and #1162, 262,762 before). The same
+// sequence with the context missing for another reason: the start future was dropped at its
+// await after the supervisor's ack (PD-9, `smart_capture`), so no context was ever installed
+// and the status stays `Starting`. The worker then fails at runtime with 8,000 samples
+// retained (`Recovering{RuntimeFailure}`, `2630-2698`; the helper's exit stores the capture
+// before `Interrupted`, `2405-2432`). The user's stop takes the capture (R201.5), finds no
+// context and writes `Idle` while the owner is still `Recovering` (R202.3, PD-3); a start
+// reads cleanup pending and takes R101.12 (refused, `Idle` stays); `Interrupted` schedules the
+// auto-stop, which finds nothing to take.
 
-fn pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm(world: &Arc<World>) {
+fn a_dropped_start_then_a_runtime_failure_with_retained_pcm_then_a_start(world: &Arc<World>) {
     world.close_gate("smart_capture");
     let mut start = world.start();
     assert!(poll_once(&mut start).is_pending());
@@ -223,9 +259,9 @@ fn pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm(world: &Arc<Wor
         Err("Missing dictation context for recording 1".to_string())
     );
     assert_eq!(status(world), DictationStatus::Idle);
-    // A start takes D while the owner is still `Recovering`.
+    // A start takes D while the owner is still `Recovering`: refused, `Idle` stays.
     assert_eq!(start_reply(world), audio_recovering());
-    assert_eq!(status(world), DictationStatus::Recovering);
+    the_start_was_refused_without_a_status_write(world);
     world.notify(
         1,
         AudioLifecycleEvent::Interrupted {
@@ -238,43 +274,43 @@ fn pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm(world: &Arc<Wor
     assert_eq!(world.auto_stop_requests(), vec![1]);
     assert_eq!(
         stop_reply(world, Some(1)),
-        audio_recovering(),
-        "the auto-stop is refused: nothing to take"
+        Ok(serde_json::json!({ "type": "not_recording", "state": "idle" })),
+        "the auto-stop is refused at Idle: nothing to take"
     );
+    assert_eq!(status(world), DictationStatus::Idle);
     world.release_owner_clear();
-    nothing_restores_idle(world);
+    // The dropped start's gate is opened for the start the usable app accepts next.
+    world.open_gate("smart_capture");
+    the_app_is_idle_and_usable_after_the_owner_clears(world);
 }
 
 #[test]
-pub(super) fn pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering() {
+pub(super) fn a_start_after_a_dropped_start_and_a_retained_runtime_failure_is_refused_and_the_app_stays_idle(
+) {
     repeat(&sub(
-        "PD-19 (second entry): a dropped start, a runtime failure with retained PCM, a context-less user stop and a start",
-        pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm,
+        "retiring capture (second entry): a dropped start, a runtime failure with retained PCM, a context-less user stop and a start",
+        a_dropped_start_then_a_runtime_failure_with_retained_pcm_then_a_start,
     ));
 }
 
-// PD-19, third entry (harness seed 2,071,065; 2,569,791 after #1160 and #1162, 259,286 before): the refused auto-stop, with no ordinary
-// control that takes the capture. A user stop moved the status to `Processing` and waits in the
-// supervisor's capture stop (R201.8, R202.1). The worker fails at runtime with 8,000
-// samples retained: `begin_recovery(RuntimeFailure)` publishes `Recovering` (`2630-2698`,
-// the arm finds `Processing`, R209.2). The user cancels the processing recording (R205.5),
-// which writes `Idle` while the owner is still `Recovering`. The parked capture stop
-// returns the supervisor's recovery refusal (`audio_lifecycle.rs:1291-1295`, R203.2 at
-// `Idle`). `finish_attempt` then stores the capture and notifies `Interrupted`
-// (`2405-2432`): the arm schedules the auto-stop (R215.2), which runs at status `Idle` and
-// is refused without taking anything (R201.3, `NotRecording`). A start reads cleanup
-// pending and takes R101.12 (`Idle -> Recovering`, old id); the owner clears. The capture
-// is still in the store, and the only stop that could take it is the user's stop in
-// `Recovering`, which the frontend never sends (`useRecordingState.ts` `handleStop`: it
-// presents "Microphone cleanup is still in progress"; `useRecordingState.test.tsx` "issues
-// no stop or cancel IPC while the status is recovering"). Ordinary controls (start, cancel,
-// the frontend's stop) leave the app stuck in `Recovering`. Only an unscoped
-// `stop_native_recording` IPC, which no control the user has sends, takes the capture and
-// restores `Idle` (asserted at the end; D-S2b-15 (d)). It stays a defect.
+// Third entry (harness seed 2,071,065; 2,569,791 after #1160 and #1162, 259,286 before): the
+// refused auto-stop, with no stop that takes the capture. A user stop moved the status to
+// `Processing` and waits in the supervisor's capture stop (R201.8, R202.1). The worker fails at
+// runtime with 8,000 samples retained: `begin_recovery(RuntimeFailure)` publishes `Recovering`
+// (`2630-2698`, the arm finds `Processing`, R209.2). The user cancels the processing recording
+// (R205.5), which writes `Idle` while the owner is still `Recovering`. The parked capture stop
+// returns the supervisor's recovery refusal (`audio_lifecycle.rs:1291-1295`, R203.2 at `Idle`).
+// `finish_attempt` then stores the capture and notifies `Interrupted` (`2405-2432`): the arm
+// schedules the auto-stop (R215.2), which runs at status `Idle` and is refused without taking
+// anything (R201.3, `NotRecording`). A start reads cleanup pending and takes R101.12: refused,
+// `Idle` stays. The owner clears, and every control works: before the fix the status stayed
+// `Recovering` and only the unscoped `stop_native_recording` IPC, which no control the user has
+// sends, restored `Idle` (D-S2b-15 (d)). The refused auto-stop's capture is not consumed (it
+// stays in the preserved store, as it did before the fix); the app is no longer stuck.
 
 const REFUSED_STOP_IN_RECOVERY: &str = "Audio is still recovering from the previous attempt";
 
-fn pd19_the_auto_stop_is_refused_at_idle_and_the_capture_stays(world: &Arc<World>) {
+fn the_auto_stop_is_refused_at_idle_and_a_start_is_refused_then_accepted(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Err(REFUSED_STOP_IN_RECOVERY);
     // The user's stop: Processing, parked in the capture stop with T released.
@@ -324,47 +360,62 @@ fn pd19_the_auto_stop_is_refused_at_idle_and_the_capture_stays(world: &Arc<World
         "the auto-stop is refused at Idle (R201.3)"
     );
     assert_eq!(status(world), DictationStatus::Idle);
-    // A start takes D while the owner is still `Recovering` (R101.12).
+    // A start takes D while the owner is still `Recovering` (R101.12): refused, `Idle` stays.
     assert_eq!(start_reply(world), audio_recovering());
-    assert_eq!(status(world), DictationStatus::Recovering);
+    the_start_was_refused_without_a_status_write(world);
     world.release_owner_clear();
-    // Nothing restores `Idle`: a start and a cancel are refused or change nothing.
-    assert_eq!(status(world), DictationStatus::Recovering);
-    assert_eq!(start_reply(world), audio_recovering());
-    let mut cancel = world.cancel(None);
-    let reply = complete(&mut cancel);
-    world.reply_unit("cancel", &reply);
-    assert_eq!(reply, Ok(()), "a cancel answers Ok and changes nothing");
-    assert_eq!(status(world), DictationStatus::Recovering);
-    let trace = world.trace();
-    let cleared = position(&trace, "supervisor.clear_owner 1");
-    assert!(
-        !trace[cleared..]
-            .iter()
-            .any(|line| line.starts_with("supervisor.notify 1 ")),
-        "no notification follows the owner clear: {trace:#?}"
-    );
-    // The unscoped stop IPC is the one stop that recovers it (D-S2b-15 (c), (d)). The
-    // registered `stop_native_recording` command (registered in `lib.rs`'s command list; `stop_native_recording` in `recording.rs`) has no
-    // `Recovering` guard and no control the user has sends it in `Recovering`: it takes the
-    // retained capture (R201.5), finds no context (R202.3) and writes `Idle`.
-    assert_eq!(
-        stop_reply(world, None),
-        Err("Missing dictation context for recording 1".to_string()),
-        "the unscoped stop takes the capture the auto-stop never took"
-    );
-    assert_eq!(status(world), DictationStatus::Idle);
-    assert!(
-        audio_lifecycle::take_interrupted_dictation(1).is_none(),
-        "the unscoped stop took the capture"
-    );
+    // The owner cleared: ordinary controls work, with no unscoped stop needed.
+    the_app_is_idle_and_usable_after_the_owner_clears(world);
 }
 
 #[test]
-pub(super) fn pd19_a_refused_auto_stop_leaves_the_capture_and_recovering() {
+pub(super) fn a_start_after_a_refused_auto_stop_is_refused_and_the_app_stays_idle() {
     repeat(&sub(
-        "PD-19 (third entry): the auto-stop runs at Idle and is refused; the capture stays in the store, no ordinary control takes it; only the unscoped stop IPC does",
-        pd19_the_auto_stop_is_refused_at_idle_and_the_capture_stays,
+        "retiring capture (third entry): the auto-stop runs at Idle and is refused; a start is refused; the owner clears and the app is usable",
+        the_auto_stop_is_refused_at_idle_and_a_start_is_refused_then_accepted,
+    ));
+}
+
+// The auto-stop itself takes the retained capture before the owner clears. This is the
+// ordinary 8,000-sample interruption (golden 3a): the runtime failure writes `Recovering`
+// (`2630-2698`), `finish_attempt` stores the capture and notifies `Interrupted`
+// (`2405-2432`), and the arm schedules the auto-stop (R215.2), which runs at `Recovering`
+// and takes the capture (the only remover is `take_interrupted_dictation`, `2713`). The
+// supervisor has not cleared its owner yet (`2460`), so when the stop's pipeline has
+// written `Idle` a start reads cleanup pending: refused, and `Idle` stays. The owner then
+// clears and the next start is accepted.
+
+fn the_auto_stop_takes_the_capture_then_a_start_before_the_owner_clears(world: &Arc<World>) {
+    recording(world);
+    world.runtime_failure(1);
+    world.finish_interrupted(1, 9_000);
+    let requests = world.auto_stop_requests();
+    assert_eq!(requests, vec![1], "the arm scheduled the auto-stop");
+    assert_eq!(status(world), DictationStatus::Recovering);
+    // The auto-stop takes the capture (R201.5 at `Recovering`) and runs the pipeline.
+    let reply = stop_reply(world, Some(1));
+    assert!(
+        matches!(&reply, Ok(value) if value["state"] == "idle"),
+        "the auto-stop ran to the end: {reply:?}"
+    );
+    assert!(
+        audio_lifecycle::take_interrupted_dictation(1).is_none(),
+        "the auto-stop took the retained capture"
+    );
+    assert_eq!(status(world), DictationStatus::Idle);
+    // The owner has not cleared: a start is refused and the status stays `Idle`.
+    assert_eq!(start_reply(world), audio_recovering());
+    the_start_was_refused_without_a_status_write(world);
+    world.release_owner_clear();
+    the_app_is_idle_and_usable_after_the_owner_clears(world);
+}
+
+#[test]
+pub(super) fn a_start_after_the_auto_stop_took_the_retained_capture_is_refused_and_the_app_stays_idle(
+) {
+    repeat(&sub(
+        "retiring capture (auto-stop takes it): the auto-stop takes the capture before the owner clears; a start is refused; the owner clears and the app is usable",
+        the_auto_stop_takes_the_capture_then_a_start_before_the_owner_clears,
     ));
 }
 
