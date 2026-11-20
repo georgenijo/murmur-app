@@ -415,8 +415,13 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
             }
         }
         Effect::PerfComplete(complete) => {
-            let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
-            cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
+            // `only_if_run` (PD-24): the coordinator answers `NoRun` for an id with no
+            // registered or begun run and claims nothing.
+            let run = cx.w.perf.registered.contains(&fx.rid) || cx.w.perf.begun.contains(&fx.rid);
+            if run || !complete.only_if_run {
+                let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
+                cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
+            }
         }
         Effect::PipelineGuardFinish(outcome) => {
             let ctx = cx.w.won(fx.rid, fx.tid, fx.row);

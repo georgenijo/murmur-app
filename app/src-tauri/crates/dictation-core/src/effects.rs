@@ -143,6 +143,10 @@ pub struct PerfComplete {
     pub cause: Option<PerfCause>,
     /// Whether the site passes the interrupted audio duration (R215.1, R216.1).
     pub with_audio_duration: bool,
+    /// Complete only a run that exists (registered or begun for the id): with no run the
+    /// completion is dropped instead of recording a coordinator claim that no performance
+    /// row backs (PD-24). The check is the coordinator's own, made atomically with the claim.
+    pub only_if_run: bool,
 }
 
 /// `AX(a|s)`: when the delivery-target snapshot is captured.

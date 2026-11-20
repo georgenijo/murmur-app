@@ -620,6 +620,7 @@ fn action_name(action: DictationPerformanceCompletionAction) -> &'static str {
         DictationPerformanceCompletionAction::Persist(_) => "Persist",
         DictationPerformanceCompletionAction::Deferred => "Deferred",
         DictationPerformanceCompletionAction::AlreadyCompleting => "AlreadyCompleting",
+        DictationPerformanceCompletionAction::NoRun => "NoRun",
     }
 }
 
@@ -666,6 +667,9 @@ fn perf_ledger_table() {
     };
     let request_completion: Event =
         |c| action_name(c.request_completion(1, completion())).to_string();
+    // PD-24: `PerfComplete::only_if_run` claims nothing for an id with no entry.
+    let request_run_completion: Event =
+        |c| action_name(c.request_completion_for(1, completion(), true)).to_string();
     let resolve_ok: Event = |c| resolution_name(c.resolve_begin(1, true));
     let resolve_fail: Event = |c| resolution_name(c.resolve_begin(1, false));
     let finish: Event = |c| {
@@ -679,7 +683,7 @@ fn perf_ledger_table() {
 
     const FRESH: &str = "beginning completion=false stage=false";
     // (event, [(returned, state) for Absent, Beginning, Beginning+held, Ready, Completing])
-    let table: [Row; 7] = [
+    let table: [Row; 8] = [
         (
             "register (overwrites, drops a held stage or completion)",
             register,
@@ -707,6 +711,17 @@ fn perf_ledger_table() {
             request_completion,
             [
                 ("Persist", "completing"),
+                ("Deferred", "beginning completion=true stage=true"),
+                ("AlreadyCompleting", "beginning completion=true stage=true"),
+                ("Persist", "completing"),
+                ("AlreadyCompleting", "completing"),
+            ],
+        ),
+        (
+            "request_completion(only_if_run)",
+            request_run_completion,
+            [
+                ("NoRun", "absent"),
                 ("Deferred", "beginning completion=true stage=true"),
                 ("AlreadyCompleting", "beginning completion=true stage=true"),
                 ("Persist", "completing"),

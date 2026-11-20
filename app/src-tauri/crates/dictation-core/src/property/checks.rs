@@ -86,10 +86,6 @@ pub enum Pre {
     /// a later claim of the real path was lost, and a cancel's tail was open when
     /// performance completed.
     SupervisorIdleWon,
-    /// PD-24: the start call's receiver timed out (`caller_alive` revoked, `Cancel{User}`
-    /// enqueued) and the start's failure claim for the current recording and the
-    /// supervisor `Recovering` arm's `PC(Cancelled)` fell on either side of each other.
-    StartReceiverTimedOut,
     /// PD-23 (Completed): the claim was for the current recording, R207.3's `SD` ran and
     /// the ticker's gate **refused** a second ticker (none spawned), and the recording's
     /// own path completed performance later.
@@ -144,15 +140,11 @@ pub struct Signature {
     pub claim_status: &'static [Status],
     pub perf: PerfSet,
     pub pre: Pre,
-    /// The performance outcome is a claim of the completion coordinator with no run
-    /// behind it (no run was registered or begun: an aborted start). Only such a claim
-    /// can match a `no_run` signature, and only a run's outcome a run signature.
-    pub no_run: bool,
 }
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 10] = [
+pub const SIGNATURES: [Signature; 8] = [
     // PD-4 (C7.1): R207.3 on a live `Recording` claims `Superseded/StaleOwner`, the
     // wrapper's `SD` spawns a **second ticker** for the same id, and performance later
     // completes `Success` (`Completed`): exactly the definition, with no narrower or
@@ -164,7 +156,6 @@ pub const SIGNATURES: [Signature; 10] = [
         claim_status: &[Status::Recording],
         perf: PerfSet::Only(&[("R204b.6", PerfOutcome::Completed)]),
         pre: Pre::SecondTickerThenPerf,
-        no_run: false,
     },
     // PD-23 (F-5, D-S2b-11 (a), D-S2b-13 (e)): the claim of PD-4 (R207.3, `Superseded` for
     // a live `Recording`) split from the outcome of the recording's *own* end, other than
@@ -200,7 +191,6 @@ pub const SIGNATURES: [Signature; 10] = [
             ("R204b.6", PerfOutcome::Cancelled),
         ]),
         pre: Pre::LiveClaimThenPerf,
-        no_run: false,
     },
     // PD-23, the `Success` variant: the same claim, the ticker's gate refused the second
     // ticker, and the pipeline completes `Completed`. Without the refused second ticker it
@@ -213,41 +203,6 @@ pub const SIGNATURES: [Signature; 10] = [
         claim_status: &[Status::Recording],
         perf: PerfSet::Only(&[("R204b.6", PerfOutcome::Completed)]),
         pre: Pre::SecondTickerGatedOff,
-        no_run: false,
-    },
-    // PD-24 (F-6, D-S2b-11 (a), D-S2b-13 (e)): the start's 2 s receiver timeout.
-    // `await_start_response` revokes the caller and enqueues `Cancel{User}`
-    // (`audio_lifecycle.rs:3065-3079`); the start's failure path (R102.3) claims
-    // `CaptureInitFailure` for the current recording while the supervisor's own `Recovering`
-    // arm is between its D section and its post-D effects, and that arm's `PC(Cancelled)`
-    // then completes performance. The mismatch is at the **coordinator's claim**: the failed
-    // start never began a performance run, so no row is behind the claim
-    // (`performance_metrics/repository.rs:421`, `request_completion`). Each signature is
-    // bound to the arm's cause by its row: R209.3 is the user's cancel (the start timeout's
-    // own `Cancel{User}`), R209.5 an environmental recovery (device change, sleep, wake).
-    Signature {
-        pd: 24,
-        terminal: &[(
-            "R102.3",
-            TerminalOutcome::CaptureInitFailure,
-            ErrCode::RuntimeFailure,
-        )],
-        claim_status: &[Status::Idle],
-        perf: PerfSet::Only(&[("R209.3", PerfOutcome::Cancelled)]),
-        pre: Pre::StartReceiverTimedOut,
-        no_run: true,
-    },
-    Signature {
-        pd: 24,
-        terminal: &[(
-            "R102.3",
-            TerminalOutcome::CaptureInitFailure,
-            ErrCode::RuntimeFailure,
-        )],
-        claim_status: &[Status::Idle],
-        perf: PerfSet::Only(&[("R209.5", PerfOutcome::Cancelled)]),
-        pre: Pre::StartReceiverTimedOut,
-        no_run: true,
     },
     // PD-5: R207.2 / R209.2 on the current id in `Idle`, `Recovering` or `Processing`
     // (the statuses C3 lists for those rows).
@@ -260,7 +215,6 @@ pub const SIGNATURES: [Signature; 10] = [
         claim_status: &[Status::Idle, Status::Recovering, Status::Processing],
         perf: PerfSet::Any(ALL_PERF),
         pre: Pre::LiveClaimThenPerf,
-        no_run: false,
     },
     // PD-20 (a): the cancel at `Processing` (R205.5) claimed; the stop or pipeline
     // completed performance during the cancel's tail.
@@ -278,7 +232,6 @@ pub const SIGNATURES: [Signature; 10] = [
             PerfOutcome::Completed,
         ]),
         pre: Pre::CancelClaimedFirst,
-        no_run: false,
     },
     // PD-20 (b): another path claimed first; the cancel's `PC(Cancelled)` completed
     // performance.
@@ -310,7 +263,6 @@ pub const SIGNATURES: [Signature; 10] = [
         claim_status: ALL_STATUSES,
         perf: PerfSet::Only(&[("R205.5", PerfOutcome::Cancelled)]),
         pre: Pre::CancelPerfAfterLostClaim,
-        no_run: false,
     },
     // PD-21: R206.2, the failed capture cancel's `TERM(PipelineFailure)`.
     Signature {
@@ -327,7 +279,6 @@ pub const SIGNATURES: [Signature; 10] = [
             PerfOutcome::Completed,
         ]),
         pre: Pre::FailedCancelPort,
-        no_run: false,
     },
     // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
     Signature {
@@ -339,7 +290,6 @@ pub const SIGNATURES: [Signature; 10] = [
             ("R205.5", PerfOutcome::Cancelled),
         ]),
         pre: Pre::SupervisorIdleWon,
-        no_run: false,
     },
 ];
 
@@ -815,9 +765,16 @@ impl Checker {
         // D-S2b-13 (d): SP4(b) compares the outcomes a generation actually has. A
         // completion with no run behind it (an aborted start, a generation whose run was
         // never begun) is a claim of the coordinator and leaves no performance row, so
-        // there is no outcome to disagree with the terminal; only a signature of such a
-        // claim (PD-24) credits it, and any other is not an SP4(b) split.
-        if matched.is_none() && w.perf.no_run.contains(&rid) {
+        // there is no outcome to disagree with the terminal and it is not an SP4(b)
+        // split. Except the supervisor's `Recovering` arm out of `Starting` (R209.3,
+        // R209.5), which completes only a run that exists (PD-24 fixed, `only_if_run`):
+        // a bare claim by it is a failure, with no signature to credit it.
+        if w.perf.no_run.contains(&rid) {
+            if matches!(*perf_row, "R209.3" | "R209.5") {
+                self.fail(format!(
+                    "SP4(b): id {rid}: terminal {outcome:?}/{code:?} by {terminal_row} but {perf_row} completed performance {perf:?} for a run that does not exist"
+                ));
+            }
             return;
         }
         match matched {
@@ -854,7 +811,7 @@ impl Checker {
                 .contains(&(*terminal_row, *outcome, *code))
                 && signature.claim_status.contains(&claim.status_before)
                 && signature.perf.admits(perf_row, *perf)
-                && signature.no_run == w.perf.no_run.contains(&rid)
+                && !w.perf.no_run.contains(&rid)
                 && self.precondition(signature.pre, w, rid)
         })
     }
@@ -879,7 +836,6 @@ impl Checker {
                         .any(|t| t.row == completion.row && !t.won && t.step > claim.step)
             }
             Pre::FailedCancelPort => claim_current,
-            Pre::StartReceiverTimedOut => claim_current && w.sup.timed_out_starts.contains(&rid),
             Pre::SupervisorIdleWon => {
                 // One window: the winning `Idle` claim, the named losing claim (the
                 // cancel's own `TERM`, R205.5) and the performance completion all fall
