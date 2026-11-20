@@ -661,16 +661,13 @@ struct Delegation {
     supervisor_first: bool,
     /// The ledger winner for generation 1, as the caller leaves it.
     terminal: Option<(DictationTerminalOutcome, DictationErrorCode)>,
-    /// Site 206's recorded effect (`probe`-free: the executor's real result).
+    /// Site 206's recorded effect (`probe`-free: the executor's real result); `none` for
+    /// both results now: R206.1 and R206.2 have no effect.
     witness: &'static str,
     /// What the command replies, as a trace line prefix.
     reply: &'static str,
 }
 
-const PIPELINE_FAILURE: (DictationTerminalOutcome, DictationErrorCode) = (
-    DictationTerminalOutcome::PipelineFailure,
-    DictationErrorCode::RuntimeFailure,
-);
 const SUPERVISOR_WINS: (DictationTerminalOutcome, DictationErrorCode) = (
     DictationTerminalOutcome::UserCancelledStarting,
     DictationErrorCode::CancelledStarting,
@@ -688,12 +685,12 @@ fn delegations() -> Vec<Delegation> {
             Box::leak(format!("{word}: {what}").into_boxed_str())
         };
         all.push(Delegation {
-            name: name("the capture cancel fails, the command's claim wins (R206.2)"),
+            name: name("the capture cancel fails, the command claims no terminal (R206.2)"),
             caller,
             result: Err("boom"),
             supervisor_first: false,
-            terminal: Some(PIPELINE_FAILURE),
-            witness: "TERM Ran",
+            terminal: None,
+            witness: "none",
             reply: if caller == Caller::Cancel {
                 "reply cancel Err boom"
             } else {
@@ -706,7 +703,7 @@ fn delegations() -> Vec<Delegation> {
             result: Err("boom"),
             supervisor_first: true,
             terminal: Some(SUPERVISOR_WINS),
-            witness: "TERM Failed",
+            witness: "none",
             reply: if caller == Caller::Cancel {
                 "reply cancel Err boom"
             } else {
@@ -738,9 +735,6 @@ type Ops = Vec<(RecordingId, ContKind)>;
 
 /// The outstanding operations seen while the capture cancel (`PT:CC`) was in flight.
 static OPS_IN_CC: StdMutex<Option<Ops>> = StdMutex::new(None);
-
-/// The outstanding operations seen at site 206's `TERM` barrier (R206.2's effect).
-static OPS_AT_TERM: StdMutex<Option<Ops>> = StdMutex::new(None);
 
 fn stash(slot: &StdMutex<Option<Ops>>, ops: Option<Ops>) {
     *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = ops;
@@ -806,14 +800,6 @@ fn delegated_body(world: &Arc<World>) {
         }
         stash(&OPS_IN_CC, Some(during.outstanding_for_test()));
     });
-    // Site 206's `TERM` runs after the site consumed its operation: the history is read
-    // there, just before the effect.
-    let at_term = history.clone();
-    let _barrier = crate::barrier_hook::install(move |point| {
-        if point == "TERM" {
-            stash(&OPS_AT_TERM, Some(at_term.outstanding_for_test()));
-        }
-    });
     super::cancel_tests::forget_206_witness();
     match delegation.caller {
         Caller::Cancel => cancel_command(world, None),
@@ -832,16 +818,6 @@ fn delegated_body(world: &Arc<World>) {
         delegation.name
     );
     assert!(gone_in_cc.is_empty(), "{}: {gone_in_cc:?}", delegation.name);
-    if delegation.result.is_err() {
-        // R206.2 has an effect, so the owner's consumption is observable before it: the
-        // command's own `K:CaptureCancel` is already gone and everything else is there.
-        assert_eq!(
-            without(&stashed(&OPS_AT_TERM, "site 206's `TERM`"), &before),
-            (Vec::new(), Vec::new()),
-            "{}: site 206 consumed exactly the command's own operation before its effect",
-            delegation.name
-        );
-    }
     // Once the command returned: the same operations as before it, the decoy among them.
     assert_eq!(
         without(&history.outstanding_for_test(), &before),
@@ -877,7 +853,6 @@ fn delegated_body(world: &Arc<World>) {
 fn run_delegation(delegation: Delegation) -> (Vec<String>, Vec<String>) {
     DELEGATION.with(|slot| *slot.borrow_mut() = Some(delegation));
     stash(&OPS_IN_CC, None);
-    stash(&OPS_AT_TERM, None);
     probe::take_cancel_entries();
     crate::commands::settings_store::test_data_dir::take_returned();
     COMMAND_PROJECTIONS.store(u64::MAX, AtomicOrdering::SeqCst);

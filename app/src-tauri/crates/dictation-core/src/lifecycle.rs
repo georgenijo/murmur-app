@@ -126,6 +126,7 @@ fn perf_failed(at: Placement, with_audio_duration: bool) -> Placed {
             stage: PerfStage::CaptureFinalization,
             cause: Some(PerfCause::AudioCaptureFailed),
             with_audio_duration,
+            only_if_run: false,
         }),
     )
 }
@@ -278,7 +279,8 @@ pub fn decide_sup_still_connecting(core: &DictationCore, rid: RecordingId, _now:
 /// * Otherwise `In:ST→Recovering`, then (D released) `PDT:` `CX-` unless the
 ///   reason is `RuntimeFailure`, `EM(recovering)`, `PRES` if it was `Ok`,
 ///   `EV(RecoveryStarted)`, `PC(Cancelled)` unless `HardDeadline` or
-///   `RuntimeFailure`, then for `User` `TERM(UserCancelled…)` and
+///   `RuntimeFailure` (**PD-24 fixed**: from `Starting` it completes only a run that
+///   exists, so a start the failed call already aborted leaves no claim), then for `User` `TERM(UserCancelled…)` and
 ///   `EV(Cancelled)`, for a device or sleep reason `TERM(RuntimeInterruption/…)`,
 ///   and nothing more for `RuntimeFailure` / `HardDeadline` (R209.3-.7).
 pub fn decide_sup_recovering(
@@ -321,6 +323,10 @@ pub fn decide_sup_recovering(
                 stage: PerfStage::CaptureFinalization,
                 cause: None,
                 with_audio_duration: false,
+                // PD-24: while `Starting` the start's own failure (the call's 2 s
+                // receiver timeout queues this very cancel) may already have aborted
+                // the run; the completion then has no run to complete.
+                only_if_run: previous == Status::Starting,
             }),
         ));
     }

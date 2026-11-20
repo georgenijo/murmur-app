@@ -991,6 +991,7 @@ mod tests {
                 stage: PerfStage::CaptureFinalization,
                 cause: None,
                 with_audio_duration: false,
+                only_if_run: false,
             }),
             Effect::ClearContext(id),
             Effect::SetContext(id),

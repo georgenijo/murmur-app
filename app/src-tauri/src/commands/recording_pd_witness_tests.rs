@@ -874,7 +874,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-24 each name at least one: renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-23 each (PD-21 and PD-25 are fixed) name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -893,7 +893,8 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    for pd in 19..=24 {
+    // PD-21 is fixed (see the map's "Fixed" section): no entry in this section.
+    for pd in (19..=23).filter(|pd| *pd != 21) {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -959,9 +960,13 @@ fn every_finding_seed_names_a_real_shell_test() {
             "FINDING_SEEDS names `{name}`, which the map's property-harness section does not"
         );
     }
-    assert!(
-        named >= 10,
-        "only {named} shell tests were read from FINDING_SEEDS"
+    // The floor is the table's own count of witnesses that name a shell test, so a fix PR
+    // that removes a witness lowers it with the list, and a parser that skips an entry fails.
+    let expected = table.matches("shell_test: Some(").count();
+    assert!(expected > 0, "FINDING_SEEDS names no shell test at all");
+    assert_eq!(
+        named, expected,
+        "read {named} shell tests from FINDING_SEEDS, which lists {expected}"
     );
 }
 
@@ -1146,7 +1151,7 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
 /// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`])
 /// (`e8_pds`): each is driven by a
-/// named shell fixture, the PD-19 to PD-24 fixtures are replayed through the shadow too
+/// named shell fixture, the PD-19 to PD-23 fixtures are replayed through the shadow too
 /// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
 /// not run.
@@ -1276,7 +1281,7 @@ enum PdKind {
     /// fixture is its own `#[test]`, which E8 does not replay.
     Property,
     /// Not a row signature either: a split between a recording's terminal and its
-    /// performance outcome that the property harness found (PD-19 to PD-24). E8 replays
+    /// performance outcome that the property harness found (PD-19 to PD-23). E8 replays
     /// the named fixtures through the shadow in this process, where each must close
     /// clean (E7), and the shadow credits nothing for them.
     CrossLedger,
@@ -1322,11 +1327,14 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 }
 
 /// The PDs a fix PR has fixed and removed (C7.0): no E8 row, no allowlist entry, no
-/// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-23
-/// (#1157): the `pd23_*` tests of `recording_harness_findings_tests.rs`. PD-25 (#1157):
+/// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-21:
+/// `a_timed_out_cancel_claims_nothing_before_a_short_stop` and
+/// `a_timed_out_cancel_claims_nothing_before_the_late_recovery`
+/// (`recording_harness_findings_tests.rs`); PD-24: the `pd24_start_timeout_leaves_…` pair in the
+/// same file; PD-23 (#1157): the `pd23_*` tests of the same file; PD-25 (#1157):
 /// `recording_pd25_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[23, 25];
+const FIXED_PDS: &[u8] = &[21, 23, 24, 25];
 
 /// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
 /// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
@@ -1338,8 +1346,16 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
     use super::harness_findings_tests as f;
     use PdKind::{CrossLedger, Latent, Property, Row, RowRetired};
     vec![
-        (1, Row, vec![fx!(g::golden_s04_interruption_under_8000_samples)]),
-        (2, Row, vec![fx!(g::golden_s11_idle_on_a_finished_recording)]),
+        (
+            1,
+            Row,
+            vec![fx!(g::golden_s04_interruption_under_8000_samples)],
+        ),
+        (
+            2,
+            Row,
+            vec![fx!(g::golden_s11_idle_on_a_finished_recording)],
+        ),
         (
             3,
             Row,
@@ -1356,7 +1372,9 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         (
             5,
             Row,
-            vec![fx!(pd05_supervisor_events_for_the_current_id_claim_superseded)],
+            vec![fx!(
+                pd05_supervisor_events_for_the_current_id_claim_superseded
+            )],
         ),
         (
             6,
@@ -1388,12 +1406,16 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         (
             10,
             Row,
-            vec![fx!(pd10_terminal_before_accepted_is_dropped_and_ledger_evicts)],
+            vec![fx!(
+                pd10_terminal_before_accepted_is_dropped_and_ledger_evicts
+            )],
         ),
         (
             11,
             Property,
-            vec![fx!(pd11_terminal_claim_and_diagnostics_complete_are_not_atomic)],
+            vec![fx!(
+                pd11_terminal_claim_and_diagnostics_complete_are_not_atomic
+            )],
         ),
         (
             12,
@@ -1443,15 +1465,9 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         (
             20,
             CrossLedger,
-            vec![fx!(f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree)],
-        ),
-        (
-            21,
-            CrossLedger,
-            vec![
-                fx!(f::pd21_timed_out_cancel_then_a_short_stop_disagree),
-                fx!(f::pd21_timed_out_cancel_and_the_late_recovery_disagree),
-            ],
+            vec![fx!(
+                f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree
+            )],
         ),
         (
             22,
@@ -1459,14 +1475,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
             vec![
                 fx!(f::pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance),
                 fx!(f::pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance),
-            ],
-        ),
-        (
-            24,
-            CrossLedger,
-            vec![
-                fx!(f::pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree),
-                fx!(f::pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree),
             ],
         ),
     ]

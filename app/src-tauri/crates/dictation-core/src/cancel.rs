@@ -22,8 +22,9 @@
 //! * **R205.4 reply.** `Ok(())`; the capture cancel's own result is site 206's.
 //! * **Site 206 reply.** The success reply is the caller's: stop answers
 //!   `{"type":"recording_cancelled","state":"recovering"}`, cancel `Ok(())`
-//!   ([`CancelOrigin`]). The `Err` row is the same for both callers: a `PT`
-//!   `TERM(PipelineFailure/RuntimeFailure)` and the error text of the failed call.
+//!   ([`CancelOrigin`]). The `Err` row is the same for both callers: no effect and the
+//!   error text of the failed call (**PD-21**, fixed: it used to claim
+//!   `PipelineFailure/RuntimeFailure`).
 //! * **Op status.** Site 206 carries a token, and no row branches on its
 //!   `op_status` (C1.4.1 rule 3).
 //!
@@ -109,6 +110,7 @@ pub fn decide_cancel_request(core: &DictationCore, input: CancelInput, _now: Now
                         stage: PerfStage::InferenceDecode,
                         cause: None,
                         with_audio_duration: false,
+                        only_if_run: false,
                     }),
                 ),
             ],
@@ -125,8 +127,14 @@ pub fn decide_cancel_request(core: &DictationCore, input: CancelInput, _now: Now
 /// * R206.1 `Ok(_)`: no effect ([`Verdict::Continue`]). Reply: stop
 ///   `recording_cancelled` / `recovering`, cancel `Ok(())`. The supervisor emits the
 ///   cancel terminal (R209).
-/// * R206.2 `Err`: `PT:TERM(PipelineFailure / RuntimeFailure)`; reply
-///   `Err(<the failed call's text>)` ([`ErrText::Shell`]).
+/// * R206.2 `Err`: no effect, reply `Err(<the failed call's text>)` ([`ErrText::Shell`]).
+///   A failed or timed-out capture cancel does not end the recording: the supervisor may
+///   still hold the queued `Cancel{User}` (the client's 2 s receive expires first), or a
+///   stop that took the capture goes on. So the failure claims no terminal and leaves it
+///   to the path that really ends the recording (a stop's rows, or the supervisor's
+///   `Recovering` arm, R209.3-.5), which also completes performance. It used to claim
+///   `PipelineFailure / RuntimeFailure` for a recording that then succeeded or was
+///   cancelled, so telemetry and the performance record disagreed (**PD-21**, fixed).
 pub fn decide_cancel_capture_result_nolock(
     _facts: LockFreeFacts,
     input: CancelCaptureResultInput,
@@ -142,17 +150,9 @@ pub fn decide_cancel_capture_result_nolock(
                 CancelOrigin::Cancel => Reply::Ok,
             },
         ),
+        // `Applied` with no effect: the shell reads the verdict to return the error.
         Err(()) => with_reply(
-            decision(
-                Verdict::Applied,
-                None,
-                vec![terminal(
-                    At::PostT,
-                    TerminalOutcome::PipelineFailure,
-                    ErrCode::RuntimeFailure,
-                )],
-                "R206.2",
-            ),
+            decision(Verdict::Applied, None, Vec::new(), "R206.2"),
             Reply::Err(ErrText::Shell),
         ),
     }

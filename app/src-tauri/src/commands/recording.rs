@@ -3471,6 +3471,8 @@ enum DictationPerformanceCompletionAction {
     Persist(DictationPerformanceCompletion),
     Deferred,
     AlreadyCompleting,
+    /// `only_if_run` and no run is registered or begun for the id: nothing is claimed.
+    NoRun,
 }
 
 impl DictationPerformanceBeginCoordinator {
@@ -3488,10 +3490,24 @@ impl DictationPerformanceBeginCoordinator {
         self.entries.lock_or_recover().remove(&recording_id);
     }
 
+    #[cfg(test)]
     fn request_completion(
         &self,
         recording_id: u64,
         completion: DictationPerformanceCompletion,
+    ) -> DictationPerformanceCompletionAction {
+        self.request_completion_for(recording_id, completion, false)
+    }
+
+    /// `request_completion`, and with `only_if_run` a completion of a run that exists:
+    /// an id with no entry (its run was never registered, or the start's failure aborted
+    /// it) is answered [`DictationPerformanceCompletionAction::NoRun`] and claims nothing.
+    /// The entry check and the claim are one critical section (PD-24).
+    fn request_completion_for(
+        &self,
+        recording_id: u64,
+        completion: DictationPerformanceCompletion,
+        only_if_run: bool,
     ) -> DictationPerformanceCompletionAction {
         let mut entries = self.entries.lock_or_recover();
         match entries.get_mut(&recording_id) {
@@ -3516,6 +3532,7 @@ impl DictationPerformanceBeginCoordinator {
             Some(DictationPerformanceBeginState::Completing(_)) => {
                 DictationPerformanceCompletionAction::AlreadyCompleting
             }
+            None if only_if_run => DictationPerformanceCompletionAction::NoRun,
             None => {
                 entries.insert(
                     recording_id,
@@ -3723,6 +3740,31 @@ fn complete_dictation_performance_with_delivery(
     runtimes: Option<Vec<RuntimeIdentityV1>>,
     delivery_timing: Option<dt::DeliveryTimingV1>,
 ) {
+    complete_dictation_performance_for(
+        performance,
+        recording_id,
+        outcome,
+        stages,
+        input,
+        runtimes,
+        delivery_timing,
+        false,
+    );
+}
+
+/// `complete_dictation_performance_with_delivery`, optionally only for a run that exists
+/// (`PerfComplete::only_if_run`, PD-24).
+#[allow(clippy::too_many_arguments)]
+fn complete_dictation_performance_for(
+    performance: &crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    outcome: RunOutcomeV1,
+    stages: Vec<StageTimingV1>,
+    input: Option<ContentFreeInputSummaryV1>,
+    runtimes: Option<Vec<RuntimeIdentityV1>>,
+    delivery_timing: Option<dt::DeliveryTimingV1>,
+    only_if_run: bool,
+) {
     let completion = DictationPerformanceCompletion {
         delivery_timing: delivery_timing.map(Box::new),
         outcome,
@@ -3730,12 +3772,17 @@ fn complete_dictation_performance_with_delivery(
         input,
         runtimes,
     };
-    match dictation_performance_begins().request_completion(recording_id, completion) {
+    match dictation_performance_begins().request_completion_for(
+        recording_id,
+        completion,
+        only_if_run,
+    ) {
         DictationPerformanceCompletionAction::Persist(completion) => {
             spawn_dictation_performance_completion(performance.clone(), recording_id, completion);
         }
         DictationPerformanceCompletionAction::Deferred
-        | DictationPerformanceCompletionAction::AlreadyCompleting => {}
+        | DictationPerformanceCompletionAction::AlreadyCompleting
+        | DictationPerformanceCompletionAction::NoRun => {}
     }
 }
 
@@ -8884,8 +8931,8 @@ async fn stop_native_recording_admitted(
                         )
                     })
                 });
-                // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
-                // effect.
+                // R206.1 and R206.2 have no effect (R206.2 only answers the error;
+                // PD-21 fixed).
                 let mut finish_exec = executor(&ports, cancel_decision.clone());
                 stop_ports::expect_valid(&cancel_decision);
                 #[cfg(feature = "dictation-shadow")]
@@ -9953,7 +10000,7 @@ async fn cancel_native_recording_inner(
             )
         })
     });
-    // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
+    // R206.1 and R206.2 have no effect (R206.2 only answers the error; PD-21 fixed).
     #[cfg(feature = "dictation-shadow")]
     if let Some(op_status) = seen_status.get(&flight_206) {
         flight_206.history_of(|| op_guard.take_retired());
