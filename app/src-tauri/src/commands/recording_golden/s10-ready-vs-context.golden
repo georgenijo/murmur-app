@@ -1,7 +1,7 @@
 # golden: s10-ready-vs-context
 # scenario: 10 ready vs context rendezvous, both orders
 # witnesses: PD-4
-# known-bad: 10c records C8 under today's behaviour; it flips only in BC-2's fix PR (C11.1)
+# known-bad: 10c records C8's second ticker under today's behaviour; it flips only in BC-2's fix PR (C11.1)
 # lines: `~` is shared state seen to change since the previous line; `#` is a
 # scenario step; everything else is a port call, an emit or a reply, in order.
 
@@ -105,7 +105,6 @@ reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
 # observable: the status emit `recording` is in the trace above
 supervisor.release_ready 1
 supervisor.notify 1 Ready
-~ terminal 1 Superseded/StaleOwner
 SD ticker 1 registered=true
 # Ready was handled; now the recording runs to Success
 claim_preview_hide 1
@@ -128,6 +127,7 @@ pipeline 1 returns
 pipeline 1 idle_guard wrote_idle=true
 keyboard.set_processing false
 emit recording-status-changed "idle"
+~ terminal 1 Success/None
 ~ perf-claim 1 {"status":"success"}
 emit transcription-complete {"duration":1,"interrupted":null,"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
 reply stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}

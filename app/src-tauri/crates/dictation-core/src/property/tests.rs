@@ -96,6 +96,9 @@ const PD18_SEEDS: [(&str, u64); 3] = [
     ("(c) unsealed stop", 14_033),
 ];
 
+/// PD-23 is fixed (R207.3 claims no terminal): no signature credits it, and no seed may.
+const FIXED_PD23: usize = 23;
+
 /// A witness of one of PD-19..PD-24: the PD, the seed that takes it, the matched
 /// split `(terminal row, performance row)` where the PD is an SP4(b) split, and the
 /// shell test that reproduces the sequence (`recording_harness_findings_tests.rs`,
@@ -111,7 +114,7 @@ struct Witness {
     sig: Option<usize>,
 }
 
-const FINDING_SEEDS: [Witness; 14] = [
+const FINDING_SEEDS: [Witness; 10] = [
     Witness {
         pd: 19,
         seed: 492_192,
@@ -169,44 +172,13 @@ const FINDING_SEEDS: [Witness; 14] = [
         sig: None,
     },
     Witness {
-        pd: 23,
-        seed: 450,
-        split: Some(("R207.3", "R203.5")),
-        shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
-        sig: None,
-    },
-    Witness {
-        pd: 23,
-        seed: 1_291,
-        split: Some(("R207.3", "R203.1")),
-        shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
-        sig: None,
-    },
-    Witness {
-        pd: 23,
-        seed: 169,
-        split: Some(("R207.3", "R205.5")),
-        shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
-        sig: None,
-    },
-    // PENDING, source-only: R207.3's claim, the ticker's gate refusing the second ticker,
-    // the pipeline completing `Success`. No fake-host schedule makes the gate refuse after
-    // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
-    Witness {
-        pd: 23,
-        seed: 1_610,
-        split: Some(("R207.3", "R204b.6")),
-        shell_test: None,
-        sig: Some(2),
-    },
-    Witness {
         pd: 24,
         seed: 3_651,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
         ),
-        sig: Some(3),
+        sig: Some(0),
     },
     Witness {
         pd: 24,
@@ -215,7 +187,7 @@ const FINDING_SEEDS: [Witness; 14] = [
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
         ),
-        sig: Some(4),
+        sig: Some(1),
     },
 ];
 
@@ -467,7 +439,7 @@ fn every_preserved_defect_is_witnessed() {
         return; // a short local run does not owe every witness
     }
     let missing: Vec<usize> = (1..=24)
-        .filter(|pd| *pd != 17 && summary.pd[*pd].0 == 0)
+        .filter(|pd| *pd != 17 && *pd != FIXED_PD23 && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
@@ -492,6 +464,10 @@ fn every_preserved_defect_is_witnessed() {
     assert_eq!(
         summary.pd[17].0, 0,
         "PD-17 is latent: no schedule reaches it"
+    );
+    assert_eq!(
+        summary.pd[FIXED_PD23].0, 0,
+        "PD-23 is fixed: a repeat `Ready` for a live recording claims no terminal"
     );
     // The gates of the cutover (#1169 review): every row of the Smart Auto round and of the legacy
     // import is decided by the gated seeds, and the late start reply the main window writes over
@@ -994,8 +970,6 @@ struct Split {
     claim_tail: Option<TaskId>,
     lost_tail: Option<TaskId>,
     perf_tail: Option<TaskId>,
-    /// A second ticker spawned for the recording after R207.3's claim.
-    second_ticker: bool,
     /// A performance run was begun for the recording (the completion is the run's outcome),
     /// or none was (an aborted start: only the coordinator's claim).
     run: bool,
@@ -1018,7 +992,6 @@ impl Split {
             claim_tail: Some(7),
             lost_tail: Some(7),
             perf_tail: Some(7),
-            second_ticker: false,
             run: true,
         }
     }
@@ -1043,12 +1016,13 @@ impl Split {
             claim_tail: Some(7),
             lost_tail: None,
             perf_tail: Some(7),
-            second_ticker: false,
             run: true,
         }
     }
 
-    fn pd4() -> Self {
+    /// A `Superseded` claim by R207.3 for the live recording, then the pipeline's `Success`:
+    /// the shape no signature admits any more (PD-23 is fixed).
+    fn r207_3() -> Self {
         Self {
             terminal: (TerminalOutcome::Superseded, ErrCode::StaleOwner, "R207.3"),
             claim_status: Status::Recording,
@@ -1064,7 +1038,6 @@ impl Split {
             claim_tail: None,
             lost_tail: None,
             perf_tail: None,
-            second_ticker: true,
             run: true,
         }
     }
@@ -1073,10 +1046,6 @@ impl Split {
     fn run(&self) -> Checker {
         let w = self.world();
         let mut checker = Checker::default();
-        checker.r207_3_side_tasks.insert(1);
-        if self.second_ticker {
-            checker.second_ticker.insert(1);
-        }
         checker.sp4b(&w, 1);
         checker
     }
@@ -1148,7 +1117,6 @@ fn an_sp4b_split_needs_its_full_signature() {
     for (name, split, expected) in [
         ("PD-22 in full", Split::pd22(), Some(22)),
         ("PD-20 (a) in full", Split::pd20a(), Some(20)),
-        ("PD-4 in full", Split::pd4(), Some(4)),
         (
             "PD-22 without a cancel tail open at the completion",
             Split {
@@ -1231,78 +1199,36 @@ fn an_sp4b_split_needs_its_full_signature() {
             },
             None,
         ),
-        // D-S2b-11 (a), D-S2b-13 (e): PD-4 is exactly its C7.1 text. The same R207.3 claim
-        // is PD-23 only for the outcome of the recording's own end the entry binds to a row.
+        // PD-23 is fixed: a repeat `Ready` for the live recording (R207.3) claims no
+        // terminal, so a claim from R207.3 with any performance outcome is an SP4(b)
+        // failure, whatever the recording's own end is. The claim was PD-4's terminal half
+        // too (its `Success`) and PD-23's (every other outcome).
         (
-            "PD-4's claim whose recording then ends in another class is PD-23",
-            Split {
-                perf: (PerfOutcome::Failed, "R213.2"),
-                ..Split::pd4()
-            },
-            Some(23),
+            "R207.3's claim then the pipeline's `Success`",
+            Split::r207_3(),
+            None,
         ),
         (
-            "PD-23 with a stop's empty capture",
+            "R207.3's claim then a stop's empty capture",
             Split {
                 perf: (PerfOutcome::NoSpeech, "R203.5"),
-                ..Split::pd4()
+                ..Split::r207_3()
             },
-            Some(23),
+            None,
         ),
         (
-            "PD-23 with a cancel of a processing recording",
+            "R207.3's claim then a refused stop's failure",
+            Split {
+                perf: (PerfOutcome::Failed, "R203.1"),
+                ..Split::r207_3()
+            },
+            None,
+        ),
+        (
+            "R207.3's claim then a cancel of a processing recording",
             Split {
                 perf: (PerfOutcome::Cancelled, "R205.5"),
-                ..Split::pd4()
-            },
-            Some(23),
-        ),
-        (
-            "PD-23 with `Completed` needs the second ticker refused: PD-4's own ticker is PD-4",
-            Split::pd4(),
-            Some(4),
-        ),
-        (
-            "PD-23 with `Completed` and the ticker's gate refused",
-            Split {
-                second_ticker: false,
-                ..Split::pd4()
-            },
-            Some(23),
-        ),
-        // The counterexample of the review: `Completed` from a row that cannot complete
-        // `Success`, with or without a second ticker, is no PD.
-        (
-            "`Completed` from R203.2 with a second ticker is no PD",
-            Split {
-                perf: (PerfOutcome::Completed, "R203.2"),
-                second_ticker: true,
-                ..Split::pd4()
-            },
-            None,
-        ),
-        (
-            "`Completed` from R203.2 without a second ticker is no PD",
-            Split {
-                perf: (PerfOutcome::Completed, "R203.2"),
-                second_ticker: false,
-                ..Split::pd4()
-            },
-            None,
-        ),
-        (
-            "a performance outcome from a row outside PD-23's table",
-            Split {
-                perf: (PerfOutcome::Failed, "R999.9"),
-                ..Split::pd4()
-            },
-            None,
-        ),
-        (
-            "PD-4's row on a status it does not list",
-            Split {
-                claim_status: Status::Processing,
-                ..Split::pd4()
+                ..Split::r207_3()
             },
             None,
         ),
@@ -1310,7 +1236,7 @@ fn an_sp4b_split_needs_its_full_signature() {
             "an unlisted terminal row",
             Split {
                 terminal: (TerminalOutcome::Superseded, ErrCode::StaleOwner, "R999.1"),
-                ..Split::pd4()
+                ..Split::r207_3()
             },
             None,
         ),
@@ -1410,7 +1336,7 @@ fn sp4b_applies_to_a_stale_claim_when_the_generation_has_both_outcomes() {
         terminal: (TerminalOutcome::Superseded, ErrCode::StaleOwner, "R201.1"),
         claim_status: Status::Idle,
         claim_current: false,
-        ..Split::pd4()
+        ..Split::r207_3()
     };
     // A run exists: the stale claim and the run's outcome disagree. No signature covers a
     // stale claim, so this is an SP4(b) failure (it was skipped before).

@@ -1082,36 +1082,45 @@ pub(super) fn pd24_start_timeout_terminal_and_an_environmental_recovery_arm_perf
     ));
 }
 
-// ------------------------------------------------------------------ PD-23
-// Harness seeds 450 (R207.3 / R203.5), 1,291 (R207.3 / R203.1) and 169 (R207.3 / R205.5);
-// 822, 1,183 and 123 after #1160 and #1162, 447, 249 and 163 before.
-// C8 (`s10c`, PD-4): the fake supervisor sets the phase to `Recording` and holds before
-// notifying `Ready`, the start's continuation publishes `Recording`, and the held `Ready`
-// is handled for a recording that is already `Recording`: R207.3 claims
-// `Superseded/StaleOwner` for the live recording. PD-4 is the case where the recording
-// then completes `Success` after a second ticker spawned; PD-23 is the same claim when
-// the recording's own path ends another way. The recording's own path wins no terminal
-// and completes performance with its own outcome, bound to its row by the signature:
+// ------------------------------------------------------------------ PD-23 (fixed)
+// Formerly harness seeds 450 (R207.3 / R203.5), 1,291 (R207.3 / R203.1) and 169 (R207.3 /
+// R205.5). C8 (`s10c`, PD-4): the fake supervisor sets the phase to `Recording` and holds
+// before notifying `Ready`, the start's continuation publishes `Recording`, and the held
+// `Ready` is handled for a recording that is already `Recording` (R207.3). It used to claim
+// `Superseded/StaleOwner` for the live recording, so the terminal ledger named a
+// supersession while the recording's own path completed performance with its own outcome:
 //
 // * R203.5: an empty stop, `NoSpeech`;
 // * R203.1: a stop whose capture stop is refused, `Failed`;
 // * R205.5: a cancel of a recording whose stop is in its capture stop, `Cancelled`.
 //
+// It claims nothing now (PD-23 is fixed), so the terminal is the one the path that really
+// ends the recording takes. The same sequences drive each test:
+//
+// * the cancel's own `UserCancelledProcessing` is the terminal and performance is
+//   `Cancelled`: the ledgers agree;
+// * in the empty stop and the refused stop, the supervisor's `Recovering` arm reaches the
+//   current id at `Processing` first (R209.2, PD-5), so those two keep a `Superseded`
+//   terminal against the stop's outcome, now PD-5's preserved split and not R207.3's.
+//
 // The fourth variant (R204b.6, `Completed`, the ticker's gate refusing the second ticker)
-// is PENDING: no fake-host schedule makes the gate refuse after R207.3's claim, so it
-// is source-only and stays allowlisted (D-S2b-13 (e)).
+// was PENDING and source-only. R207.3's claim is gone, so no schedule can produce it.
 
 fn pd23_c8_forced(world: &Arc<World>) {
     world.knobs().cold_start = ColdStart::HoldBeforeReady;
     start_reply(world).expect("the start returned");
     assert_eq!(status(world), DictationStatus::Recording);
     world.release_ready();
-    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert_eq!(
+        terminal(world, 1),
+        None,
+        "R207.3 claims no terminal for the live recording"
+    );
 }
 
-/// Seed 447's cold-start rendezvous (R207.3 / R203.5; the pin before the #1160 and #1162 re-pin). The cold start's `Ready` is held
-/// until the start's continuation published `Recording`, and R207.3 claims `Superseded`
-/// for the live recording (`pd23_c8_forced`). The user cancels the `Recording` dictation
+/// Seed 447's cold-start rendezvous (the pin before the #1160 and #1162 re-pin). The cold
+/// start's `Ready` is held until the start's continuation published `Recording`, and R207.3
+/// claims nothing for the live recording (`pd23_c8_forced`). The user cancels the `Recording` dictation
 /// (R205.4): the capture cancel is accepted, `Recovering{User}` is published and the
 /// attempt's own `Idle` is held, and before the cancel's capture cancel returns a stop
 /// lands (R201.8), takes T and parks in the supervisor's capture stop at `Processing`.
@@ -1120,7 +1129,7 @@ fn pd23_c8_forced(world: &Arc<World>) {
 /// clears the owner (`audio_lifecycle.rs:2457-2467`), and only then does the parked
 /// capture stop return its empty reply (`2358-2362`): the stop's R203.5 empty-audio rows
 /// complete performance as `NoSpeech` before the cancel's `PT:PC(Cancelled)`, which then
-/// loses. The terminal stays `Superseded`.
+/// loses. The terminal is the `Superseded` of the supervisor's `Recovering` arm (R209.2).
 fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
     {
         let mut knobs = world.knobs();
@@ -1186,9 +1195,9 @@ fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
 }
 
 #[test]
-pub(super) fn pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree() {
+pub(super) fn pd23_a_repeat_ready_claims_no_terminal_and_an_empty_stop_completes_no_speech() {
     repeat(&sub(
-        "PD-23: R207.3's Superseded for a live recording, then a stop that gets its empty reply after the owner cleared completes NoSpeech inside a cancel's tail (R207.3, R203.5)",
+        "PD-23 fixed: R207.3 claims no terminal for a live recording, then a stop that gets its empty reply after the owner cleared completes NoSpeech inside a cancel's tail (R203.5; the supervisor's Recovering arm owns the Superseded terminal, PD-5)",
         pd23_an_empty_stop_completes_no_speech,
     ));
 }
@@ -1217,16 +1226,16 @@ fn pd23_a_refused_stop_completes_failed(world: &Arc<World>) {
 }
 
 #[test]
-pub(super) fn pd23_superseded_terminal_and_a_refused_stop_failed_disagree() {
+pub(super) fn pd23_a_repeat_ready_claims_no_terminal_and_a_refused_stop_completes_failed() {
     repeat(&sub(
-        "PD-23: R207.3's Superseded for a live recording, then a stop refused by the recovering supervisor completes Failed (R207.3, R203.1)",
+        "PD-23 fixed: R207.3 claims no terminal for a live recording, then a stop refused by the recovering supervisor completes Failed (R203.1; the supervisor's Recovering arm owns the Superseded terminal, PD-5)",
         pd23_a_refused_stop_completes_failed,
     ));
 }
 
 /// A stop is in its capture stop (status `Processing`, T released) and the user cancels:
-/// R205.5 loses the terminal claim (`Superseded` is held) and its `PC(Cancelled)` wins
-/// performance; the stop's own completion then loses.
+/// R205.5 wins the terminal claim (nothing holds it) and its `PC(Cancelled)` wins
+/// performance; the stop's own completion then loses. Both ledgers name the cancel.
 fn pd23_a_cancel_of_a_processing_recording_completes_cancelled(world: &Arc<World>) {
     world.knobs().stop_result = Ok(0);
     pd23_c8_forced(world);
@@ -1241,7 +1250,14 @@ fn pd23_a_cancel_of_a_processing_recording_completes_cancelled(world: &Arc<World
     world.reply("stop", &reply);
     assert_eq!(reply, empty_transcription());
     assert_eq!(status(world), DictationStatus::Idle);
-    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::UserCancelledProcessing,
+            DictationErrorCode::CancelledProcessing
+        )),
+        "the cancel owns the terminal, and its own `Cancelled` is the performance outcome"
+    );
     assert!(
         matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
         "{:?}",
@@ -1250,9 +1266,10 @@ fn pd23_a_cancel_of_a_processing_recording_completes_cancelled(world: &Arc<World
 }
 
 #[test]
-pub(super) fn pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree() {
+pub(super) fn pd23_a_repeat_ready_claims_no_terminal_and_a_cancel_of_processing_owns_both_ledgers()
+{
     repeat(&sub(
-        "PD-23: R207.3's Superseded for a live recording, then a cancel of the processing recording completes Cancelled (R207.3, R205.5)",
+        "PD-23 fixed: R207.3 claims no terminal for a live recording, then a cancel of the processing recording owns the terminal and completes Cancelled (R205.5)",
         pd23_a_cancel_of_a_processing_recording_completes_cancelled,
     ));
 }

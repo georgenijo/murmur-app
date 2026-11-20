@@ -148,16 +148,11 @@ fn r207_2_ready_while_idle_recovering_or_processing_is_superseded() {
 }
 
 #[test]
-fn r207_3_a_repeat_ready_for_a_live_recording_is_superseded_and_still_starts_side_tasks() {
-    // PD-4 / C8: the terminal and the second ticker attempt are the defect.
+fn r207_3_a_repeat_ready_for_a_live_recording_claims_no_terminal_and_still_starts_side_tasks() {
+    // PD-23: the live recording's terminal belongs to the path that ends it. The second
+    // ticker attempt (PD-4's remaining half) stays.
     let d = decide_sup_ready(&core(Status::Recording, RID), ready(Some(true)), NOW);
-    row(
-        &d,
-        "R207.3",
-        Verdict::Applied,
-        None,
-        &["In:TERM(Superseded/StaleOwner)", "PDT:SD"],
-    );
+    row(&d, "R207.3", Verdict::Applied, None, &["PDT:SD"]);
 }
 
 #[test]

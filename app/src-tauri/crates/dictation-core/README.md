@@ -498,11 +498,9 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     the terminal rows with outcome and code, the statuses the claim saw, the performance
     outcome class (or exact rows) and a causal precondition read from what each winner
     recorded (`Won`: the cancel's tail open, the order of the winners, a later claim
-    lost). PD-4 is exactly its C7.1 definition (R207.3 on a live `Recording`, a second
-    ticker, `Success`); the same claim with another outcome is PD-23, whose signature binds
-    each outcome to the stop, cancel or pipeline rows that complete it (a class is not
-    enough), and whose `Success` variant needs the ticker's gate to have refused the second
-    ticker (pending at the shell: source-only). PD-24 has one signature per cause, R209.3
+    lost). R207.3 (a repeat `Ready` for a live `Recording`) claims no terminal (PD-23 is
+    fixed, and with it PD-4's terminal half): any `Superseded` claim of R207.3 is an
+    SP4(b) failure with every outcome, and PD-4 is only its remaining second ticker. PD-24 has one signature per cause, R209.3
     (the start timeout's own `Cancel{User}`) and R209.5 (an environmental recovery), and
     is a mismatch at the performance **coordinator's claim**: the failed start never began a
     run, so no row is behind it. PD-22 needs the winning `Idle` claim and the losing named
@@ -514,7 +512,7 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     of the coordinator with no row when no run was registered (an aborted start, seed
     8096); only a signature marked `no_run` (PD-24) credits such a claim. No allowlist entry
     is widened to make a seed pass: a split no signature covers is a finding to reproduce
-    at the shell (PD-23, PD-24) or a model fix. No PD exempts a whole recording.
+    at the shell (PD-24) or a model fix. No PD exempts a whole recording.
   * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
     and is released by the end of the run.
   * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
