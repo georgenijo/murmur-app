@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-11-20
+
+<!-- Release notes generated using configuration in .github/release.yml at 5e65770fee80912456ee07cb50aa79a7df404592 -->
+
+## What's Changed
+### Other Changes
+* Remove dead diagnostics: uncoded frontend logs, warning storm, #1082 shadow measurement by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1132
+* perf: a real debug log level, less default volume, cheaper writes by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1131
+* perf: run the main-thread watch only when armed by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1133
+* perf(build): cut wasted local build work by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1134
+* docs(dictation): lock-order note (refactor Stage 0a) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1135
+* refactor(recording): DictationHost seam for start, stop and cancel (Stage 0a) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1136
+* test(recording): seam-contract scenarios for the DictationHost ports (Stage 0a) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1137
+* test(dictation): Stage 0b golden characterization scenarios by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1138
+* refactor(dictation): Stage 1a dictation-core crate, types and admit() by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1139
+* refactor(dictation): Stage 1b route admission through admit() by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1141
+* test(dictation): Stage 1 PD witnesses and C4.9 contract tests by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1140
+* refactor(dictation): Stage 2a-0a core_history and the C4.9 owner marker gate by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1142
+* refactor(dictation): Stage 2a-0b field adapter, PersistedCore commit and SP5 ratchet by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1143
+* refactor(dictation): Stage 2a-0c executor skeleton and its C4.9 contract tests by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1144
+* refactor(dictation): Stage 2a-1 lifecycle events through decide_* by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1145
+* refactor(dictation): Stage 2a-2 stop family through decide_* (1/2: crate decide functions) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1146
+* refactor(dictation): Stage 2a-2 stop family through decide_* (2/2: shell wiring) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1147
+* refactor(dictation): Stage 2a-3 cancel family through decide_* by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1148
+* refactor(dictation): Stage 2a-4 start family through decide_* (4a: start request + capture result) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1149
+* refactor(dictation): Stage 2a-4 start family through decide_* (4b: start context + ready publish) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1150
+* refactor(dictation): Stage 2a-5 legacy process_audio through decide_* by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1151
+* refactor(dictation-core): DictationCore::handle routes an Input to its decide function (Stage 2c-1a) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1155
+* test(dictation): Stage 2b/4 historical bug replays (C13.3) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1152
+* ci(rust-macos): run the dictation-core C13.3 bug replays by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1161
+* Stage 2b-1: property harness (C7.5) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1153
+* test(ratchet): scan the real tree once, plant probes in an in-memory overlay by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1164
+* feat(dictation): shadow-mode infrastructure behind the dictation-shadow feature (Stage 2c-1b) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1156
+* test(property): let a due command compete with a ready delivery (#1159) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1165
+* test(property): model the main window's stop guard; match caller and boundary in ordering tests (#1167) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1168
+* test(property): route the harness through DictationCore::handle, model the main-window start reply (#1160, #1162) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1169
+* test: pre-cutover shell coverage (#1160 shell items, #1162 fake fidelity, #1166 flake) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1170
+* Stage 2c-2: live shadow capture sites, E7/E8 proofs, soak runbook by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1163
+* test(dictation): E8 covers PD-1 to PD-25; PD-25 fixtures; positive ready side-task handoff by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1172
+* refactor(shadow): stage 2c soak evidence and fuller reply comparison (S1-S4, S7) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1173
+* test(shadow): fix a start-up ordering race in the unavailable-recorders test by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1175
+* ci: cover the dictation-shadow feature, scope the diff check, add soak verdict tooling (D-S2c-15 B) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1174
+* test(vad_stream): make the stop handoff test deterministic by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1176
+* refactor(dictation): Stage 2c lifecycle cutover - persisted core as authority (C9.7) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1177
+* refactor(dictation): stop cutover - persisted core as authority for the stop entries (Stage 2c) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1178
+* refactor(dictation): cancel cutover - persisted core as authority for the cancel entry (Stage 2c) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1179
+* refactor(dictation): Stage 2c start-family cutover by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1180
+* fix(dictation): a stale scoped stop no longer takes the terminal another stop owns (PD-25, #1157) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1181
+* fix(dictation): a failed capture cancel no longer claims a terminal for a recording that goes on (PD-21) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1185
+* fix(recording): a timed-out start no longer leaves a Cancelled performance claim for a run that never began (PD-24) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1187
+* fix(dictation): a repeat Ready for a live recording no longer claims a Superseded terminal (PD-23) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1188
+* fix(recording): a start during a retiring capture's cleanup no longer strands the app in Recovering (PD-18, PD-19) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1182
+* fix(dictation-core): a supervisor Idle for a finished recording claims no terminal (PD-22, retires PD-2) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1190
+* fix(dictation-core): a processing cancel owns both ledgers or neither (PD-20) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1189
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.66.2...v0.67.0
+
 ## [0.66.2] - 2026-11-15
 
 <!-- Release notes generated using configuration in .github/release.yml at 4fbc1877d973d09d53fd224bbd5f3bdc10ac24f9 -->
