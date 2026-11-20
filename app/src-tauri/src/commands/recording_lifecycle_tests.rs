@@ -222,8 +222,8 @@ fn site_207_ready() {
             );
         }
     }
-    // R207.2 / R207.3: current but not Starting.
-    for status in [Idle, Recovering, Processing, Recording] {
+    // R207.2: current but Idle, Recovering or Processing.
+    for status in [Idle, Recovering, Processing] {
         let got = run(AudioLifecycleEvent::Ready, status, RID, true);
         assert_eq!(
             got,
@@ -231,9 +231,19 @@ fn site_207_ready() {
                 ready_tasks: true,
                 ..untouched(status, superseded())
             },
-            "R207.2/.3 {status:?}"
+            "R207.2 {status:?}"
         );
     }
+    // R207.3 (PD-23 fixed): a repeat `Ready` for the live recording claims no terminal and
+    // still attempts the side tasks.
+    assert_eq!(
+        run(AudioLifecycleEvent::Ready, Recording, RID, true),
+        Outcome {
+            ready_tasks: true,
+            ..untouched(Recording, None)
+        },
+        "R207.3"
+    );
     // R207.4: Starting without a context waits, quietly.
     assert_eq!(
         run(AudioLifecycleEvent::Ready, Starting, RID, false),

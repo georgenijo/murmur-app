@@ -142,7 +142,7 @@ R212.1 | *          | [fresh] - / [stale] TERM:Superseded/StaleOwner
 
 R207.1 | *          | [stale] TERM:Superseded/StaleOwner
 R207.2 | Idle,Recovering,Processing | [fresh] TERM:Superseded/StaleOwner
-R207.3 | Recording  | [fresh] TERM:Superseded/StaleOwner
+R207.3 | Recording  | [fresh] -
 R207.4 | Starting   | [fresh] -
 R207.5 | Starting   | [fresh] ST:Starting>Recording
 
