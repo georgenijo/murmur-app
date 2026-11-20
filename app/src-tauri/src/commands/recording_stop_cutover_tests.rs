@@ -30,14 +30,15 @@
 //!   exactly as it does for an equal core.
 //! * `every_idle_guard_origin_...` - the four `IdleGuard` origins through the switched
 //!   204a entry.
-//! * the PD-25 and #216 / late-idle tests - the preserved ledger winners and the fences,
+//! * the PD-25 (fixed) and #216 / late-idle tests - the preserved ledger winners and the fences,
 //!   through the switched entries.
 #![cfg(test)]
 
 use super::golden_harness::*;
 use super::golden_tests::{recording, stopped, sub, sub_from};
 use super::pd25_tests::{
-    import_audio, pd25_import, pd25_start, perf_claim, terminal, ImportHost, SUPERSEDED,
+    import_audio, perf_claim, stale_scoped_stop_after_import, stale_scoped_stop_after_start,
+    terminal, ImportHost, INTERRUPTED,
 };
 use super::*;
 use crate::dictation_executor::adapter::core_divergences;
@@ -858,21 +859,21 @@ fn every_idle_guard_origin_reads_the_persisted_core_and_resyncs_a_divergence() {
     }
 }
 
-// ---------------------------------------------------------------------------- PD-25
+// ---------------------------------------------------------------------------- PD-25 (fixed)
 
-/// PD-25 (#1157), characterized and **preserved**: a scoped stop for generation 1 that was
-/// queued ahead of `T` resumes after another stop took the retained capture and a new
-/// generation 2 was allocated. R201.1 wins generation 1's terminal as
-/// `Superseded/StaleOwner` and the original stop's R204b.6 completes its performance as
-/// `Success`. The fixtures (one per allocator: the legacy import R301.5 and an ordinary
-/// start R101.15) are the PD-25 fixtures unchanged. What this adds is the run through the
-/// switched entries: the ledger winners are asserted from the finished run, and the stop
-/// entries are pinned by name and by what they read, so a different path winning either
-/// outcome through the persisted core would show.
+/// PD-25 (#1157), **fixed**: a scoped stop for generation 1 that was queued ahead of `T`
+/// resumes after another stop took the retained capture and a new generation 2 was
+/// allocated. R201.1 took nothing, so it claims no terminal and the original stop's R204b.6
+/// wins generation 1's terminal (`RuntimeInterruption`) and completes its performance, so the two ledgers come from one stop. The
+/// fixtures (one per allocator: the legacy import R301.5 and an ordinary start R101.15) are
+/// the PD-25 fixtures. What this adds is the run through the switched entries: the ledger
+/// winners are asserted from the finished run, and the stop entries are pinned by name and
+/// by what they read, so a different path winning either outcome through the persisted core
+/// would show.
 ///
 /// The scoped stop's R201.1 is the D-less stale stop: it reads no persisted core and takes
-/// no stop entry. A fix PR deletes the PD-25 row and these assertions together.
-fn pd25_through_the_switched_entries(
+/// no stop entry.
+fn stale_scoped_stop_through_the_switched_entries(
     title: &'static str,
     body: fn(&Arc<World>),
     expected: &[(&str, Pair)],
@@ -881,10 +882,11 @@ fn pd25_through_the_switched_entries(
     probe::take_stop_entries();
     let divergences = core_divergences();
     run_sub_run_observed(&sub_from(title, DictationStatus::Idle, 0, body), &|world| {
-        // The terminal winner of generation 1: the scoped stop's R201.1.
+        // The terminal winner of generation 1: the original stop's R204b.6, not the scoped
+        // stop's R201.1 (PD-25 fixed).
         assert_eq!(
             terminal(world, 1),
-            Some(SUPERSEDED),
+            Some(INTERRUPTED),
             "the terminal winner of generation 1"
         );
         // The performance winner of generation 1: the original stop's R204b.6.
@@ -914,11 +916,11 @@ fn pd25_through_the_switched_entries(
 }
 
 #[test]
-fn pd25_through_a_start_allocator_runs_the_switched_entries_and_keeps_both_winners() {
+fn a_stale_scoped_stop_through_a_start_allocator_leaves_the_terminal_to_the_original_stop() {
     use Status::{Processing, Recording, Recovering};
-    pd25_through_the_switched_entries(
+    stale_scoped_stop_through_the_switched_entries(
         "PD-25 through a start (R101.15), switched entries",
-        pd25_start,
+        stale_scoped_stop_after_start,
         &[
             // The unscoped stop finds generation 1 `Recovering` (the runtime failure) and
             // R201.7 takes the retained capture ...
@@ -933,11 +935,11 @@ fn pd25_through_a_start_allocator_runs_the_switched_entries_and_keeps_both_winne
 }
 
 #[test]
-fn pd25_through_an_import_allocator_runs_the_switched_entries_and_keeps_both_winners() {
+fn a_stale_scoped_stop_through_an_import_allocator_leaves_the_terminal_to_the_original_stop() {
     use Status::{Idle, Processing, Recovering};
-    pd25_through_the_switched_entries(
+    stale_scoped_stop_through_the_switched_entries(
         "PD-25 through an import (R301.5), switched entries",
-        pd25_import,
+        stale_scoped_stop_after_import,
         &[
             (E201, (Recovering, RecordingId(1))),
             (E204A, (Processing, RecordingId(1))),

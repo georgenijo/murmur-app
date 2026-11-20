@@ -81,8 +81,10 @@ fn with_continuation(mut decided: Decision, rid: RecordingId, kind: ContKind) ->
 ///
 /// First call (`interrupted` absent): `NeedObservation(TakeInterrupted{expected})`
 /// before any effect (decision D-S1-3, PD-15: the take is destructive and also
-/// happens for a stale owner). Second call: `Pre:TERM(Superseded/StaleOwner)` for
-/// the *expected* id and the `recording_superseded` reply.
+/// happens for a stale owner). Second call: the `recording_superseded` reply, with
+/// `Pre:TERM(Superseded/StaleOwner)` for the *expected* id, except when the take found
+/// nothing because an earlier take consumed the capture (`Some(None)` with
+/// `taken_earlier`): that taker owns the terminal (PD-25 fixed).
 pub fn decide_stop_request_stale(input: StopInput, _now: Now) -> Option<Decision> {
     if !input.is_stale() {
         return None;
@@ -96,11 +98,23 @@ pub fn decide_stop_request_stale(input: StopInput, _now: Now) -> Option<Decision
             "R201.1",
         ));
     }
+    // PD-25 fix: when this stop's take found nothing because an earlier take already
+    // consumed the capture (`taken_earlier`), that earlier taker owns the expected
+    // recording's terminal and claims it at its own R203.x / R204b.5 / R204b.6 (it may
+    // not have reached it yet). Claiming `Superseded` here would win the terminal ahead
+    // of it and split it from that stop's performance outcome. A take that found the
+    // capture, or found nothing that anyone had taken (a recording that never preserved
+    // one), leaves this stop the only path that can end the recording: it claims.
+    let effects = if input.interrupted == Some(None) && input.taken_earlier {
+        Vec::new()
+    } else {
+        vec![superseded(At::Pre)]
+    };
     Some(with_reply(
         decision(
             Verdict::Stale(StaleKind::StaleRecording),
             None,
-            vec![superseded(At::Pre)],
+            effects,
             "R201.1",
         ),
         Reply::typed(ReplyType::RecordingSuperseded, Status::Idle),

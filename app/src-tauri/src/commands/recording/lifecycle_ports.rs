@@ -369,7 +369,11 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
                 mode: TakeMode::Dispose,
                 ..
             } => {
-                let _ = audio_lifecycle::take_interrupted_dictation(self.recording_id);
+                if audio_lifecycle::take_interrupted_dictation(self.recording_id).is_some() {
+                    self.state
+                        .app_state
+                        .note_interrupted_taken(self.recording_id);
+                }
                 Ok(())
             }
             _ => Err(PortFailure),

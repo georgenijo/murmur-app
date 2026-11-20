@@ -1,4 +1,5 @@
-//! Shell fixtures for PD-25 (D-S2c-15 C4; the PD list in `recording_pd_witness_map.md`).
+//! Shell fixtures for the fixed PD-25 (issue #1157; D-S2c-15 C4 held them as the preserved
+//! defect's witnesses, and the fix PR flipped them to assert the fixed behaviour).
 //!
 //! PD-25 (issue #1157, confirmed real by the #1169 round-2 check): a scoped stop for
 //! generation 1 is still queued ahead of the recording transition `T` while another
@@ -7,9 +8,16 @@
 //! owner when a **new generation 2** is allocated, either by a legacy import (R301.5)
 //! or by an ordinary microphone start (R101.15). The scoped stop then resumes:
 //! R201.1 sees `expected = 1` against the current id 2, with the capture already
-//! consumed, and wins generation 1's terminal as `Superseded/StaleOwner`; the original
-//! stop resumes after it and R204b.6 completes generation 1's performance as `Success`.
-//! One recording ends with a terminal and a performance outcome that disagree.
+//! consumed, and (before the fix) won generation 1's terminal as `Superseded/StaleOwner`
+//! while the original stop's R204b.6 completed generation 1's performance as `Success`:
+//! one recording ended with a terminal and a performance outcome that disagreed.
+//!
+//! **Fixed.** A stale stop whose take found nothing because an earlier take consumed the
+//! capture claims no terminal (R201.1 in `decide_stop_request_stale`, `taken_earlier`):
+//! the stop that took the capture owns the terminal. The scoped stop still replies
+//! `recording_superseded`; the original stop's R204b.6 wins generation 1's terminal
+//! (`RuntimeInterruption/StreamInvalidated`: the capture was an interrupted one) and
+//! completes its performance as `Success`, both from the one stop.
 //!
 //! The interleaving (one fixture per allocator, the same body):
 //!
@@ -27,8 +35,7 @@
 //!    allocated; the scoped stop is polled to its reply; the barrier returns and the
 //!    parked stop runs R204b.
 //!
-//! Ordering is by causal barriers only: no clock, no sleep. A fix PR deletes the PD-25
-//! row and these fixtures together (C7.0).
+//! Ordering is by causal barriers only: no clock, no sleep.
 #![cfg(test)]
 
 use super::dictation_host::HostFuture;
@@ -45,9 +52,11 @@ use std::rc::Rc;
 type ParkedStop = Rc<RefCell<Option<Fut<Result<serde_json::Value, String>>>>>;
 type Reply = Rc<RefCell<Option<Result<serde_json::Value, String>>>>;
 
-pub(super) const SUPERSEDED: (DictationTerminalOutcome, DictationErrorCode) = (
-    DictationTerminalOutcome::Superseded,
-    DictationErrorCode::StaleOwner,
+/// The original stop's terminal: the capture it took was an interrupted one, so R204b.6
+/// claims the interruption's code (`interrupted` wins over `Success`).
+pub(super) const INTERRUPTED: (DictationTerminalOutcome, DictationErrorCode) = (
+    DictationTerminalOutcome::RuntimeInterruption,
+    DictationErrorCode::StreamInvalidated,
 );
 
 pub(super) fn status(world: &Arc<World>) -> DictationStatus {
@@ -229,7 +238,7 @@ pub(super) fn allocate_by_start(world: &Arc<World>) {
 // ------------------------------------------------------------------ the fixture
 
 /// The shared body. `allocate` is the allocator that runs at the barrier.
-fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc<World>)) {
+fn stale_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc<World>)) {
     // The bridge keeps the task it schedules, and the `AutoStop` owner it carries, instead
     // of dropping them: the scoped stop below is that task, not a stop the fixture builds.
     world.knobs().carry_auto_stop_owner = true;
@@ -296,50 +305,61 @@ fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc
         )),
         "R201.1: the scoped stop is superseded by the new generation"
     );
-    // PD-25: generation 1 ends with a terminal and a performance outcome that disagree.
+    // PD-25 fixed: the original stop keeps generation 1's terminal through R204b.6, so the
+    // terminal and the performance outcome of generation 1 both come from that stop. The
+    // scoped stop found the capture already taken, so it claims nothing.
     assert_eq!(
         terminal(world, 1),
-        Some(SUPERSEDED),
-        "the scoped stop won generation 1's terminal as Superseded/StaleOwner"
+        Some(INTERRUPTED),
+        "the original stop's R204b.6 won generation 1's terminal as RuntimeInterruption"
     );
     assert_eq!(
         perf_claim(1),
         Some(RunOutcomeV1::Success),
         "the original stop's R204b.6 completed generation 1's performance as Success"
     );
-    // The scoped stop's own claim lost nothing it should keep: it took no capture.
     let trace = world.trace();
+    let claims: Vec<&String> = trace
+        .iter()
+        .filter(|line| line.starts_with("~ terminal 1 "))
+        .collect();
+    assert_eq!(
+        claims,
+        ["~ terminal 1 RuntimeInterruption/StreamInvalidated"],
+        "exactly one terminal claim for generation 1, the original stop's:\n{}",
+        trace.join("\n")
+    );
     assert!(
-        trace
+        !trace
             .iter()
             .any(|line| line == "~ terminal 1 Superseded/StaleOwner"),
-        "the terminal claim is in the trace:\n{}",
+        "the scoped stop claimed no Superseded terminal:\n{}",
         trace.join("\n")
     );
 }
 
-pub(super) fn pd25_import(world: &Arc<World>) {
-    pd25_scoped_stop_after_a_new_generation(world, allocate_by_import);
+pub(super) fn stale_scoped_stop_after_import(world: &Arc<World>) {
+    stale_scoped_stop_after_a_new_generation(world, allocate_by_import);
 }
 
-pub(super) fn pd25_start(world: &Arc<World>) {
-    pd25_scoped_stop_after_a_new_generation(world, allocate_by_start);
+pub(super) fn stale_scoped_stop_after_start(world: &Arc<World>) {
+    stale_scoped_stop_after_a_new_generation(world, allocate_by_start);
 }
 
-/// PD-25 through the legacy import (R301.5).
+/// PD-25 (fixed) through the legacy import (R301.5).
 #[test]
-pub(super) fn pd25_import_allocates_while_a_scoped_stop_for_the_old_generation_is_queued() {
+pub(super) fn a_stale_scoped_stop_after_an_import_leaves_the_terminal_to_the_original_stop() {
     repeat(&sub(
-        "PD-25: a scoped stop for generation 1 resumes after an import allocated generation 2 (R201.1 / R204b.6)",
-        pd25_import,
+        "PD-25 fixed: a scoped stop for generation 1 resumes after an import allocated generation 2 (R201.1 / R204b.6)",
+        stale_scoped_stop_after_import,
     ));
 }
 
-/// PD-25 through an ordinary microphone start (R101.15).
+/// PD-25 (fixed) through an ordinary microphone start (R101.15).
 #[test]
-pub(super) fn pd25_start_allocates_while_a_scoped_stop_for_the_old_generation_is_queued() {
+pub(super) fn a_stale_scoped_stop_after_a_start_leaves_the_terminal_to_the_original_stop() {
     repeat(&sub(
-        "PD-25: a scoped stop for generation 1 resumes after a start allocated generation 2 (R201.1 / R204b.6)",
-        pd25_start,
+        "PD-25 fixed: a scoped stop for generation 1 resumes after a start allocated generation 2 (R201.1 / R204b.6)",
+        stale_scoped_stop_after_start,
     ));
 }
