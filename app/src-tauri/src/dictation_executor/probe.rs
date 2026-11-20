@@ -193,6 +193,100 @@ pub(crate) fn take_cancel_entries() -> Vec<CancelEntryRead> {
     )
 }
 
+/// What a start entry's (or query's) C8.6 read saw, and where: the persisted and the live
+/// `(status, recording id)` **as read**, before the entry re-synced a divergence or ran any
+/// effect, and the `(file, line)` of the `start_view` / `start_query_view` call. The start
+/// cutover owns this type (D-S2c-18 amendment 1): no other cutover's probe types are shared.
+pub(crate) type StartEntryRead = (
+    (
+        (
+            murmur_dictation_core::status::Status,
+            murmur_dictation_core::ids::RecordingId,
+        ),
+        (
+            murmur_dictation_core::status::Status,
+            murmur_dictation_core::ids::RecordingId,
+        ),
+    ),
+    (&'static str, u32),
+);
+
+static START_ENTRIES: std::sync::Mutex<Vec<StartEntryRead>> = std::sync::Mutex::new(Vec::new());
+static START_ENTRIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static START_QUERIES: std::sync::Mutex<Vec<StartEntryRead>> = std::sync::Mutex::new(Vec::new());
+static START_QUERIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`record_lifecycle_entries`] for the start family's entries (`FieldAdapter::start_view`).
+pub(crate) fn record_start_entries(on: bool) {
+    START_ENTRIES_ON.store(on, Ordering::Relaxed);
+}
+
+/// [`stop_entry`] for the start family: what a start entry's C8.6 assertion read, as read
+/// at the entry, with the entry's call site.
+pub(crate) fn start_entry(
+    persisted: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    live: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    caller: &'static std::panic::Location<'static>,
+) {
+    if !START_ENTRIES_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    START_ENTRIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(((persisted, live), (caller.file(), caller.line())));
+}
+
+/// Every start entry's read since the last call, oldest first.
+pub(crate) fn take_start_entries() -> Vec<StartEntryRead> {
+    std::mem::take(
+        &mut *START_ENTRIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+/// [`record_start_entries`] for the queries 401-404 (`FieldAdapter::start_query_view`).
+pub(crate) fn record_start_queries(on: bool) {
+    START_QUERIES_ON.store(on, Ordering::Relaxed);
+}
+
+/// What a query's persisted read saw (persisted, then live, as read), with its call site.
+pub(crate) fn start_query(
+    persisted: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    live: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    caller: &'static std::panic::Location<'static>,
+) {
+    if !START_QUERIES_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    START_QUERIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(((persisted, live), (caller.file(), caller.line())));
+}
+
+/// Every query read since the last call, oldest first.
+pub(crate) fn take_start_queries() -> Vec<StartEntryRead> {
+    std::mem::take(
+        &mut *START_QUERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// The shadow read its own per-thread state (the keyboard write sequence, the ticker
 /// mailbox). A disarmed shadow makes none (D-S2c-10 R4).
 #[cfg(feature = "dictation-shadow")]

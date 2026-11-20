@@ -213,6 +213,10 @@ mod stop_cutover_tests;
 mod cancel_cutover_tests;
 
 #[cfg(test)]
+#[path = "recording_start_cutover_tests.rs"]
+mod start_cutover_tests;
+
+#[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
 
@@ -339,7 +343,7 @@ fn register_partial_ticker_locked(
 ) -> bool {
     // Query 401 (`q_is_recording_current`: id > 0, current, `Recording`, not
     // cancelled), then the ticker claim, in today's short-circuit order.
-    crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation)
+    crate::dictation_executor::FieldAdapter::start_query_view(app_state, dictation)
         .q_is_recording_current(murmur_dictation_core::ids::RecordingId(recording_id))
         && crate::commands::dictation_preview::note_ticker_started(recording_id)
 }
@@ -355,8 +359,7 @@ pub(crate) fn register_partial_ticker_locked_observed(
     gate: &std::cell::Cell<Option<crate::dictation_shadow::types::TickerGate>>,
 ) -> bool {
     use murmur_dictation_core::ids::RecordingId;
-    let view =
-        crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation);
+    let view = crate::dictation_executor::FieldAdapter::start_query_view(app_state, dictation);
     let id = RecordingId(recording_id);
     let (registered, before) = if view.q_is_recording_current(id) {
         crate::commands::dictation_preview::note_ticker_started_observed(recording_id)
@@ -2970,10 +2973,10 @@ fn destination_application_name(
 /// dictation lock (`dictation` is its contents) for as long as it acts on the answer.
 fn owns_delivery(
     app_state: &AppState,
-    dictation: &crate::state::DictationState,
+    dictation: &mut crate::state::DictationState,
     recording_id: u64,
 ) -> bool {
-    crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation)
+    crate::dictation_executor::FieldAdapter::start_view(app_state, dictation)
         .q_owns_delivery(murmur_dictation_core::ids::RecordingId(recording_id))
 }
 
@@ -2986,8 +2989,8 @@ fn with_current_delivery_owner<T>(
     recording_id: u64,
     operation: impl FnOnce() -> T,
 ) -> Option<T> {
-    let dictation = app_state.dictation.lock_or_recover();
-    if !owns_delivery(app_state, &dictation, recording_id) {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    if !owns_delivery(app_state, &mut dictation, recording_id) {
         return None;
     }
     Some(operation())
@@ -3004,9 +3007,9 @@ fn with_current_delivery_owner_timed<T>(
     } else {
         |r| &mut r.inject_owner_wait_us
     });
-    let dictation = app_state.dictation.lock_or_recover();
+    let mut dictation = app_state.dictation.lock_or_recover();
     drop(wait);
-    if !owns_delivery(app_state, &dictation, recording_id) {
+    if !owns_delivery(app_state, &mut dictation, recording_id) {
         return None;
     }
     Some(operation())
@@ -3188,10 +3191,10 @@ mod clipboard_delivery_tests {
                     .store(cancelled_through, Ordering::SeqCst);
                 let mut dictation = app_state.dictation.lock_or_recover();
                 dictation.status = status;
+                crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
                 let cancelled = app_state.is_cancelled(id);
-                let view = crate::dictation_executor::FieldAdapter::project_lifecycle_view(
-                    &app_state, &dictation,
-                );
+                let view =
+                    crate::dictation_executor::FieldAdapter::start_view(&app_state, &mut dictation);
                 let at =
                     format!("{status:?} id={id} current={current} cancelled={cancelled_through}");
                 assert_eq!(
@@ -3200,7 +3203,7 @@ mod clipboard_delivery_tests {
                     "402 {at}"
                 );
                 assert_eq!(
-                    owns_delivery(&app_state, &dictation, id),
+                    owns_delivery(&app_state, &mut dictation, id),
                     delivery_event_recording_id(id, current, cancelled, status).is_some(),
                     "403 {at}"
                 );
@@ -3251,6 +3254,7 @@ mod clipboard_delivery_tests {
         app_state.recording_id.store(9_000_001, Ordering::SeqCst);
         let mut dictation = app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Recording;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         // A stale generation is refused even while the lock shows Recording.
         assert!(!register_partial_ticker_locked(
             &app_state, &dictation, 9_000_000
@@ -3262,25 +3266,36 @@ mod clipboard_delivery_tests {
         // the stop already claimed (or declined) the hide under this lock.
         app_state.recording_id.store(9_000_002, Ordering::SeqCst);
         dictation.status = DictationStatus::Processing;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         assert!(!register_partial_ticker_locked(
             &app_state, &dictation, 9_000_002
         ));
         dictation.status = DictationStatus::Recording;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         assert!(register_partial_ticker_locked(
             &app_state, &dictation, 9_000_002
         ));
         // The predecessor resuming now cannot overwrite its successor.
         app_state.recording_id.store(9_000_001, Ordering::SeqCst);
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         assert!(!register_partial_ticker_locked(
             &app_state, &dictation, 9_000_001
         ));
+    }
+
+    /// A fixture's live write, followed by the seed of the persisted core the delivery fence
+    /// reads (the fence decides on M1/M2 of the core since the start cutover).
+    fn set_live(app_state: &AppState, status: DictationStatus) {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        crate::dictation_executor::FieldAdapter::seed_core(app_state, &mut dictation);
     }
 
     #[test]
     fn queued_delivery_rechecks_ownership_before_running_its_side_effect() {
         let app_state = AppState::default();
         app_state.recording_id.store(12, Ordering::SeqCst);
-        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        set_live(&app_state, DictationStatus::Processing);
 
         let mut calls = 0;
         assert_eq!(
@@ -3295,7 +3310,7 @@ mod clipboard_delivery_tests {
             Some(42)
         );
 
-        app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+        set_live(&app_state, DictationStatus::Idle);
         assert_eq!(
             with_current_delivery_owner(&app_state, 12, || {
                 calls += 1;
@@ -3304,8 +3319,12 @@ mod clipboard_delivery_tests {
             None
         );
 
-        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        set_live(&app_state, DictationStatus::Processing);
         app_state.recording_id.store(13, Ordering::SeqCst);
+        crate::dictation_executor::FieldAdapter::seed_core(
+            &app_state,
+            &mut app_state.dictation.lock_or_recover(),
+        );
         assert_eq!(
             with_current_delivery_owner(&app_state, 12, || {
                 calls += 1;
@@ -3317,7 +3336,7 @@ mod clipboard_delivery_tests {
 
         let cancelled_state = AppState::default();
         cancelled_state.recording_id.store(12, Ordering::SeqCst);
-        cancelled_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        set_live(&cancelled_state, DictationStatus::Processing);
         cancelled_state.cancel_recording(12);
         assert_eq!(
             with_current_delivery_owner(&cancelled_state, 12, || 45),
@@ -5012,8 +5031,8 @@ async fn run_transcription_pipeline(
         // this same lock before marking the ID cancelled, and a new start also
         // advances the ID under it, so neither can interleave a stale outcome.
         {
-            let dictation = app_state.dictation.lock_or_recover();
-            if owns_delivery(app_state, &dictation, recording_id) {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            if owns_delivery(app_state, &mut dictation, recording_id) {
                 let _ = app_handle.emit(
                     "dictation-delivery-outcome",
                     serde_json::json!({
@@ -5307,9 +5326,8 @@ async fn process_audio_inner(
     // Query 402 (`q_capture_current`): a short D read after the capture picks the
     // destination. The emit's own ownership recheck is the section below.
     let capture_is_current = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
-            .q_capture_current(RecordingId(rid))
+        let mut held = state.app_state.dictation.lock_or_recover();
+        FieldAdapter::start_view(&state.app_state, &mut held).q_capture_current(RecordingId(rid))
     };
     if !capture_is_current {
         tracing::info!(
@@ -5343,6 +5361,10 @@ async fn process_audio_inner(
         let flight = Flight::begin();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
+        // Test builds: D is free here, the point before the destination row's own section
+        // (R301.6), where a test may put the persisted core off live to see that row read it.
+        #[cfg(test)]
+        crate::barrier_hook::at("process_audio.destination");
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         let now = core_now();
@@ -7265,7 +7287,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     #[cfg(feature = "dictation-shadow")]
     let after_d = AfterD::new();
     let mut dictation = state.app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
     let decision = ready_op.consume(|op_status| {
         input.op_status = op_status;
         let mut rounds = 0_u8;
@@ -7601,8 +7623,13 @@ async fn start_native_recording_inner(
         // Declared before D, so a return submits the header after D is released.
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
+        // Test builds: D is free here, the point right before site 101's own section, where a
+        // test may put the persisted core off live with no trace line before the entry that
+        // reads it.
+        #[cfg(test)]
+        crate::barrier_hook::at("start.request");
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         let current = view.current_id.0;
         input.occupancy =
             crate::dictation_admission::dictation_start_occupancy(state, dictation.status);
@@ -8004,8 +8031,11 @@ async fn start_native_recording_inner(
                 None,
                 rid,
             );
+            // Test builds: D is free here, right before the capture-failure section (site 102).
+            #[cfg(test)]
+            crate::barrier_hook::at("start.failure");
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
             #[cfg(feature = "dictation-shadow")]
             let seen_status = capture::SeenStatus::new();
             #[cfg(feature = "dictation-shadow")]
@@ -8117,9 +8147,11 @@ async fn start_after_capture(
     // destination. The emit's own ownership recheck is R103.0, below.
     let capture_is_current = {
         let _stretch = flight.stretch();
-        let dictation = state.app_state.dictation.lock_or_recover();
-        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
-            .q_capture_current(recording)
+        // Test builds: D is free here, right before query 402's short read.
+        #[cfg(test)]
+        crate::barrier_hook::at("start.capture");
+        let mut held = state.app_state.dictation.lock_or_recover();
+        FieldAdapter::start_view(&state.app_state, &mut held).q_capture_current(recording)
     };
     let smart_destination = if capture_is_current {
         captured_smart_destination
@@ -8160,7 +8192,7 @@ async fn start_after_capture(
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         let decision =
             decide(|| core_start::decide_start_destination(&view, recording, smart_enabled, now));
         expect_valid(&decision);
@@ -8201,8 +8233,11 @@ async fn start_after_capture(
         let flight_103 = Flight::begin();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
+        // Test builds: D is free here, right before the context install (site 103).
+        #[cfg(test)]
+        crate::barrier_hook::at("start.context");
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         #[cfg(feature = "dictation-shadow")]
         let seen_status = capture::SeenStatus::new();
         let decision = context_guard.consume(|op_status| {

@@ -148,6 +148,10 @@ SHADOW_TEST_SELECTIONS = (
     # checks, R205.5's tail order, the R206 owner and ledger winner for both callers), which runs
     # in both configs; the shadow step runs it with the comparator armed.
     "cancel_cutover_tests::",
+    # The start cutover module (the switched site-101/102/103/104 entries and the queries 401-404,
+    # the C8.6 re-sync, the not-called checks, the late publish and the scoped cancel), which runs
+    # in both configs; the shadow step runs it with the comparator armed.
+    "start_cutover_tests::",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"

@@ -44,7 +44,27 @@ pub(crate) fn core_divergences() -> u64 {
     let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
     #[cfg(test)]
     let counted = counted.saturating_sub(FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
+    #[cfg(test)]
+    let counted = counted.saturating_sub(START_FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
     counted
+}
+
+/// Divergences a **start** test planted on purpose (the start cutover's own allowance, so its
+/// tests need no other cutover's harness support): [`core_divergences`] does not count them.
+#[cfg(test)]
+static START_FORGIVEN_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
+
+/// Test builds: allow `planted` more divergences to be counted without the harness's
+/// invariant seeing them; `0` clears the allowance (start cutover tests).
+#[cfg(test)]
+pub(crate) fn start_forgive_planted_divergences(planted: u64) {
+    START_FORGIVEN_DIVERGENCES.store(planted, Ordering::SeqCst);
+}
+
+/// Test builds: every divergence counted, planted ones included (start cutover tests).
+#[cfg(test)]
+pub(crate) fn raw_core_divergences() -> u64 {
+    CORE_DIVERGENCES.load(Ordering::SeqCst)
 }
 
 /// Divergences a test planted on purpose, which the golden harness's invariant
@@ -342,6 +362,74 @@ impl FieldAdapter {
             super::probe::cancel_entry,
             #[cfg(test)]
             std::panic::Location::caller(),
+        )
+    }
+
+    /// The decision view of the start family's D entries after the cutover (C9.7 b, C8.6):
+    /// site 101 (R101.3-.15, `decide_start_request`), 102 (the capture-failure section), 103.0
+    /// (`decide_start_destination`), 103 (the context install) and 104 (the ready publish,
+    /// R104.2-.7).
+    /// Exactly [`Self::lifecycle_view`] for the start family: the same persisted M1/M2, the same
+    /// M3 atomic, M4 left `None` (no start decide reads it; the context presence is a
+    /// `NeedObservation`), the same C8.6 count-and-re-sync. A test build records its reads
+    /// apart, with the caller (`probe::start_entry`), so a start test sees only start entries
+    /// and which one.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn start_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            super::probe::start_entry,
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
+    /// The view of the start family's queries that hold only `&DictationState`: 401/404, the
+    /// ticker registration (`register_partial_ticker_locked`). Its two callers are handed the
+    /// shared reference: the ready entry's `SD` (run under the same D hold whose
+    /// [`Self::start_view`] has just re-synced, so no difference can exist there) and the
+    /// lifecycle bridge's detached `StartSideTasks` closure (404), which takes D itself with no
+    /// entry before it. 403 (the delivery fence) and 402 hold a guard they may borrow mutably,
+    /// so they take [`Self::start_view`] and re-sync like an entry.
+    ///
+    /// The persisted M1/M2 and the same M3 atomic, not `DictationCore::project` over the live
+    /// fields. C8.6 is count, then re-sync, never ignore: a persisted/live difference is
+    /// **counted** (`core_divergences`) and, because a shared reference cannot re-sync, the
+    /// returned core carries the **live** M1/M2 (a core seeded from them, through the one
+    /// seeder, on a clone of the state: this is the defect path, so its cost does not matter,
+    /// and `PersistedCore::new` keeps its single caller). The query therefore answers as the
+    /// code did before the cutover, and the stored core is left for the next entry to re-sync
+    /// and count again: one divergence read by a query and then by the next entry is counted
+    /// twice (once per read), by design.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn start_query_view(app: &AppState, dictation: &DictationState) -> DictationCore {
+        #[cfg(test)]
+        super::probe::view();
+        let live_status = core_status(dictation.status);
+        let live_id = RecordingId(app.recording_id.load(Ordering::SeqCst));
+        #[cfg(test)]
+        super::probe::start_query(
+            (dictation.core.status(), dictation.core.current_id()),
+            (live_status, live_id),
+            std::panic::Location::caller(),
+        );
+        let core =
+            if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
+                CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
+                let mut live = dictation.clone();
+                Self::seed_core(app, &mut live);
+                live.core
+            } else {
+                dictation.core
+            };
+        DictationCore::new(
+            core,
+            LiveObs {
+                cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
+                context_for: None,
+            },
         )
     }
 

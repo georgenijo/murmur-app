@@ -241,8 +241,9 @@ struct Case {
     body: fn(&Arc<World>),
     /// The stop entries the run reads, in order.
     entries: &'static [&'static str],
-    /// `DictationCore::project` entries the run is still expected to make: the other
-    /// families' queries that stay on `project()` until their own cutover.
+    /// `DictationCore::project` entries the run may still make: the other families' queries that
+    /// stay on `project()` until their own cutover (the import's 402 until the start cutover is
+    /// applied; none once it is).
     queries: u64,
     /// Where a divergence is planted so that `entries[planted_entry]` is the first read
     /// after it: `(plant, index into entries)`.
@@ -360,16 +361,8 @@ fn import_with_destination(world: &Arc<World>) {
         dictation.save_audio = false;
         dictation.save_transcript = false;
     }
-    let host = ImportHost::new();
-    if let Plant::AtPort("import.capture") = PLAN.with(|plan| *plan.borrow()) {
-        let planted = Arc::clone(world);
-        *host
-            .at_capture
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Box::new(move || planted_now(&planted)));
-    }
-    let reply = import_with(world, host, &import_audio(), "import");
+    let _plant = arm(world);
+    let reply = import_with(world, ImportHost::new(), &import_audio(), "import");
     assert!(reply.is_ok(), "{reply:?}");
 }
 
@@ -491,7 +484,9 @@ fn cases() -> Vec<Case> {
             body: import_with_destination,
             entries: &[E301, E3016, E204A, E204B],
             queries: 1,
-            plant: Some((Plant::AtPort("import.capture"), 1)),
+            // Before the row's own D section: a plant at the capture is read first by the
+            // import's capture check (402), a start entry.
+            plant: Some((Plant::AtBarrier("process_audio.destination"), 1)),
         },
         Case {
             name: "an import that does not parse (301, 204a legacy parse)",
@@ -572,14 +567,15 @@ fn no_stop_entry_projects() {
         ("run_pipeline_idle_emit", 1, 0),
         ("process_audio_inner", 2, 1),
     ] {
+        // `projections` is the most the function may still hold: the import's query 402 moves
+        // with the start cutover.
         assert_eq!(
             lines_with(&source, &spans, function, "FieldAdapter::stop_view(").len(),
             views,
             "`{function}` reads the persisted core once per D entry"
         );
-        assert_eq!(
-            lines_with(&source, &spans, function, "project_lifecycle_view").len(),
-            projections,
+        assert!(
+            lines_with(&source, &spans, function, "project_lifecycle_view").len() <= projections,
             "`{function}` still builds a view with `project()`"
         );
         assert!(
@@ -599,8 +595,8 @@ fn no_stop_entry_projects() {
             "{}: the entries it read (by name)",
             case.name
         );
-        assert_eq!(
-            run.projections, case.queries,
+        assert!(
+            run.projections <= case.queries,
             "{}: `DictationCore::project` was reached beyond the shared query",
             case.name
         );
@@ -619,6 +615,13 @@ fn no_stop_entry_projects() {
     }
 }
 
+/// How many effects the import's destination row (R301.6) recorded since the last call.
+fn destination_witness() -> usize {
+    super::process_audio_ports::DESTINATION
+        .with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+        .len()
+}
+
 #[test]
 fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
     let _gate = serialized();
@@ -628,9 +631,24 @@ fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
             continue;
         };
         // The reference: the same fixture on an equal core.
+        destination_witness();
         let reference = run_case(&case, Plant::Nowhere);
         assert_eq!(reference.divergences, 0, "{}", case.name);
+        let reference_witness = destination_witness();
         let planted = run_case(&case, plan);
+        // The destination row's only effect leaves no trace (the host swallows the emit), so a
+        // row that counted and re-synced but then decided on the pair it read before (`Stale`,
+        // no effect) shows in nothing above: it shows in the witness it recorded, one
+        // `SmartDestinationEmit`, as in the reference run.
+        assert_eq!(
+            destination_witness(),
+            reference_witness,
+            "{}: the row decided as the equal core does",
+            case.name
+        );
+        if case.entries.contains(&E3016) {
+            assert_eq!(reference_witness, 1, "{}: the row ran its emit", case.name);
+        }
         let (pair_planted, pair_live) = PLANTED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
