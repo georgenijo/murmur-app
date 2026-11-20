@@ -110,6 +110,7 @@ pub fn decide_cancel_request(core: &DictationCore, input: CancelInput, _now: Now
                         stage: PerfStage::InferenceDecode,
                         cause: None,
                         with_audio_duration: false,
+                        only_if_run: false,
                     }),
                 ),
             ],

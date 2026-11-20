@@ -502,19 +502,19 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     ticker, `Success`); the same claim with another outcome is PD-23, whose signature binds
     each outcome to the stop, cancel or pipeline rows that complete it (a class is not
     enough), and whose `Success` variant needs the ticker's gate to have refused the second
-    ticker (pending at the shell: source-only). PD-24 has one signature per cause, R209.3
-    (the start timeout's own `Cancel{User}`) and R209.5 (an environmental recovery), and
-    is a mismatch at the performance **coordinator's claim**: the failed start never began a
-    run, so no row is behind it. PD-22 needs the winning `Idle` claim and the losing named
+    ticker (pending at the shell: source-only). PD-24 (the start timeout's cross-ledger
+    claim) is fixed and has no signature: the supervisor's `Recovering` arm out of
+    `Starting` completes performance only for a run that exists (`PerfComplete::only_if_run`),
+    and a bare claim by R209.3 or R209.5 is a failure. PD-22 needs the winning `Idle` claim and the losing named
     claim in the same cancel tail and is judged when that tail closes, because the window's
     events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
     compares the outcomes a generation actually has, and the model follows the performance
     run's lifecycle (`request_completion`): a completion is the run's outcome once the run
     began, waits while the begin is in flight, is dropped by an abort, and is a bare claim
     of the coordinator with no row when no run was registered (an aborted start, seed
-    8096); only a signature marked `no_run` (PD-24) credits such a claim. No allowlist entry
+    8096), which is not an SP4(b) split. No allowlist entry
     is widened to make a seed pass: a split no signature covers is a finding to reproduce
-    at the shell (PD-23, PD-24) or a model fix. No PD exempts a whole recording.
+    at the shell (PD-23) or a model fix. No PD exempts a whole recording.
   * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
     and is released by the end of the run.
   * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
@@ -568,7 +568,7 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
   2,071,065, 289,110, 31,086, 154,052, 24,199, 73,499) that take the PD-18 (unsealed stop),
   PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
-  PD-22 (both rows), PD-24 (an environmental recovery) and the late main-window start reply
+  PD-22 (both rows), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`) and the late main-window start reply
   with its second stop (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The same
   check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)

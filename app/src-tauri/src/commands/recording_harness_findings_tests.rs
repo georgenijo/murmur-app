@@ -977,12 +977,11 @@ pub(super) fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performan
     ));
 }
 
-// ------------------------------------------------------------------ PD-24
-// Harness seeds 3,651 (R102.3 / R209.3, the user's cancel) and 24,199 (R102.3 / R209.5,
-// an environmental recovery); 21,272 and 5,206 after #1160 and #1162, 19,737 and 5,168 before. The start call's 2 s receiver expired while the supervisor
-// was still handling the start (`await_start_response`, `audio_lifecycle.rs:3065-3079`):
-// the caller is revoked, `Cancel{User}` is enqueued, and the call returns
-// `SupervisorUnavailable`, so the start thread runs R102 (a failure result). The
+// ------------------------------------------------------------------ PD-24 (fixed)
+// The start call's 2 s receiver expired while the supervisor was still handling the start
+// (`await_start_response`, `audio_lifecycle.rs:3065-3079`): the caller is revoked,
+// `Cancel{User}` is enqueued, and the call returns `SupervisorUnavailable`, so the start
+// thread runs R102 (a failure result), which aborts the performance run it never began. The
 // supervisor's `Recovering` arm is in flight for the same recording, started by
 //
 // * R209.3: the queued `Cancel{User}` (`handle_message`, `1301-1337`:
@@ -991,14 +990,17 @@ pub(super) fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performan
 //   (`cancel_starting_for_environment_change`, `3322-3330`: `Cancel{owner: None,
 //   starting_only: true}`, handled by the same arm; here `SystemWake`).
 //
-// The bridge's arm takes D (`Starting -> Recovering`) and runs its tail outside D. The
-// start thread's R102.3 takes D inside that tail, after `audio-recovery-started` and
-// before the arm's `PC`/`TERM`: it writes `Idle` and claims the terminal as
-// `CaptureInitFailure`; the arm's `PC(Cancelled)` then completes performance and its
-// `TERM` loses. The mismatch is at the coordinator's claim: the failed start never
-// begins a performance run, so no row is behind it (`performance_metrics/repository.rs:
-// 421`, `request_completion`, `recording.rs:3114`). C4.4 and T2 name the race; C7.1 lists no
-// row for it. Each variant is its own signature, bound to the arm's cause by its row.
+// The arm takes D (`Starting -> Recovering`) and runs its tail outside D. The start
+// thread's R102.3 takes D inside that tail, after `audio-recovery-started` and before the
+// arm's `PC`/`TERM`: it writes `Idle` and claims the terminal as `CaptureInitFailure`; the
+// arm's `TERM` loses. Before the fix the arm's `PC(Cancelled)` still completed performance
+// for a run that no longer existed, so the terminal said the capture failed to start while
+// the performance coordinator held a `Cancelled` claim (`recording.rs`, `request_completion`).
+// The fix (`PerfComplete::only_if_run`, set by the arm out of `Starting`) completes only a
+// run that exists: the terminal stays `CaptureInitFailure`, and the coordinator holds no
+// claim for the dead start. The user sees the same reply and status as before; what no
+// longer exists is the contradicting `Cancelled` performance claim. These tests keep the
+// driving sequence of the former PD-24 fixtures and assert the fixed ledgers.
 
 fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
     world: &Arc<World>,
@@ -1056,8 +1058,8 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
         Err("Audio lifecycle supervisor is unavailable".to_string())
     );
     assert_eq!(status(world), DictationStatus::Idle);
-    // The terminal says the capture failed to start; the performance record says the
-    // recording was cancelled.
+    // The terminal says the capture failed to start, and the performance coordinator holds
+    // no claim for a run the failed start aborted: the two ledgers agree.
     assert_eq!(
         terminal(world, 1),
         Some((
@@ -1066,16 +1068,16 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
         ))
     );
     assert!(
-        matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
-        "{:?}",
+        perf_claim(1).is_none(),
+        "the arm completed performance for a start that never began a run: {:?}",
         perf_claim(1)
     );
 }
 
 #[test]
-pub(super) fn pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree() {
+fn pd24_start_timeout_leaves_one_terminal_and_no_performance_claim_in_the_users_cancel_arm() {
     repeat(&sub(
-        "PD-24: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{User} arm (R102.3, R209.3)",
+        "PD-24 fixed: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{User} arm and the arm claims no performance (R102.3, R209.3)",
         |world| {
             pd24_start_timeout_claims_inside_the_recovering_arms_tail(
                 world,
@@ -1086,10 +1088,10 @@ pub(super) fn pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_o
 }
 
 #[test]
-pub(super) fn pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree(
+fn pd24_start_timeout_leaves_one_terminal_and_no_performance_claim_in_an_environmental_recovery_arm(
 ) {
     repeat(&sub(
-        "PD-24: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{SystemWake} arm (R102.3, R209.5)",
+        "PD-24 fixed: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{SystemWake} arm and the arm claims no performance (R102.3, R209.5)",
         |world| {
             pd24_start_timeout_claims_inside_the_recovering_arms_tail(
                 world,
