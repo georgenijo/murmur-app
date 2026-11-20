@@ -504,9 +504,10 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     (the start timeout's cross-ledger
     claim) is fixed and has no signature: the supervisor's `Recovering` arm out of
     `Starting` completes performance only for a run that exists (`PerfComplete::only_if_run`),
-    and a bare claim by R209.3 or R209.5 is a failure. PD-22 needs the winning `Idle` claim and the losing named
-    claim in the same cancel tail and is judged when that tail closes, because the window's
-    events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
+    and a bare claim by R209.3 or R209.5 is a failure. R211.2 (the supervisor's `Idle` for a
+    finished current id) claims no terminal either (PD-22 is fixed, and with it PD-2, which was
+    the same claim): any `Superseded` claim of R211.2 is an SP4(b) failure with every outcome, so
+    the cancel's `TERM` or the stop's own claim owns the terminal. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
     compares the outcomes a generation actually has, and the model follows the performance
     run's lifecycle (`request_completion`): a completion is the run's outcome once the run
     began, waits while the begin is in flight, is dropped by an abort, and is a bare claim
@@ -557,7 +558,7 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
 * **Layer** (D-S2b-4, D-S2b-7 (c)): the harness runs the real `decide_*` functions over
   a model world, not the shell. Where a model witness and a production-reachable shell
   fixture disagree, the fixture wins and the model is fixed. PD-19..PD-24 were found
-  this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
+  this way (PD-21 to PD-24 are fixed) (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
   `FINDING_SEEDS`, each beside its shell test). The shell fixtures drive the Stage 0b
   fake host, because the real supervisor has no test seam outside `audio_lifecycle.rs`
   (D-S2b-9 (b)): each injected notification or reply cites its production sender and
@@ -567,7 +568,7 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
   2,071,065, 289,110, 31,086, 154,052, 24,199, 73,499) that take the PD-18 (unsealed stop),
   PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
-  PD-22 (both rows), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`) and the late main-window start reply
+  the fixed PD-22's two paths (`IDLE_FINISHED_SEEDS`), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`) and the late main-window start reply
   with its second stop (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The same
   check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)

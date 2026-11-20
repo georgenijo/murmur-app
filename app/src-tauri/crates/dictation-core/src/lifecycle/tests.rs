@@ -475,16 +475,11 @@ fn r211_1_idle_for_a_non_current_recording_is_superseded() {
 }
 
 #[test]
-fn r211_2_idle_while_already_idle_is_superseded_without_a_keyboard_reset() {
-    // PD-2 / PD-18 (b): no KB reset, the terminal only wins if none was claimed.
+fn r211_2_idle_while_already_idle_claims_no_terminal_and_resets_no_keyboard() {
+    // PD-22 (and PD-2, the same claim): the recording is over, so the path that ended it
+    // owns the terminal. PD-18 (b): no KB reset either.
     let d = decide_sup_idle(&core(Status::Idle, RID), RID, NOW);
-    row(
-        &d,
-        "R211.2",
-        Verdict::Applied,
-        None,
-        &["In:TERM(Superseded/StaleOwner)"],
-    );
+    row(&d, "R211.2", Verdict::Applied, None, &[]);
 }
 
 const FORCED_IDLE: [&str; 6] = [

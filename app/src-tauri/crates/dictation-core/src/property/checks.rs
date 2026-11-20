@@ -82,10 +82,6 @@ pub enum Pre {
     /// PD-20 (b): another path claimed the terminal first, the cancel's own claim was
     /// lost, and the cancel's tail still completed performance `Cancelled`.
     CancelPerfAfterLostClaim,
-    /// PD-22: the supervisor's `Idle` claimed `Superseded` for a finished current id,
-    /// a later claim of the real path was lost, and a cancel's tail was open when
-    /// performance completed.
-    SupervisorIdleWon,
 }
 
 /// The performance completions a signature admits.
@@ -137,7 +133,7 @@ pub struct Signature {
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 4] = [
+pub const SIGNATURES: [Signature; 3] = [
     // PD-5: R207.2 / R209.2 on the current id in `Idle`, `Recovering` or `Processing`
     // (the statuses C3 lists for those rows).
     Signature {
@@ -198,17 +194,6 @@ pub const SIGNATURES: [Signature; 4] = [
         perf: PerfSet::Only(&[("R205.5", PerfOutcome::Cancelled)]),
         pre: Pre::CancelPerfAfterLostClaim,
     },
-    // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
-    Signature {
-        pd: 22,
-        terminal: &[("R211.2", SUPERSEDED.0, SUPERSEDED.1)],
-        claim_status: &[Status::Idle],
-        perf: PerfSet::Only(&[
-            ("R203.2", PerfOutcome::Failed),
-            ("R205.5", PerfOutcome::Cancelled),
-        ]),
-        pre: Pre::SupervisorIdleWon,
-    },
 ];
 
 /// Evidence one recording (generation) left for the end-of-run checks.
@@ -251,11 +236,6 @@ pub struct Checker {
     /// Recordings whose pipeline or stop task panicked (PD-13).
     panicked_ids: BTreeSet<Rid>,
     pub steps_checked: u32,
-    /// Recordings whose PD-22 split (the supervisor `Idle`'s claim, `R211.2`, inside
-    /// another cancel's tail) is judged when that tail closes: the window's other
-    /// events (the cancel's lost claim, the performance completions) may land in
-    /// either order inside it (D-S2b-11 (f)).
-    sp4b_tail_deferred: BTreeSet<Rid>,
     /// How many of `World::registry_faults` were already reported.
     faults_seen: usize,
     /// A readable event trace (for reproducing a seed by hand).
@@ -385,20 +365,6 @@ impl Checker {
         for rid in touched {
             self.sp4b(w, rid);
         }
-        // A PD-22 window that closed is judged now.
-        let closed: Vec<Rid> = self
-            .sp4b_tail_deferred
-            .iter()
-            .copied()
-            .filter(|rid| {
-                w.ledger.ctx[rid]
-                    .tail
-                    .is_none_or(|tail| w.cancel_tail.get(rid) != Some(&tail))
-            })
-            .collect();
-        for rid in closed {
-            self.sp4b(w, rid);
-        }
         // SP6: ids.
         if w.current_id < self.prev_current {
             self.fail(format!(
@@ -462,7 +428,6 @@ impl Checker {
         let from_to = d.transition;
         match row {
             "R216.3" | "R216.4" | "R216.5" => self.hit(hits, 1, row, rid),
-            "R211.2" => self.hit(hits, 2, row, rid),
             "R207.2" | "R209.2" => self.hit(hits, 5, row, rid),
             "R211.3" => self.hit(hits, 7, row, rid),
             "R103.2" => self.hit(hits, 8, row, rid),
@@ -619,10 +584,6 @@ impl Checker {
     /// both exist: a disagreement fails unless one signature of the table matches in
     /// full (the PD's rows, outcomes and causal precondition).
     pub(super) fn sp4b(&mut self, w: &World, rid: Rid) {
-        self.sp4b_at(w, rid, false);
-    }
-
-    fn sp4b_at(&mut self, w: &World, rid: Rid, last: bool) {
         let (Some((outcome, code, terminal_row)), Some((perf, perf_row))) =
             (w.ledger.claimed.get(&rid), w.perf.outcome.get(&rid))
         else {
@@ -632,21 +593,6 @@ impl Checker {
             return;
         }
         let claim = w.ledger.ctx[&rid];
-        // PD-22 defers judgment to the end of its window: the winning `Idle` claim, the
-        // named losing claim and the performance completion all fall in one cancel's tail,
-        // in any order (the stop's failure tail may complete performance before the
-        // cancel's own `TERM` is lost, or after). Judged when the tail closes.
-        if !last
-            && *terminal_row == "R211.2"
-            && claim.other_cancel_tail
-            && claim
-                .tail
-                .is_some_and(|tail| w.cancel_tail.get(&rid) == Some(&tail))
-        {
-            self.sp4b_tail_deferred.insert(rid);
-            return;
-        }
-        self.sp4b_tail_deferred.remove(&rid);
         self.sp4b_done.insert(rid);
         let completion = w.perf.ctx[&rid];
         if std::env::var("DUMP_SP4B").is_ok() && !self.would_match(w, rid) {
@@ -739,23 +685,6 @@ impl Checker {
                         .iter()
                         .any(|t| t.row == completion.row && !t.won && t.step > claim.step)
             }
-            Pre::SupervisorIdleWon => {
-                // One window: the winning `Idle` claim, the named losing claim (the
-                // cancel's own `TERM`, R205.5) and the performance completion all fall
-                // in the tail of the same cancel.
-                claim_current
-                    && claim.step < completion.step
-                    && claim.other_cancel_tail
-                    && claim.tail.is_some_and(|tail| {
-                        completion.tail == Some(tail)
-                            && tries.iter().any(|t| {
-                                t.row == "R205.5"
-                                    && !t.won
-                                    && t.step > claim.step
-                                    && t.tail == Some(tail)
-                            })
-                    })
-            }
         }
     }
 
@@ -765,10 +694,6 @@ impl Checker {
         self.sp4a(w);
         for (_, row) in &w.perf.dropped {
             *self.hits.dropped_completions.entry(row).or_default() += 1;
-        }
-        // A window still open at the end of the run is judged as it stands.
-        for rid in std::mem::take(&mut self.sp4b_tail_deferred) {
-            self.sp4b_at(w, rid, true);
         }
         if w.partial_lease.is_some() {
             self.fail(format!(

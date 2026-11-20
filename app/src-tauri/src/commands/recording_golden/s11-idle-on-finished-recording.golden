@@ -82,5 +82,4 @@ supervisor.set_phase Idle
 
 === 11c with no earlier terminal ===
 supervisor.notify 1 Idle
-~ terminal 1 Superseded/StaleOwner
 = final status=Idle processing=false context=none cancelled_through=0

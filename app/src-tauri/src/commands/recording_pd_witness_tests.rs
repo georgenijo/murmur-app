@@ -1151,7 +1151,7 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
 /// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`])
 /// (`e8_pds`): each is driven by a
-/// named shell fixture, the PD-19 to PD-23 fixtures are replayed through the shadow too
+/// named shell fixture, the PD-19 and PD-20 fixtures are replayed through the shadow too
 /// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
 /// not run.
@@ -1249,9 +1249,10 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
         }
     }
     let _e7_dump = std::env::var_os("MURMUR_E7_PER_ROW_OUT").map(E7Dump);
-    // PD-4 is not here: its signature needs the `Superseded` claim R207.3 no longer makes
-    // (PD-23 fixed), so it is `RowRetired` and the shadow credits it nothing.
-    let missing: Vec<u8> = [1_u8, 2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
+    // PD-2 and PD-4 are not here: their signatures need a `Superseded` claim R211.2 and R207.3
+    // no longer make (PD-22 and PD-23 fixed), so they are `RowRetired` and the shadow credits
+    // them nothing.
+    let missing: Vec<u8> = [1_u8, 3, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
         .into_iter()
         .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)
         .collect();
@@ -1271,7 +1272,8 @@ enum PdKind {
     /// and E8 requires the credit to be above zero.
     Row,
     /// A row the shadow's allowlist (`pd::PD_DEFS`) still lists but no schedule can credit
-    /// any more (PD-4: R207.3 claims no terminal since PD-23 was fixed, so the `TERM` its
+    /// any more (PD-4: R207.3 claims no terminal since PD-23 was fixed; PD-2: R211.2 claims no
+    /// terminal since PD-22 was fixed, and it is the same claim; either way the `TERM` the
     /// signature needs never runs). Its fixture replays through the shadow and the shadow
     /// credits nothing for it. `pd.rs` is a feature-only module, so deleting the row is a
     /// shadow change that `check_shadow_diff.py` would hold this fix's live deletions to:
@@ -1281,7 +1283,7 @@ enum PdKind {
     /// fixture is its own `#[test]`, which E8 does not replay.
     Property,
     /// Not a row signature either: a split between a recording's terminal and its
-    /// performance outcome that the property harness found (PD-19 to PD-23). E8 replays
+    /// performance outcome that the property harness found (PD-19, PD-20). E8 replays
     /// the named fixtures through the shadow in this process, where each must close
     /// clean (E7), and the shadow credits nothing for them.
     CrossLedger,
@@ -1331,10 +1333,10 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 /// `a_timed_out_cancel_claims_nothing_before_a_short_stop` and
 /// `a_timed_out_cancel_claims_nothing_before_the_late_recovery`
 /// (`recording_harness_findings_tests.rs`); PD-24: the `pd24_start_timeout_leaves_…` pair in the
-/// same file; PD-23 (#1157): the `pd23_*` tests of the same file; PD-25 (#1157):
-/// `recording_pd25_tests.rs`.
+/// same file; PD-22 (#1157): the `pd22_*` pair of the same file; PD-23 (#1157): the `pd23_*`
+/// tests of the same file; PD-25 (#1157): `recording_pd25_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[21, 23, 24, 25];
+const FIXED_PDS: &[u8] = &[21, 22, 23, 24, 25];
 
 /// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
 /// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
@@ -1353,7 +1355,7 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         ),
         (
             2,
-            Row,
+            RowRetired,
             vec![fx!(g::golden_s11_idle_on_a_finished_recording)],
         ),
         (
@@ -1468,14 +1470,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
             vec![fx!(
                 f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree
             )],
-        ),
-        (
-            22,
-            CrossLedger,
-            vec![
-                fx!(f::pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance),
-                fx!(f::pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance),
-            ],
         ),
     ]
 }

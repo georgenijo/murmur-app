@@ -865,18 +865,19 @@ pub(super) fn a_timed_out_cancel_claims_nothing_before_the_late_recovery() {
     ));
 }
 
-// ------------------------------------------------------------------ PD-22
-// Harness seeds 31,086 (R211.2 / R203.2) and 154,052 (R211.2 / R205.5); 81,353 and 161,052
-// after #1160 and #1162, 52,153 and 101,117 before. A stop is in its
-// capture stop with T released (status Processing) and its 12 s receive expires
+// ------------------------------------------------------------------ PD-22 (fixed)
+// Harness seeds 5,084 (R211.2 / R203.2) and 22,704 (R211.2 / R205.5) before the fix. A stop is in
+// its capture stop with T released (status Processing) and its 12 s receive expires
 // (`audio_lifecycle.rs:3276-3282`): the client's reply is [`STOP_RECEIVE_TIMEOUT`]
 // and the receiver is dropped. The stop's continuation has not run when the worker
 // exits: `finish_attempt` finds the `Stopping` attempt's `response.send` failing and
 // notifies `Idle` (`2358-2373`, no sealed delivery). A cancel at `Processing` runs
 // R205.5; at its tail's `CX-` (D released, status already Idle, the id still current,
-// the cancel's own `TERM` not yet run) that `Idle` is handled: R211.2 claims the
-// terminal as `Superseded/StaleOwner` (PD-2). The injection's sender and state are the
-// ones cited: only an expired stop receive reaches it.
+// the cancel's own `TERM` not yet run) that `Idle` is handled. R211.2 used to claim the
+// terminal as `Superseded/StaleOwner` there (PD-2's claim), ahead of the path that really
+// ends the recording, so the terminal and the performance outcome disagreed. R211.2 claims
+// no terminal now: the cancel's `TERM`, or the stop's own, is the terminal. The injection's
+// sender and state are the ones cited: only an expired stop receive reaches it.
 
 fn idle_at_cx_minus(world: &Arc<World>, then: impl FnOnce() + 'static) {
     let supervisor = Arc::clone(world);
@@ -905,21 +906,28 @@ fn the_stop_receive_expired(world: &Arc<World>) -> ParkedStop {
     stop
 }
 
+/// The stale-owner terminal other tests of this file assert.
 const SUPERSEDED: (DictationTerminalOutcome, DictationErrorCode) = (
     DictationTerminalOutcome::Superseded,
     DictationErrorCode::StaleOwner,
 );
 
-/// The cancel runs to its end first: its `PT:PC(Cancelled)` wins performance before
-/// the stop's continuation is released. The terminal says superseded, the
-/// performance record says cancelled.
-fn pd22_cancel_wins_performance_before_the_stops_failure_tail(world: &Arc<World>) {
+const CANCELLED_PROCESSING: (DictationTerminalOutcome, DictationErrorCode) = (
+    DictationTerminalOutcome::UserCancelledProcessing,
+    DictationErrorCode::CancelledProcessing,
+);
+
+/// The cancel runs to its end first: the supervisor's `Idle` inside its tail claims
+/// nothing, so the cancel's own `TERM` is the terminal and its `PT:PC(Cancelled)` is the
+/// performance outcome. Both ledgers name the cancel, and the stop's failure tail that runs
+/// afterwards loses both.
+fn pd22_cancel_owns_both_ledgers_before_the_stops_failure_tail(world: &Arc<World>) {
     let stop = the_stop_receive_expired(world);
     idle_at_cx_minus(world, || {});
     assert_eq!(
         terminal(world, 1),
-        Some(SUPERSEDED),
-        "the supervisor's Idle claimed the terminal before the cancel's TERM"
+        Some(CANCELLED_PROCESSING),
+        "the supervisor's Idle claimed nothing: the cancel's TERM is the terminal"
     );
     assert!(
         matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
@@ -931,7 +939,7 @@ fn pd22_cancel_wins_performance_before_the_stops_failure_tail(world: &Arc<World>
     world.reply("stop", &reply);
     assert_eq!(reply, Err(STOP_RECEIVE_TIMEOUT.to_string()));
     assert_eq!(status(world), DictationStatus::Idle);
-    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert_eq!(terminal(world, 1), Some(CANCELLED_PROCESSING));
     assert!(
         matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
         "{:?}",
@@ -940,16 +948,17 @@ fn pd22_cancel_wins_performance_before_the_stops_failure_tail(world: &Arc<World>
 }
 
 #[test]
-pub(super) fn pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance() {
+pub(super) fn pd22_an_expired_stops_idle_claims_no_terminal_and_the_cancel_owns_both_ledgers() {
     repeat(&sub(
-        "PD-22: an expired stop's Idle before a cancel's terminal claim; the cancel completes performance (R211.2, R205.5)",
-        pd22_cancel_wins_performance_before_the_stops_failure_tail,
+        "PD-22 fixed: an expired stop's Idle before a cancel's terminal claim claims nothing; the cancel owns the terminal and completes Cancelled (R211.2, R205.5)",
+        pd22_cancel_owns_both_ledgers_before_the_stops_failure_tail,
     ));
 }
 
 /// The stop's continuation is released inside the cancel's tail: R203.2 completes
-/// performance as `Failed` before the cancel's `PT:PC`.
-fn pd22_stops_failure_tail_wins_performance(world: &Arc<World>) {
+/// performance as `Failed` before the cancel's `PT:PC`, and its own terminal is the one that
+/// wins (the supervisor's `Idle` claimed nothing, and the cancel's `TERM` comes after it).
+fn pd22_stops_failure_tail_owns_both_ledgers(world: &Arc<World>) {
     let stop = the_stop_receive_expired(world);
     let (finish, reply) = stop.finish_into();
     idle_at_cx_minus(world, finish);
@@ -961,7 +970,14 @@ fn pd22_stops_failure_tail_wins_performance(world: &Arc<World>) {
     world.reply("stop", &reply);
     assert_eq!(reply, Err(STOP_RECEIVE_TIMEOUT.to_string()));
     assert_eq!(status(world), DictationStatus::Idle);
-    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::StopFailure,
+            DictationErrorCode::StopFinalizationFailed
+        )),
+        "the stop's own terminal won, and agrees with its `Failed` performance outcome"
+    );
     assert!(
         matches!(perf_claim(1), Some(RunOutcomeV1::Failed { .. })),
         "{:?}",
@@ -970,10 +986,10 @@ fn pd22_stops_failure_tail_wins_performance(world: &Arc<World>) {
 }
 
 #[test]
-pub(super) fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance() {
+pub(super) fn pd22_an_expired_stops_idle_claims_no_terminal_and_the_stop_owns_both_ledgers() {
     repeat(&sub(
-        "PD-22: an expired stop's Idle before a cancel's terminal claim; the stop's failure tail completes performance (R211.2, R203.2)",
-        pd22_stops_failure_tail_wins_performance,
+        "PD-22 fixed: an expired stop's Idle before a cancel's terminal claim claims nothing; the stop's failure tail owns the terminal and completes Failed (R211.2, R203.2)",
+        pd22_stops_failure_tail_owns_both_ledgers,
     ));
 }
 

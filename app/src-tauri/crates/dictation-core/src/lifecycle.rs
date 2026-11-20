@@ -416,8 +416,13 @@ pub fn decide_sup_cleanup_finished(core: &DictationCore, rid: RecordingId, _now:
 
 /// Site 211, `Idle` (R211.1-.6), everything under D.
 ///
-/// * R211.1 `rid != current`, R211.2 current and already `Idle`
-///   (**PD-2**, **PD-18 (b)**): `In:TERM(Superseded/StaleOwner)`, no `KB` reset.
+/// * R211.1 `rid != current`: `In:TERM(Superseded/StaleOwner)`.
+/// * R211.2 current and already `Idle` (**PD-18 (b)**): no terminal, no `KB` reset. The
+///   recording is over, so the path that ended it owns the terminal. This `Idle` is the
+///   supervisor's notification of an undelivered stop (or of a finished attempt) and can
+///   arrive while a cancel's tail or a stop's continuation has still to claim its own
+///   terminal: a `Superseded` claim here won that terminal and split it from the
+///   performance outcome (PD-22, and with it PD-2, the same claim; D-PD-1).
 /// * R211.3-.6 current and `Processing` / `Starting` / `Recording` / `Recovering`
 ///   (**PD-7** for `Processing`: the supervisor forces `Idle` over a running
 ///   pipeline; **PD-18 (b)** for `Recovering`): `In:TERM(PipelineFailure/
@@ -432,14 +437,8 @@ pub fn decide_sup_idle(core: &DictationCore, rid: RecordingId, _now: Now) -> Dec
         );
     }
     let row = match core.status {
-        Status::Idle => {
-            return decision(
-                Verdict::Applied,
-                None,
-                vec![superseded(Placement::In)],
-                "R211.2",
-            )
-        }
+        // The recording is over: whichever path ended it owns the terminal (PD-22).
+        Status::Idle => return nothing(Verdict::Applied, "R211.2"),
         Status::Processing => "R211.3",
         Status::Starting => "R211.4",
         Status::Recording => "R211.5",

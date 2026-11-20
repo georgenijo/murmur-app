@@ -163,7 +163,7 @@ R210.3 | Recovering | [fresh] ST:Recovering>Idle
 R210.4 | Starting,Recording,Processing | [fresh] -
 
 R211.1 | *          | [stale] TERM:Superseded/StaleOwner
-R211.2 | Idle       | [fresh] TERM:Superseded/StaleOwner
+R211.2 | Idle       | [fresh] -
 R211.3 | Processing | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Processing>Idle
 R211.4 | Starting   | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Starting>Idle
 R211.5 | Recording  | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Recording>Idle

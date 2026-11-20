@@ -2,7 +2,7 @@
   "family": "lifecycle",
   "sites": [207, 208, 209, 210, 211, 212, 213, 214, 215, 216],
   "basis": "E3 (appendix C8.5): every row id of the family is hit >= 5 times in the union of the native checklist runs and the golden replay, or is listed in not_natively_reachable with the golden or unit test that drives it. Keys are `<site>.<row ordinal>` as in the summary's per_row (a suffixed row keeps its number and adds 100 per suffix step: R203.3a is 203.103). The list is reviewed with each cutover PR.",
-  "pds": [1, 2, 5, 7, 15, 18],
+  "pds": [1, 5, 7, 15, 18],
   "runbook_driven": [{"row": "209.5", "step": "Default input switch"}],
   "rows": [
     {"row": "212.1", "id": "R212.1"},
