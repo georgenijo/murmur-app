@@ -992,6 +992,7 @@ mod tests {
                 cause: None,
                 with_audio_duration: false,
                 only_if_run: false,
+                follows_terminal: false,
             }),
             Effect::ClearContext(id),
             Effect::SetContext(id),

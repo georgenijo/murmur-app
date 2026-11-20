@@ -418,7 +418,12 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
             // `only_if_run` (PD-24): the coordinator answers `NoRun` for an id with no
             // registered or begun run and claims nothing.
             let run = cx.w.perf.registered.contains(&fx.rid) || cx.w.perf.begun.contains(&fx.rid);
-            if run || !complete.only_if_run {
+            // `follows_terminal` (PD-20): the second half of the terminal claim just before it,
+            // only while that claim stands (it won, or it lost to a stale-owner supersede).
+            let stands = !complete.follows_terminal || cx.w.terminal_stands(fx.rid);
+            if !stands {
+                cx.w.perf.dropped.insert((fx.rid, fx.row));
+            } else if run || !complete.only_if_run {
                 let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
                 cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
             } else {
@@ -610,6 +615,20 @@ pub fn drain_one<F: Queued>(flight: &mut F, cx: &mut Cx<'_>) -> Option<Poll> {
                 }
             } else {
                 apply(cx, &fx, placed.at, &placed.effect);
+                // A completion that follows its terminal claim (PD-20) is the same step: no
+                // other actor runs between the claim and the completion.
+                if matches!(placed.effect, Effect::Terminal(_)) {
+                    let paired = matches!(
+                        flight.queue().get(1),
+                        Some(QItem::Fx(_, next))
+                            if matches!(&next.effect, Effect::PerfComplete(pc) if pc.follows_terminal)
+                    );
+                    if paired {
+                        if let Some(QItem::Fx(paired_fx, next)) = flight.queue().remove(1) {
+                            apply(cx, &paired_fx, next.at, &next.effect);
+                        }
+                    }
+                }
                 if let Effect::Terminal(terminal) = placed.effect {
                     if placed.at != Placement::In {
                         flight.queue().insert(1, QItem::TermDiag(fx, terminal));

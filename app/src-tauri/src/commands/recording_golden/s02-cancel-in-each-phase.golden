@@ -152,12 +152,12 @@ delivery 1: operation done, D released next
 ~ context 1 cleared
 ~ cancelled_through 1
 ~ terminal 1 UserCancelledProcessing/CancelledProcessing
+performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
+~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 keyboard.set_processing false
 ~ processing false
 emit recording-status-changed "idle"
 emit recording-cancelled {"recordingId":1}
-performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
-~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 delivery returned Some
 reply cancel Ok
 gate pipeline opened
@@ -225,6 +225,8 @@ gate pipeline wait
 ~ context 1 cleared
 ~ cancelled_through 1
 ~ terminal 1 UserCancelledProcessing/CancelledProcessing
+performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
+~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 keyboard.set_processing false
 ~ processing false
 supervisor.clear_owner 1
@@ -234,8 +236,6 @@ emit recording-cleanup-finished {"recordingId":1}
 emit recording-status-changed "idle"
 emit recording-status-changed "idle"
 emit recording-cancelled {"recordingId":1}
-performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
-~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 reply cancel Ok
 gate pipeline opened
 gate pipeline pass
@@ -295,12 +295,12 @@ gate pipeline wait
 ~ context 1 cleared
 ~ cancelled_through 1
 ~ terminal 1 UserCancelledProcessing/CancelledProcessing
+performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
+~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 keyboard.set_processing false
 ~ processing false
 emit recording-status-changed "idle"
 emit recording-cancelled {"recordingId":1}
-performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
-~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 reply cancel Ok
 gate pipeline opened
 gate pipeline pass

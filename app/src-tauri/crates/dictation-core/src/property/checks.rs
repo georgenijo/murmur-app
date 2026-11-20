@@ -51,9 +51,17 @@ pub struct RunHits {
     pub sig: [u32; SIGNATURES.len()],
     /// Occurrences per matched split `(terminal row, performance row)`.
     pub pairs: BTreeMap<(&'static str, &'static str), u32>,
-    /// Completions `only_if_run` dropped for want of a run, by the row that decided them
-    /// (PD-24's fix: R209.3, R209.5 out of `Starting` after the start's own failure).
+    /// Completions dropped by the row that decided them: `only_if_run` for want of a run
+    /// (PD-24's fix: R209.3, R209.5 out of `Starting` after the start's own failure), and
+    /// `follows_terminal` after a claim lost to the recording's own end (PD-20's fix: R205.5).
     pub dropped_completions: BTreeMap<&'static str, u32>,
+    /// Completions that arrived after the cancel of a processing recording (R205.5) won both
+    /// ledgers, by the row that made them (PD-20's fix: the pair completes performance with the
+    /// terminal, so these decide nothing). Each used to win performance inside the cancel's tail.
+    pub late_after_cancel: BTreeMap<&'static str, u32>,
+    /// The cancel of a processing recording (R205.5) lost its terminal claim and completed no
+    /// performance, by the row whose claim won (PD-20's fix: the winner's own path completes).
+    pub cancel_lost_to: BTreeMap<&'static str, u32>,
     /// Every decision the flights acted on, by row: the rows the gate must see.
     pub decided: BTreeMap<&'static str, u32>,
     /// Every `NeedObservation` round a flight answered, by the row the verdict names.
@@ -76,12 +84,6 @@ pub enum Pre {
     /// PD-4, PD-5: the claim was for the current recording, in the status the row's
     /// C3 line lists, and the recording's own path completed performance later.
     LiveClaimThenPerf,
-    /// PD-20 (a): the cancel's claim won (its tail open); another path completed
-    /// performance during the tail, before the cancel's own `PC`.
-    CancelClaimedFirst,
-    /// PD-20 (b): another path claimed the terminal first, the cancel's own claim was
-    /// lost, and the cancel's tail still completed performance `Cancelled`.
-    CancelPerfAfterLostClaim,
     /// PD-22: the supervisor's `Idle` claimed `Superseded` for a finished current id,
     /// a later claim of the real path was lost, and a cancel's tail was open when
     /// performance completed.
@@ -121,14 +123,6 @@ const ALL_PERF: &[PerfOutcome] = &[
     PerfOutcome::Completed,
 ];
 
-const ALL_STATUSES: &[Status] = &[
-    Status::Idle,
-    Status::Starting,
-    Status::Recording,
-    Status::Recovering,
-    Status::Processing,
-];
-
 /// One allowlisted SP4(b) split (C7.1): the PD it belongs to, the terminal winners
 /// (row, outcome, code) with the statuses the claim saw, the performance winners and
 /// the causal precondition. All must match for the split to leave the failure set; a
@@ -144,7 +138,7 @@ pub struct Signature {
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 7] = [
+pub const SIGNATURES: [Signature; 5] = [
     // PD-4 (C7.1): R207.3 on a live `Recording` claims `Superseded/StaleOwner`, the
     // wrapper's `SD` spawns a **second ticker** for the same id, and performance later
     // completes `Success` (`Completed`): exactly the definition, with no narrower or
@@ -215,54 +209,6 @@ pub const SIGNATURES: [Signature; 7] = [
         claim_status: &[Status::Idle, Status::Recovering, Status::Processing],
         perf: PerfSet::Any(ALL_PERF),
         pre: Pre::LiveClaimThenPerf,
-    },
-    // PD-20 (a): the cancel at `Processing` (R205.5) claimed; the stop or pipeline
-    // completed performance during the cancel's tail.
-    Signature {
-        pd: 20,
-        terminal: &[(
-            "R205.5",
-            TerminalOutcome::UserCancelledProcessing,
-            ErrCode::CancelledProcessing,
-        )],
-        claim_status: &[Status::Idle],
-        perf: PerfSet::Any(&[
-            PerfOutcome::Failed,
-            PerfOutcome::NoSpeech,
-            PerfOutcome::Completed,
-        ]),
-        pre: Pre::CancelClaimedFirst,
-    },
-    // PD-20 (b): another path claimed first; the cancel's `PC(Cancelled)` completed
-    // performance.
-    Signature {
-        pd: 20,
-        terminal: &[
-            (
-                "R203.pre",
-                TerminalOutcome::TooShort,
-                ErrCode::BelowMinimumDuration,
-            ),
-            ("R203.pre", TerminalOutcome::NoSpeech, ErrCode::EmptyAudio),
-            (
-                "R203.pre",
-                TerminalOutcome::StopFailure,
-                ErrCode::StopFinalizationFailed,
-            ),
-            (
-                "R204b.5",
-                TerminalOutcome::PipelineFailure,
-                ErrCode::TranscriptionFailed,
-            ),
-            (
-                "R213.2",
-                TerminalOutcome::CaptureInitFailure,
-                ErrCode::BackendError,
-            ),
-        ],
-        claim_status: ALL_STATUSES,
-        perf: PerfSet::Only(&[("R205.5", PerfOutcome::Cancelled)]),
-        pre: Pre::CancelPerfAfterLostClaim,
     },
     // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
     Signature {
@@ -808,17 +754,6 @@ impl Checker {
         let claim_current = claim.input_rid == claim.current;
         match pre {
             Pre::LiveClaimThenPerf => claim_current && claim.step < completion.step,
-            Pre::CancelClaimedFirst => {
-                claim.own_cancel_tail
-                    && completion.other_cancel_tail
-                    && claim.step < completion.step
-            }
-            Pre::CancelPerfAfterLostClaim => {
-                completion.own_cancel_tail
-                    && tries
-                        .iter()
-                        .any(|t| t.row == completion.row && !t.won && t.step > claim.step)
-            }
             Pre::SupervisorIdleWon => {
                 // One window: the winning `Idle` claim, the named losing claim (the
                 // cancel's own `TERM`, R205.5) and the performance completion all fall
@@ -854,6 +789,21 @@ impl Checker {
         self.sp4a(w);
         for (_, row) in &w.perf.dropped {
             *self.hits.dropped_completions.entry(row).or_default() += 1;
+        }
+        for (rid, row) in &w.perf.dropped {
+            if *row == "R205.5" {
+                if let Some((_, _, winner)) = w.ledger.claimed.get(rid) {
+                    *self.hits.cancel_lost_to.entry(winner).or_default() += 1;
+                }
+            }
+        }
+        for (rid, row) in &w.perf.late {
+            let cancelled = |ledger_row: Option<&&'static str>| ledger_row == Some(&"R205.5");
+            if cancelled(w.ledger.claimed.get(rid).map(|(_, _, row)| row))
+                && cancelled(w.perf.outcome.get(rid).map(|(_, row)| row))
+            {
+                *self.hits.late_after_cancel.entry(row).or_default() += 1;
+            }
         }
         // A window still open at the end of the run is judged as it stands.
         for rid in std::mem::take(&mut self.sp4b_tail_deferred) {

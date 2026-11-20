@@ -116,6 +116,24 @@ impl<'a> CancelPorts<'a> {
     }
 }
 
+impl CancelPorts<'_> {
+    /// Whether the terminal claim for the recording still stands for the completion that
+    /// follows it ([`murmur_dictation_core::effects::PerfComplete::follows_terminal`]).
+    fn terminal_stands(&self) -> bool {
+        self.state
+            .app_state
+            .dictation_telemetry
+            .claimed_outcome(self.recording_id)
+            .is_none_or(|outcome| {
+                matches!(
+                    outcome,
+                    DictationTerminalOutcome::UserCancelledProcessing
+                        | DictationTerminalOutcome::Superseded
+                )
+            })
+    }
+}
+
 impl Ports for CancelPorts<'_> {
     fn app_state(&self) -> &AppState {
         &self.state.app_state
@@ -177,6 +195,15 @@ impl Ports for CancelPorts<'_> {
         let Effect::PerfComplete(pc) = effect else {
             return Err(PortFailure);
         };
+        // PD-20: the completion is the second half of the terminal claim just made, and runs
+        // only while that claim stands: the ledger holds the cancel's own claim, nothing, or a
+        // stale-owner `Superseded` (PD-22 / PD-23's split, fixed with them). Any other claim is
+        // the recording's own end (a stop's or the pipeline's terminal), and that path completes
+        // the performance record itself. The port call is made and completes nothing, as the
+        // coordinator's `NoRun` does for a `PerfComplete::only_if_run` (PD-24).
+        if pc.follows_terminal && !self.terminal_stands() {
+            return Ok(());
+        }
         let stage = match pc.stage {
             PerfStage::InferenceDecode => PerformanceStageV1::InferenceDecode,
             PerfStage::CaptureFinalization => return Err(PortFailure),

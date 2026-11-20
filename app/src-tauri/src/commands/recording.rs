@@ -9953,13 +9953,14 @@ async fn cancel_native_recording_inner(
     drop(dictation);
     #[cfg(feature = "dictation-shadow")]
     after_d.submit();
-    // R205.5 `PDT:CX-, MC, TERM, KB, EM, EV` with T still held: keep the
+    // R205.5 `PDT:CX-, MC, TERM, PC, KB, EM, EV` with T still held (PD-20: the `PC` follows
+    // its `TERM` and runs only while that claim stands): keep the
     // transition fence through the old generation's unscoped UI events so a newer
     // start cannot publish `starting` and then be reset by this cancellation's
     // trailing `idle`.
     run_phase(&mut exec, Placement::PostDT, None, rid).map_err(cancel_refused)?;
     // Diagnostics completion is already asynchronous, so releasing immediately
-    // before `PT:PC` never waits on SQLite; R205.4's `PT:CC` is blocking (<= 2 s).
+    // before `PT:CC` never waits on SQLite; R205.4's `PT:CC` is blocking (<= 2 s).
     drop(transition);
     run_phase(&mut exec, Placement::PostT, None, rid).map_err(cancel_refused)?;
     let Some(mut op_guard) = op_guard.take() else {

@@ -893,8 +893,8 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    // PD-21 is fixed (see the map's "Fixed" section): no entry in this section.
-    for pd in (19..=23).filter(|pd| *pd != 21) {
+    // PD-20 and PD-21 are fixed (see the map's section on the E8 table): no entry in this section.
+    for pd in (19..=23).filter(|pd| !matches!(*pd, 20 | 21)) {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1322,9 +1322,10 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 /// `a_timed_out_cancel_claims_nothing_before_a_short_stop` and
 /// `a_timed_out_cancel_claims_nothing_before_the_late_recovery`
 /// (`recording_harness_findings_tests.rs`); PD-24: the `pd24_start_timeout_leaves_…` pair in the
-/// same file; PD-25 (#1157): `recording_pd25_tests.rs`.
+/// same file; PD-25 (#1157): `recording_pd25_tests.rs`; PD-20: the `pd20_…` pair in
+/// `recording_harness_findings_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[21, 24, 25];
+const FIXED_PDS: &[u8] = &[20, 21, 24, 25];
 
 /// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
 /// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
@@ -1447,13 +1448,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
                 fx!(f::pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering),
                 fx!(f::pd19_a_refused_auto_stop_leaves_the_capture_and_recovering),
             ],
-        ),
-        (
-            20,
-            CrossLedger,
-            vec![fx!(
-                f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree
-            )],
         ),
         (
             22,

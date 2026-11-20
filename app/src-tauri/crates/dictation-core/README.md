@@ -505,7 +505,10 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     ticker (pending at the shell: source-only). PD-24 (the start timeout's cross-ledger
     claim) is fixed and has no signature: the supervisor's `Recovering` arm out of
     `Starting` completes performance only for a run that exists (`PerfComplete::only_if_run`),
-    and a bare claim by R209.3 or R209.5 is a failure. PD-22 needs the winning `Idle` claim and the losing named
+    and a bare claim by R209.3 or R209.5 is a failure. PD-20 (the cancel of a `Processing` recording) is
+    fixed and has no signature: its `PC` is the second half of its terminal claim
+    (`PerfComplete::follows_terminal`, one model step, only while the claim stands), so a split of
+    R205.5 with a stop's or the pipeline's row is a failure. PD-22 needs the winning `Idle` claim and the losing named
     claim in the same cancel tail and is judged when that tail closes, because the window's
     events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
     compares the outcomes a generation actually has, and the model follows the performance
@@ -565,10 +568,10 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
-  2,071,065, 289,110, 31,086, 154,052, 24,199, 73,499) that take the PD-18 (unsealed stop),
+  environment says: `0..9,989` and eleven fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
+  2,071,065, 289,110, 480,584, 154,052, 24,199, 73,499, 40,309, 220,511) that take the PD-18 (unsealed stop),
   PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
-  PD-22 (both rows), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`) and the late main-window start reply
+  PD-22 (both rows), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`), the fixed PD-20's cancel losing its claim to the pipeline's success or failure (`FIXED_CANCEL_PROCESSING_SEEDS`) and the late main-window start reply
   with its second stop (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The same
   check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)

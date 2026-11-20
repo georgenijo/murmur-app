@@ -381,7 +381,9 @@ pub struct Preserved {
 
 /// What a first-wins ledger entry (the terminal claim, the performance completion)
 /// saw when it was written: the context a signature's causal precondition reads.
+/// `row` is read through `Debug` in traces.
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct Won {
     pub row: &'static str,
     pub step: u32,
@@ -443,9 +445,13 @@ pub struct Perf {
     /// aborted start, or a stale generation): `request_completion` answers `Persist`, the
     /// repository finds no active row and records nothing. A claim without an outcome.
     pub no_run: BTreeSet<Rid>,
-    /// Completions `only_if_run` dropped for want of a run, `(id, row)`: the coordinator
-    /// answered `NoRun` and claimed nothing (PD-24's fix).
+    /// Completions dropped for want of a run (`only_if_run`: the coordinator answered `NoRun`
+    /// and claimed nothing, PD-24's fix) or because the terminal claim they follow was lost to
+    /// the recording's own end (`follows_terminal`, PD-20's fix), `(id, row)`.
     pub dropped: BTreeSet<(Rid, &'static str)>,
+    /// Completions that arrived after the id's outcome was already recorded (the run's first
+    /// completion wins), `(id, row)`: the ones a PD-20 fix keeps from deciding the outcome.
+    pub late: BTreeSet<(Rid, &'static str)>,
 }
 
 #[derive(Debug, Default)]
@@ -847,6 +853,7 @@ impl World {
     /// only the coordinator's claim, recorded in `no_run`.
     pub fn perf_complete(&mut self, rid: Rid, outcome: PerfOutcome, row: &'static str, ctx: Won) {
         if self.perf.outcome.contains_key(&rid) {
+            self.perf.late.insert((rid, row));
             return;
         }
         if self.perf.begun.contains(&rid) {
@@ -859,6 +866,21 @@ impl World {
             self.perf.ctx.insert(rid, ctx);
             self.perf.no_run.insert(rid);
         }
+    }
+
+    /// Whether the terminal claim for `rid` still stands for a completion that follows it
+    /// (`PerfComplete::follows_terminal`, PD-20): nothing claimed (a terminal before
+    /// `accepted`, PD-10, claims nothing), the claim is the user's cancel of a processing
+    /// recording (this decision's own, or the pipeline's `Cancelled`), or it is a stale-owner
+    /// `Superseded` (PD-22 / PD-23 own that split). A claim of the recording's own end
+    /// (a stop's or the pipeline's terminal) does not stand: that path completes performance.
+    pub fn terminal_stands(&self, rid: Rid) -> bool {
+        self.ledger.claimed.get(&rid).is_none_or(|(outcome, _, _)| {
+            matches!(
+                outcome,
+                TerminalOutcome::UserCancelledProcessing | TerminalOutcome::Superseded
+            )
+        })
     }
 
     /// The context a ledger entry written now by `fx_row` for `rid` by task `tid` records.

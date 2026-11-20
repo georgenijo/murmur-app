@@ -147,6 +147,14 @@ pub struct PerfComplete {
     /// completion is dropped instead of recording a coordinator claim that no performance
     /// row backs (PD-24). The check is the coordinator's own, made atomically with the claim.
     pub only_if_run: bool,
+    /// The completion is the second half of the `TERM` just before it, and the pair is one
+    /// atomic step: no other path completes performance between the claim and this
+    /// completion. It runs only while that claim *stands*: it won, or it lost to a stale-owner
+    /// supersede (`Superseded`, PD-22 / PD-23's split, which is fixed with them). A claim lost
+    /// to the recording's own end (a stop's or the pipeline's terminal) completes nothing, so
+    /// that path's own completion is the recording's performance outcome and the two ledgers
+    /// agree (PD-20).
+    pub follows_terminal: bool,
 }
 
 /// `AX(a|s)`: when the delivery-target snapshot is captured.

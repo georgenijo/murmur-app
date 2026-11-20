@@ -1395,15 +1395,16 @@ fn scenario_cancel_processing() -> Recorded {
     host.recorded()
 }
 
-/// Processing resets the UI (6459, 6460, 6461) and only then completes the
-/// ledger (6471).
+/// Processing completes the ledger right after the terminal claim (PD-20 fixed: the completion
+/// is the claim's second half, so no other path completes performance between the two), and
+/// then resets the UI (6459, 6460, 6461).
 fn expected_cancel_processing() -> Vec<String> {
-    let mut trace = strings(&["keyboard.set_processing false"]);
-    trace.push(status_event("idle"));
-    trace.extend(strings(&[
-        "emit recording-cancelled {\"recordingId\":7}",
+    let mut trace = strings(&[
         "performance.complete 7 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
-    ]));
+        "keyboard.set_processing false",
+    ]);
+    trace.push(status_event("idle"));
+    trace.extend(strings(&["emit recording-cancelled {\"recordingId\":7}"]));
     trace
 }
 

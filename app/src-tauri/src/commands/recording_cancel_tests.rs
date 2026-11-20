@@ -247,11 +247,11 @@ fn cancel_processing() {
             "~ status Processing -> Idle",
             "~ context 3 cleared",
             "~ cancelled_through 3",
+            "performance.complete 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
+            "~ perf-claim 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
             "keyboard.set_processing false",
             "emit recording-status-changed \"idle\"",
             "emit recording-cancelled {\"recordingId\":3}",
-            "performance.complete 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
-            "~ perf-claim 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
             "reply cancel Ok",
             "= final status=Idle processing=false context=none cancelled_through=3",
         ],
@@ -275,11 +275,11 @@ fn cancel_processing_with_the_matching_expectation() {
             "~ status Processing -> Idle",
             "~ context 3 cleared",
             "~ cancelled_through 3",
+            "performance.complete 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
+            "~ perf-claim 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
             "keyboard.set_processing false",
             "emit recording-status-changed \"idle\"",
             "emit recording-cancelled {\"recordingId\":3}",
-            "performance.complete 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
-            "~ perf-claim 3 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
             "reply cancel Ok",
             "= final status=Idle processing=false context=none cancelled_through=3",
         ],
@@ -791,7 +791,7 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
     let trace = world.trace();
     let emitted = |needle: &str| trace.iter().any(|line| line.starts_with(needle));
     format!(
-        "status={status} context={} cancelled={} terminal={} kb_processing={} idle_emitted={} cancelled_emitted={} transition={}",
+        "status={status} context={} cancelled={} terminal={} kb_processing={} idle_emitted={} cancelled_emitted={} perf_claimed={} transition={}",
         if state.app_state.active_context(id).is_some() {
             "present"
         } else {
@@ -802,7 +802,8 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
         keyboard::is_processing(),
         emitted("emit recording-status-changed \"idle\""),
         emitted("emit recording-cancelled"),
-        // The cancel's own thread holds T at the barriers from `ST` through `EV`.
+        dictation_performance_begins().claimed_outcome(id).is_some(),
+        // The cancel's own thread holds T at every barrier, `ST` through `EV`.
         if state.app_state.recording_transition.try_lock().is_err() {
             "held"
         } else {
@@ -811,8 +812,8 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
     )
 }
 
-/// R205.5's exact order (appendix C: `In:ST→Idle`; `PDT:CX-, MC, TERM, KB, EM, EV`;
-/// `PT:PC`). A barrier before each effect observes what the earlier effects did and
+/// R205.5's exact order (appendix C: `In:ST→Idle`; `PDT:CX-, MC, TERM, PC, KB, EM, EV`; the `PC`
+/// is the terminal claim's second half, PD-20). A barrier before each effect observes what the earlier effects did and
 /// what the later ones have not yet done, so each statement of the tail is pinned
 /// to its place, not only the first port after it (`cancel_window_preserved`).
 #[test]
@@ -858,22 +859,17 @@ pub(super) fn processing_cancel_tail_runs_in_r205_5_order() {
     let codes: Vec<&str> = seen.iter().map(|(code, _)| *code).collect();
     assert_eq!(
         codes,
-        ["ST", "CX-", "MC", "TERM", "KB", "EM", "EV", "PC"],
+        ["ST", "CX-", "MC", "TERM", "PC", "KB", "EM", "EV"],
         "R205.5's effect order: {seen:#?}"
     );
     let state = |index: usize| seen[index].1.as_str();
-    // R205.5's transition-lock boundary: T is held from `ST` through `EV`, so a newer
-    // start cannot publish `starting` before this cancel's trailing `idle`, and it is
-    // released only before `PT:PC`.
-    for (index, (code, state)) in seen.iter().enumerate() {
-        let expected = if index < 7 {
-            "transition=held"
-        } else {
-            "transition=free"
-        };
+    // R205.5's transition-lock boundary: T is held from `ST` through `EV` (the performance
+    // completion no longer runs after it is released: it follows the terminal claim, PD-20), so
+    // a newer start cannot publish `starting` before this cancel's trailing `idle`.
+    for (code, state) in &seen {
         assert!(
-            state.ends_with(expected),
-            "T must be {expected} at {code} (R205.5 releases it before PT:PC): {state}"
+            state.ends_with("transition=held"),
+            "T must be held at {code} (R205.5 releases it after `EV`): {state}"
         );
     }
     // Each effect has not run at its own barrier and every earlier one has.
@@ -900,23 +896,25 @@ pub(super) fn processing_cancel_tail_runs_in_r205_5_order() {
         state(3)
     );
     assert!(
-        state(4).contains("terminal=true kb_processing=true idle_emitted=false"),
-        "TERM ran, KB has not: {}",
+        state(4).contains("terminal=true kb_processing=true idle_emitted=false")
+            && state(4).contains("perf_claimed=false"),
+        "TERM ran, PC has not: {}",
         state(4)
     );
     assert!(
-        state(5).contains("kb_processing=false idle_emitted=false"),
-        "KB ran, EM has not: {}",
+        state(5).contains("kb_processing=true idle_emitted=false")
+            && state(5).contains("perf_claimed=true"),
+        "PC ran (right after the terminal claim), KB has not: {}",
         state(5)
     );
     assert!(
-        state(6).contains("idle_emitted=true cancelled_emitted=false"),
-        "EM ran, EV has not: {}",
+        state(6).contains("kb_processing=false idle_emitted=false"),
+        "KB ran, EM has not: {}",
         state(6)
     );
     assert!(
-        state(7).contains("idle_emitted=true cancelled_emitted=true"),
-        "EV ran, PC has not: {}",
+        state(7).contains("idle_emitted=true cancelled_emitted=false"),
+        "EM ran, EV has not: {}",
         state(7)
     );
 }

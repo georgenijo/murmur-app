@@ -69,13 +69,21 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 ///   a window sends no stop that it has not seen `Recording` for.
 /// * 289,110: the fixed PD-21 with a short stop (R206.2, R203.4): a failed capture cancel that
 ///   claims no terminal, then the stop's own claim wins (`FAILED_CANCEL_SEEDS`).
-/// * 31,086: PD-22 against a stop's performance completion (R211.2, R203.2).
+/// * 480,584: PD-22 against a stop's performance completion (R211.2, R203.2). Re-pinned from
+///   31,086 for the PD-20 fix: the cancel's completion now runs in its terminal's step, so a
+///   stop's completion has a much shorter window to land first (50 -> 3 of 3,000,000 seeds), and
+///   31,086 takes the cancel's own completion (R211.2, R205.5) now.
 /// * 154,052: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
 /// * 24,199: the fixed PD-24's environmental recovery (R102.3, R209.5): the Recovering arm
 ///   completes no performance for a start whose run its own failure aborted
 ///   (`FIXED_START_TIMEOUT_SEEDS`). The user's cancel (R209.3) is seed 3,651, inside the range.
 /// * 73,499: the late main-window start reply and its second stop (#1162, #1169 review), the first
 ///   of 3,000,000 seeds that has the whole sequence tied to one start and one stop.
+///
+/// * 40,309: the fixed PD-20 against the pipeline's success (#1157 family B, R204b.6 / R205.5):
+///   the cancel of a processing recording loses its terminal claim to the stop's `Success` and
+///   completes no performance (`FIXED_CANCEL_PROCESSING_SEEDS`).
+/// * 220,511: the same against the pipeline's failure (R204b.5 / R205.5).
 ///
 /// Re-pinned for #1160 and #1162 (every flight decides through `DictationCore::handle`, a start
 /// draws its caller) and again for the #1169 review (the main window's start guard, the reply
@@ -84,8 +92,8 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// 39,219 -> 10,882 -> 492,192, 52,153 -> 81,353 -> 31,086, 101,117 -> 161,052 -> 154,052,
 /// 259,286 -> 2,569,791 -> 2,071,065, 262,762 -> 179,248 -> 81,584,
 /// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499.
-const FIXED_SEEDS: [u64; 9] = [
-    14_033, 81_584, 492_192, 2_071_065, 289_110, 31_086, 154_052, 24_199, 73_499,
+const FIXED_SEEDS: [u64; 11] = [
+    14_033, 81_584, 492_192, 2_071_065, 289_110, 480_584, 154_052, 24_199, 73_499, 40_309, 220_511,
 ];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
@@ -97,7 +105,7 @@ const PD18_SEEDS: [(&str, u64); 3] = [
     ("(c) unsealed stop", 14_033),
 ];
 
-/// A witness of one of PD-19..PD-23 (PD-21 and PD-24 are fixed and have none): the PD, the seed that takes it, the matched
+/// A witness of one of PD-19..PD-23 (PD-20, PD-21 and PD-24 are fixed and have none): the PD, the seed that takes it, the matched
 /// split `(terminal row, performance row)` where the PD is an SP4(b) split, and the
 /// shell test that reproduces the sequence (`recording_harness_findings_tests.rs`,
 /// D-S2b-5, D-S2b-7 and D-S2b-9 (b)). A `None` shell test is PROVISIONAL "reachable
@@ -112,7 +120,7 @@ struct Witness {
     sig: Option<usize>,
 }
 
-const FINDING_SEEDS: [Witness; 10] = [
+const FINDING_SEEDS: [Witness; 9] = [
     Witness {
         pd: 19,
         seed: 492_192,
@@ -135,15 +143,8 @@ const FINDING_SEEDS: [Witness; 10] = [
         sig: None,
     },
     Witness {
-        pd: 20,
-        seed: 140,
-        split: Some(("R205.5", "R203.5")),
-        shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
-        sig: None,
-    },
-    Witness {
         pd: 22,
-        seed: 31_086,
+        seed: 480_584,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
@@ -157,7 +158,7 @@ const FINDING_SEEDS: [Witness; 10] = [
     },
     Witness {
         pd: 23,
-        seed: 450,
+        seed: 8_962,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
         sig: None,
@@ -437,8 +438,8 @@ fn every_preserved_defect_is_witnessed() {
         return; // a short local run does not owe every witness
     }
     let missing: Vec<usize> = (1..=24)
-        // PD-17 is latent; PD-21 and PD-24 are fixed and their signatures are gone.
-        .filter(|pd| !matches!(*pd, 17 | 21 | 24) && summary.pd[*pd].0 == 0)
+        // PD-17 is latent; PD-20, PD-21 and PD-24 are fixed and their signatures are gone.
+        .filter(|pd| !matches!(*pd, 17 | 20 | 21 | 24) && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
@@ -467,6 +468,10 @@ fn every_preserved_defect_is_witnessed() {
     assert_eq!(
         summary.pd[21].0, 0,
         "PD-21 was fixed: a failed capture cancel claims no terminal, so no run splits on it"
+    );
+    assert_eq!(
+        summary.pd[20].0, 0,
+        "PD-20 was fixed: a cancel of a processing recording completes performance only with its terminal"
     );
     // The gates of the cutover (#1169 review): every row of the Smart Auto round and of the legacy
     // import is decided by the gated seeds, and the late start reply the main window writes over
@@ -542,6 +547,186 @@ fn pd19_to_pd23_have_pinned_seeds() {
         }
         assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
+}
+
+/// The fixed PD-20: the cancel of a `Processing` recording (R205.5) completes performance as
+/// the second half of its terminal claim (one step, only while the claim stands), so the
+/// terminal and the performance record always come from the same path. One pinned seed per path
+/// of the old split. (a) The cancel wins the terminal: a stop's or the pipeline's completion
+/// that used to land inside the cancel's tail and win performance (`NoSpeech`, `Failed`,
+/// `Completed`) arrives after the cancel's own and decides nothing. (b) Another path claims
+/// first: the cancel's claim is lost and it completes no performance, so that path's own
+/// completion stands. Both used to split (the allowlisted PD-20 signatures). Reverting the fix
+/// for any one path alone fails its seed here.
+const FIXED_CANCEL_PROCESSING_SEEDS: [(&str, u64, &str, bool); 8] = [
+    // (name, seed, the other path's row, whether the cancel won both ledgers)
+    ("a short stop's completion comes late", 10, "R203.7", true),
+    ("an empty stop's completion comes late", 140, "R203.5", true),
+    ("a failed stop's completion comes late", 312, "R203.2", true),
+    ("the pipeline's completion comes late", 19, "R204b.6", true),
+    ("a stop's own terminal wins", 1_794, "R203.pre", false),
+    ("a failed start's terminal wins", 138, "R213.2", false),
+    ("the pipeline's failure wins", 220_511, "R204b.5", false),
+    (
+        "the pipeline's success wins (#1157 family B)",
+        40_309,
+        "R204b.6",
+        false,
+    ),
+];
+
+#[test]
+fn a_cancel_of_a_processing_recording_completes_performance_with_its_terminal() {
+    for (name, seed, row, won_both) in FIXED_CANCEL_PROCESSING_SEEDS {
+        let report = run_seed(gated(seed));
+        if won_both {
+            assert!(
+                report
+                    .hits
+                    .late_after_cancel
+                    .get(row)
+                    .copied()
+                    .unwrap_or(0)
+                    > 0,
+                "seed {seed} ({name}) no longer has {row} complete after the cancel won both ledgers: {:?}",
+                report.hits
+            );
+        } else {
+            assert!(
+                report.hits.cancel_lost_to.get(row).copied().unwrap_or(0) > 0,
+                "seed {seed} ({name}) no longer has the cancel lose its claim to {row} and complete nothing: {:?}",
+                report.hits
+            );
+        }
+        assert_eq!(report.hits.pd[20], 0);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    }
+}
+
+/// Drive the cancel of a `Processing` recording 1 through its post-D effects, one queue step at
+/// a time, over a world where `claimed` already holds the recording's terminal (if any).
+/// Returns the world after the steps up to and including the `TERM` step, and whether the queue
+/// still holds a performance completion.
+fn run_cancel_to_its_terminal(claimed: Option<(TerminalOutcome, &'static str)>) -> (World, bool) {
+    struct Steps(std::collections::VecDeque<QItem>);
+    impl Queued for Steps {
+        fn queue(&mut self) -> &mut std::collections::VecDeque<QItem> {
+            &mut self.0
+        }
+        fn cross(&mut self, _: &mut Cx<'_>, _: &FxCtx, effect: &Effect) -> Result<(), ()> {
+            unreachable!("R205.5 crosses nothing: {effect:?}")
+        }
+    }
+    let mut w = World::new();
+    w.current_id = 1;
+    w.status = Status::Processing;
+    w.ledger.accepted.insert(1);
+    w.perf.registered.insert(1);
+    w.perf.begun.insert(1);
+    let won = Won {
+        row: "R999.1",
+        step: 1,
+        input_rid: 1,
+        current: 1,
+        status_before: Status::Processing,
+        other_cancel_tail: false,
+        own_cancel_tail: false,
+        tail: None,
+    };
+    if let Some((outcome, row)) = claimed {
+        assert!(w.claim_terminal(1, Terminal::new(outcome, ErrCode::None), row, won));
+    }
+    let decision = crate::cancel::decide_cancel_request(
+        &w.view(),
+        crate::inputs::CancelInput { expected: None },
+        crate::ids::Now(0),
+    );
+    assert_eq!(decision.row.0, "R205.5");
+    let ctx = FxCtx {
+        tid: 5,
+        rid: 1,
+        row: "R205.5",
+        site: SiteId::CancelRequest,
+    };
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    let mut steps = Steps(Default::default());
+    queue_phase(&mut steps.0, ctx, &decision, Placement::PostDT);
+    loop {
+        let terminal_step = matches!(
+            steps.0.front(),
+            Some(QItem::Fx(_, placed)) if matches!(placed.effect, Effect::Terminal(_))
+        );
+        let polled = drain_one(
+            &mut steps,
+            &mut Cx {
+                w: &mut w,
+                out: &mut out,
+                spawn: &mut spawned,
+                tid: 5,
+                mailbox: &mut mailbox,
+            },
+        );
+        assert_eq!(polled, Some(Poll::Progress));
+        if terminal_step {
+            break;
+        }
+    }
+    let pending = steps.0.iter().any(|item| {
+        matches!(item, QItem::Fx(_, placed) if matches!(placed.effect, Effect::PerfComplete(_)))
+    });
+    (w, pending)
+}
+
+/// PD-20, the step: the cancel's `Cancelled` completion is part of the step that claims its
+/// terminal, so nothing runs between the two ledgers' entries.
+#[test]
+fn the_cancels_completion_is_the_step_that_claims_its_terminal() {
+    let (w, pending) = run_cancel_to_its_terminal(None);
+    assert!(!pending, "the completion is its own queued step");
+    assert_eq!(
+        w.ledger.claimed.get(&1).map(|(o, _, row)| (*o, *row)),
+        Some((TerminalOutcome::UserCancelledProcessing, "R205.5"))
+    );
+    assert_eq!(
+        w.perf.outcome.get(&1),
+        Some(&(PerfOutcome::Cancelled, "R205.5"))
+    );
+    assert!(w.perf.dropped.is_empty());
+}
+
+/// PD-20, the gate: a claim lost to the recording's own end completes nothing, and one lost to a
+/// stale-owner `Superseded` (PD-22 / PD-23's split) still completes.
+#[test]
+fn the_cancels_completion_follows_a_claim_that_stands() {
+    for outcome in [
+        TerminalOutcome::TooShort,
+        TerminalOutcome::NoSpeech,
+        TerminalOutcome::StopFailure,
+        TerminalOutcome::PipelineFailure,
+        TerminalOutcome::CaptureInitFailure,
+        TerminalOutcome::Success,
+    ] {
+        let (w, _) = run_cancel_to_its_terminal(Some((outcome, "R203.pre")));
+        assert_eq!(
+            w.ledger.claimed.get(&1).map(|(o, _, _)| *o),
+            Some(outcome),
+            "the cancel's claim was lost to {outcome:?}"
+        );
+        assert_eq!(
+            w.perf.outcome.get(&1),
+            None,
+            "a claim lost to {outcome:?} completes no performance"
+        );
+        assert!(w.perf.dropped.contains(&(1, "R205.5")));
+    }
+    let (w, _) = run_cancel_to_its_terminal(Some((TerminalOutcome::Superseded, "R211.2")));
+    assert_eq!(
+        w.perf.outcome.get(&1),
+        Some(&(PerfOutcome::Cancelled, "R205.5")),
+        "a stale-owner supersede is PD-22's and PD-23's, not this row's to drop"
+    );
 }
 
 /// The fixed PD-24: the supervisor's `Recovering` arm out of `Starting` completes performance
@@ -637,7 +822,7 @@ fn a_failed_capture_cancel_claims_no_terminal() {
 
 #[test]
 fn a_seed_is_one_run() {
-    for seed in [0u64, 59, 886, 4903, 9_990] {
+    for seed in [0u64, 59, 886, 4903, 9_980] {
         let seed = gated(seed);
         let (first, first_trace) = run_seed_with(seed, true);
         let (second, second_trace) = run_seed_with(seed, true);
@@ -831,6 +1016,7 @@ fn perf(outcome: PerfOutcome) -> Effect {
         cause: None,
         with_audio_duration: false,
         only_if_run: false,
+        follows_terminal: false,
     })
 }
 
@@ -1214,7 +1400,9 @@ fn split_pd(checker: &Checker) -> Option<usize> {
 fn an_sp4b_split_needs_its_full_signature() {
     for (name, split, expected) in [
         ("PD-22 in full", Split::pd22(), Some(22)),
-        ("PD-20 (a) in full", Split::pd20a(), Some(20)),
+        // PD-20 is fixed: its (a) shape, a cancel claim whose tail another path completes
+        // performance in, is a failure now, with no signature to credit it.
+        ("the fixed PD-20 (a) is no PD", Split::pd20a(), None),
         ("PD-4 in full", Split::pd4(), Some(4)),
         (
             "PD-22 without a cancel tail open at the completion",
@@ -1279,22 +1467,6 @@ fn an_sp4b_split_needs_its_full_signature() {
             Split {
                 perf: (PerfOutcome::NoSpeech, "R203.2"),
                 ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-20 (a) whose completion landed before the cancel's claim",
-            Split {
-                perf_step: 2,
-                ..Split::pd20a()
-            },
-            None,
-        ),
-        (
-            "PD-20 (a) whose claim is not the cancel's own tail",
-            Split {
-                own_tail: false,
-                ..Split::pd20a()
             },
             None,
         ),
@@ -1574,6 +1746,7 @@ fn an_sp4b_split_is_checked_at_the_prefix_where_both_outcomes_exist() {
             cause: None,
             with_audio_duration: false,
             only_if_run: false,
+            follows_terminal: false,
         }),
         1,
         1,

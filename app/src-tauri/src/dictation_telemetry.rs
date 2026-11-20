@@ -231,6 +231,18 @@ impl DictationTelemetry {
         true
     }
 
+    /// The outcome of the terminal claimed for `recording_id`, if one was (`None`: no claim, or an
+    /// id the ledger never accepted). The cancel's performance completion reads it to see whether
+    /// its own claim stands (PD-20).
+    pub(crate) fn claimed_outcome(&self, recording_id: u64) -> Option<DictationTerminalOutcome> {
+        self.inner
+            .lock_or_recover()
+            .attempts
+            .get(&recording_id)
+            .and_then(|attempt| attempt.terminal)
+            .map(|(outcome, _)| outcome)
+    }
+
     /// Test builds only: the successful terminal claims for `recording_id`, in order.
     #[cfg(test)]
     pub(crate) fn successful_claims_for_test(
