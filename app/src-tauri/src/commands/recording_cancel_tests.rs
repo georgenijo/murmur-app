@@ -180,7 +180,9 @@ fn cancel_recording() {
     );
 }
 
-/// R205.4 + R206.2: the capture cancel fails
+/// R205.4 + R206.2: the capture cancel fails. The recording is not over, so the command
+/// answers the error and claims no terminal (PD-21 fixed: it used to claim
+/// `PipelineFailure/RuntimeFailure`).
 #[test]
 fn cancel_recording_err() {
     assert_trace(
@@ -193,7 +195,6 @@ fn cancel_recording_err() {
         },
         &[
             "supervisor.cancel 1 user",
-            "~ terminal 1 PipelineFailure/RuntimeFailure",
             "reply cancel Err boom",
             "= final status=Recording processing=false context=1 cancelled_through=0",
         ],
@@ -217,7 +218,6 @@ fn cancel_starting_err() {
         },
         &[
             "supervisor.cancel 1 user",
-            "~ terminal 1 PipelineFailure/RuntimeFailure",
             "reply cancel Err boom",
             "supervisor.release_ready 1",
             "supervisor.set_phase Recording",
@@ -397,8 +397,8 @@ fn cancel_starting_not_accepted() {
 }
 
 /// R206.2 over a start that the supervisor cancelled first: the supervisor holds
-/// the ledger (`UserCancelledStarting`), the command's `PipelineFailure` claim
-/// loses (no second terminal), and the error text is unchanged.
+/// the ledger (`UserCancelledStarting`), the command claims nothing (PD-21 fixed), and
+/// the error text is unchanged.
 #[test]
 fn cancel_starting_err_after_the_supervisor_claimed_first() {
     assert_trace(
@@ -428,10 +428,11 @@ fn cancel_starting_err_after_the_supervisor_claimed_first() {
     );
 }
 
-/// The same scenario with the witness: the lost claim is recorded `Failed`, a
-/// won one `Ran`, a no-effect decision has an empty witness.
+/// The same scenarios with the witness: a failed capture cancel decides R206.2, which has no
+/// effect, so its witness is empty whether or not the supervisor claimed first (it used to
+/// record the command's `TERM` as `Failed` when it lost the claim and `Ran` when it won).
 #[test]
-fn cancel_records_the_real_206_claim_result() {
+fn a_failed_capture_cancel_has_no_206_claim_to_record() {
     let witnessed = |setup: Setup, body: fn(&Arc<World>)| {
         let lines = from_cancel(trace(setup, body));
         lines
@@ -439,7 +440,7 @@ fn cancel_records_the_real_206_claim_result() {
             .find(|line| line.starts_with("# 206 witness"))
             .expect("the scenario notes the witness")
     };
-    let lost = witnessed(Setup::idle(), |w| {
+    let after_the_supervisor_claimed = witnessed(Setup::idle(), |w| {
         w.knobs().cold_start = ColdStart::ReadyAfterContext;
         started(w);
         w.knobs().cancel_result = Err("boom");
@@ -449,23 +450,23 @@ fn cancel_records_the_real_206_claim_result() {
         note_206_witness(w);
         w.release_ready();
     });
-    assert_eq!(lost, "# 206 witness: TERM Failed");
-    let won = witnessed(Setup::idle(), |w| {
+    assert_eq!(after_the_supervisor_claimed, "# 206 witness: none");
+    let alone = witnessed(Setup::idle(), |w| {
         recording(w);
         w.knobs().cancel_result = Err("boom");
         forget_206_witness();
         cancel_command(w, None);
         note_206_witness(w);
     });
-    assert_eq!(won, "# 206 witness: TERM Ran");
-    let none = witnessed(Setup::idle(), |w| {
+    assert_eq!(alone, "# 206 witness: none");
+    let accepted_nothing = witnessed(Setup::idle(), |w| {
         recording(w);
         w.knobs().cancel_result = Ok(false);
         forget_206_witness();
         cancel_command(w, None);
         note_206_witness(w);
     });
-    assert_eq!(none, "# 206 witness: none");
+    assert_eq!(accepted_nothing, "# 206 witness: none");
 }
 
 // ------------------------------------------------------------ re-entrancy
