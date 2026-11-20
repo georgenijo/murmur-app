@@ -1,5 +1,5 @@
 //! The property suite (C7.5): 10,000 fixed seeds, the per-PD converse witness, the
-//! teardown-gap seeds of the fixed PD-18 / PD-19, the PD-20..PD-24 witness seeds, determinism, and unit
+//! teardown-gap seeds of the fixed PD-18 / PD-19, the PD-20 witness seed, determinism, and unit
 //! tests of the checker itself (a checker that cannot fail proves nothing).
 
 use super::checks::{Checker, SIGNATURES};
@@ -63,8 +63,9 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// * TEARDOWN_GAP_SEEDS (below): the teardown-gap starts the fix of PD-18 / PD-19 refuses.
 /// * 289,110: the fixed PD-21 with a short stop (R206.2, R203.4): a failed capture cancel that
 ///   claims no terminal, then the stop's own claim wins (`FAILED_CANCEL_SEEDS`).
-/// * 31,086: PD-22 against a stop's performance completion (R211.2, R203.2).
-/// * 154,052: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
+/// * 31,086: the fixed PD-22 against a stop's performance completion (R211.2, R203.2): the
+///   supervisor's `Idle` claims no terminal (`IDLE_FINISHED_SEEDS`).
+/// * 154,052: the fixed PD-22 against the cancel's own `TERM` (R211.2, R205.5).
 /// * 24,199: the fixed PD-24's environmental recovery (R102.3, R209.5): the Recovering arm
 ///   completes no performance for a start whose run its own failure aborted
 ///   (`FIXED_START_TIMEOUT_SEEDS`). The user's cancel (R209.3) is seed 3,651, inside the range.
@@ -92,8 +93,8 @@ const TEARDOWN_GAP_SEEDS: [(&str, u64); 4] = [
     ("an `Interrupted` end of 8,000 samples or more", 3_086),
 ];
 
-/// A witness of one of PD-20 and PD-22 (PD-18, PD-19, PD-21, PD-23 and PD-24 are fixed and have
-/// none): the PD, the seed that takes it, the matched
+/// A witness of PD-20 (PD-18, PD-19 and PD-21 to PD-24 are fixed and have none): the PD, the
+/// seed that takes it, the matched
 /// split `(terminal row, performance row)` where the PD is an SP4(b) split, and the
 /// shell test that reproduces the sequence (`recording_harness_findings_tests.rs`,
 /// D-S2b-5, D-S2b-7 and D-S2b-9 (b)). A `None` shell test is PROVISIONAL "reachable
@@ -108,29 +109,13 @@ struct Witness {
     sig: Option<usize>,
 }
 
-const FINDING_SEEDS: [Witness; 3] = [
-    Witness {
-        pd: 20,
-        seed: 140,
-        split: Some(("R205.5", "R203.5")),
-        shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
-        sig: None,
-    },
-    Witness {
-        pd: 22,
-        seed: 31_086,
-        split: Some(("R211.2", "R203.2")),
-        shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
-        sig: None,
-    },
-    Witness {
-        pd: 22,
-        seed: 154_052,
-        split: Some(("R211.2", "R205.5")),
-        shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
-        sig: None,
-    },
-];
+const FINDING_SEEDS: [Witness; 1] = [Witness {
+    pd: 20,
+    seed: 140,
+    split: Some(("R205.5", "R203.5")),
+    shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
+    sig: None,
+}];
 
 /// The seeds the regular tests run: `0..(10,000 - FIXED_SEEDS.len())` and [`FIXED_SEEDS`],
 /// 10,000 in all. Nothing in the environment changes it.
@@ -372,8 +357,9 @@ fn every_preserved_defect_is_witnessed() {
         return; // a short local run does not owe every witness
     }
     let missing: Vec<usize> = (1..=24)
-        // PD-17 is latent; PD-18, PD-19, PD-21, PD-23 and PD-24 are fixed and their signatures are gone.
-        .filter(|pd| !matches!(*pd, 17..=19 | 21 | 23 | 24) && summary.pd[*pd].0 == 0)
+        // PD-17 is latent; PD-2, PD-18, PD-19, PD-21, PD-22, PD-23 and PD-24 are fixed (PD-2 with
+        // PD-22, the same R211.2 claim) and their signatures are gone.
+        .filter(|pd| !matches!(*pd, 2 | 17..=19 | 21 | 22 | 23 | 24) && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
@@ -417,6 +403,14 @@ fn every_preserved_defect_is_witnessed() {
     assert_eq!(
         summary.pd[21].0, 0,
         "PD-21 was fixed: a failed capture cancel claims no terminal, so no run splits on it"
+    );
+    assert_eq!(
+        summary.pd[22].0, 0,
+        "PD-22 was fixed: the supervisor's `Idle` for a finished recording claims no terminal"
+    );
+    assert_eq!(
+        summary.pd[2].0, 0,
+        "PD-2 was retired with PD-22: R211.2 is the same claim"
     );
     assert_eq!(
         summary.pd[23].0, 0,
@@ -465,11 +459,11 @@ fn teardown_gap_starts_are_refused_and_the_app_ends_idle() {
     }
 }
 
-/// PD-20 and PD-22 each have pinned seeds (PD-18, PD-19, PD-21, PD-23 and PD-24 are fixed), and the
-/// shell test that reproduces the sequence is named beside each (D-S2b-5, D-S2b-7). There is no
-/// "known findings" set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
+/// PD-20 has a pinned seed (PD-18, PD-19 and PD-21 to PD-24 are fixed), and the shell test that
+/// reproduces the sequence is named beside it (D-S2b-5, D-S2b-7). There is no "known findings"
+/// set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
 #[test]
-fn pd20_and_pd22_have_pinned_seeds() {
+fn pd20_has_a_pinned_seed() {
     for witness in &FINDING_SEEDS {
         let report = run_seed(gated(witness.seed));
         assert!(
@@ -632,6 +626,87 @@ fn a_repeat_ready_for_a_live_recording_claims_no_terminal() {
         assert_eq!(report.hits.pd[23], 0);
         assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
+}
+
+/// The fixed PD-22 (and PD-2, the same claim): the supervisor's `Idle` for a finished current
+/// id (R211.2) claims no terminal, so the cancel's own `TERM` or the stop's own claim owns it
+/// and the terminal and the performance record agree. One pinned seed per path that used to
+/// split: a stop's failure tail completes performance inside a cancel's tail (R203.2), and the
+/// cancel's own `PC(Cancelled)` completes it (R205.5). Each decides R211.2 and then the
+/// recording's own end. Reverting the fix fails both seeds here and the 10,000-seed gate.
+const IDLE_FINISHED_SEEDS: [(&str, u64, &str); 2] = [
+    (
+        "a stop's failure tail completes performance",
+        31_086,
+        "R203.2",
+    ),
+    ("the cancel's own completion", 154_052, "R205.5"),
+];
+
+#[test]
+fn an_idle_for_a_finished_recording_claims_no_terminal() {
+    for (name, seed, own_end) in IDLE_FINISHED_SEEDS {
+        let report = run_seed(gated(seed));
+        assert!(
+            report.hits.decided.get("R211.2").copied().unwrap_or(0) > 0,
+            "seed {seed} ({name}) no longer decides an `Idle` for a finished recording: {:?}",
+            report.hits
+        );
+        assert!(
+            report.hits.decided.contains_key(own_end),
+            "seed {seed} ({name}) no longer ends through {own_end}: {:?}",
+            report.hits
+        );
+        assert!(
+            report
+                .hits
+                .pairs
+                .keys()
+                .all(|(terminal, _)| *terminal != "R211.2"),
+            "seed {seed} ({name}): R211.2 claimed a terminal: {:?}",
+            report.hits.pairs
+        );
+        assert_eq!(report.hits.pd[22], 0);
+        assert_eq!(report.hits.pd[2], 0);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    }
+}
+
+/// A pinned PD-13 consequence of the PD-22 fix (D-PD-2 amendment 1, issue #1191): a stop task
+/// panics after its `IdleGuard` is armed (R204a.6 `Dropped`, which claims no terminal) and the
+/// supervisor's worker exit then notifies `Idle` for the current id. R211.2 used to claim
+/// `Superseded/StaleOwner` there, the recording's only terminal; it claims none now, so the
+/// recording ends with no terminal. The existing PD-13 exemption (`pd_touched(13, ..)` in the
+/// end-of-run "accepted but never claimed" check) admits exactly these ids, unwidened: about 76
+/// in 300,000 seeds, and the 300,000- and 3,000,000-seed sweeps report no other unclaimed id.
+/// Seed 1,859 is the first. When #1191 gives the unwinding stop its own claim, this seed's count
+/// drops to zero and the test flips with it.
+const PANICKED_STOP_IDLE_SEED: u64 = 1_859;
+
+#[test]
+fn a_panicked_stop_then_the_supervisors_idle_ends_with_no_terminal() {
+    let report = run_seed(gated(PANICKED_STOP_IDLE_SEED));
+    assert!(
+        report.hits.decided.get("R211.2").copied().unwrap_or(0) > 0,
+        "seed {PANICKED_STOP_IDLE_SEED} no longer decides the supervisor's Idle: {:?}",
+        report.hits
+    );
+    assert!(report.hits.pd[13] > 0, "{:?}", report.hits);
+    assert_eq!(
+        report.hits.panicked_task_idle_without_terminal, 1,
+        "the panicked stop's recording must end with no terminal: {:?}",
+        report.hits
+    );
+    assert!(
+        report
+            .hits
+            .pairs
+            .keys()
+            .all(|(terminal, _)| *terminal != "R211.2"),
+        "R211.2 claimed a terminal: {:?}",
+        report.hits.pairs
+    );
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
 }
 
 #[test]
@@ -844,20 +919,24 @@ fn the_c3_fixture_lists_every_c3_row_once() {
     assert_eq!(fixture, rows, "c3_fixture.txt and rows::C3_ROWS differ");
 }
 
-/// Both R211.2 mutants of the earlier round and the duplicate-terminal mutant fail,
-/// per decision, while the unmutated row passes.
+/// R211.2 claims no terminal (PD-22 fixed, and PD-2 with it). The unmutated row passes, and
+/// every mutant fails, per decision: the old `Superseded` claim, a `Success` claim, an extra
+/// `Idle -> Idle` write and a duplicate terminal.
 #[test]
 fn the_c3_fixture_fails_the_r211_2_mutants_and_a_duplicate_terminal() {
     let check = |row: &str, status, stale, effects: &[Effect]| {
         super::c3::check_decision(row, status, stale, effects, None)
     };
     let superseded = || terminal(TerminalOutcome::Superseded, ErrCode::StaleOwner);
-    assert_eq!(
-        check("R211.2", Status::Idle, false, &[superseded()]),
-        Ok(())
-    );
+    assert_eq!(check("R211.2", Status::Idle, false, &[]), Ok(()));
 
-    // Mutant A: claims `Success` instead of `Superseded`.
+    // Mutant 0: the claim the row used to make (PD-22's, PD-2's).
+    let old_claim = check("R211.2", Status::Idle, false, &[superseded()]);
+    assert!(
+        old_claim.unwrap_err().contains("R211.2"),
+        "claim Superseded"
+    );
+    // Mutant A: claims `Success` instead.
     let success = check(
         "R211.2",
         Status::Idle,
@@ -870,20 +949,19 @@ fn the_c3_fixture_fails_the_r211_2_mutants_and_a_duplicate_terminal() {
         "R211.2",
         Status::Idle,
         false,
-        &[superseded(), Effect::SetStatus(Status::Idle)],
+        &[Effect::SetStatus(Status::Idle)],
     );
     assert!(
         write.unwrap_err().contains("ST:Idle>Idle"),
         "extra Idle write"
     );
-    // Mutant C: an identical second terminal (the old snapshot accepted it).
+    // Mutant C: a second terminal (the old snapshot accepted a duplicate).
     let twice = check("R211.2", Status::Idle, false, &[superseded(), superseded()]);
     assert!(twice.is_err(), "a duplicate terminal must fail");
-    // A missing terminal fails too, and R211.2 does not run for a stale input.
-    assert!(check("R211.2", Status::Idle, false, &[]).is_err());
-    assert!(check("R211.2", Status::Idle, true, &[superseded()]).is_err());
+    // R211.2 does not run for a stale input (R211.1 does, and claims).
+    assert!(check("R211.2", Status::Idle, true, &[]).is_err());
     // The row reads `Idle`: another status is not R211.2.
-    assert!(check("R211.2", Status::Processing, false, &[superseded()]).is_err());
+    assert!(check("R211.2", Status::Processing, false, &[]).is_err());
 }
 
 /// Valid inputs the model never observed are accepted (the fixture is the appendix,
@@ -1046,42 +1124,34 @@ struct Split {
     claim_status: Status,
     claim_step: u32,
     claim_current: bool,
+    /// The claim is the tail's own cancel's, or another task's inside a cancel's tail.
     own_tail: bool,
+    other_tail: bool,
     perf: (PerfOutcome, &'static str),
     perf_step: u32,
     perf_other_tail: bool,
     perf_own_tail: bool,
-    /// A later claim by another path that lost.
-    lost_later: Option<&'static str>,
-    /// The lost claim lands after the performance completion rather than before it.
-    lost_after_perf: bool,
-    /// The cancel task whose tail was open at the claim, at the lost claim and at the
-    /// performance completion (the window's identity).
-    claim_tail: Option<TaskId>,
-    lost_tail: Option<TaskId>,
-    perf_tail: Option<TaskId>,
     /// A performance run was begun for the recording (the completion is the run's outcome),
     /// or none was (an aborted start: only the coordinator's claim).
     run: bool,
 }
 
 impl Split {
-    fn pd22() -> Self {
+    /// A `Superseded` claim by R211.2 for a finished current id inside a cancel's tail, then a
+    /// stop's failure completing performance: the shape no signature admits any more (PD-22
+    /// is fixed, and with it PD-2).
+    fn r211_2() -> Self {
         Self {
             terminal: (TerminalOutcome::Superseded, ErrCode::StaleOwner, "R211.2"),
             claim_status: Status::Idle,
             claim_step: 5,
             claim_current: true,
             own_tail: false,
+            other_tail: true,
             perf: (PerfOutcome::Failed, "R203.2"),
             perf_step: 9,
             perf_other_tail: true,
             perf_own_tail: false,
-            lost_later: Some("R205.5"),
-            lost_after_perf: false,
-            claim_tail: Some(7),
-            lost_tail: Some(7),
-            perf_tail: Some(7),
             run: true,
         }
     }
@@ -1097,15 +1167,11 @@ impl Split {
             claim_step: 3,
             claim_current: true,
             own_tail: true,
+            other_tail: false,
             perf: (PerfOutcome::Completed, "R204b.6"),
             perf_step: 6,
             perf_other_tail: true,
             perf_own_tail: false,
-            lost_later: None,
-            lost_after_perf: false,
-            claim_tail: Some(7),
-            lost_tail: None,
-            perf_tail: Some(7),
             run: true,
         }
     }
@@ -1119,15 +1185,11 @@ impl Split {
             claim_step: 3,
             claim_current: true,
             own_tail: false,
+            other_tail: false,
             perf: (PerfOutcome::Completed, "R204b.6"),
             perf_step: 8,
             perf_other_tail: false,
             perf_own_tail: false,
-            lost_later: None,
-            lost_after_perf: false,
-            claim_tail: None,
-            lost_tail: None,
-            perf_tail: None,
             run: true,
         }
     }
@@ -1152,29 +1214,10 @@ impl Split {
             input_rid: 1,
             current,
             status_before: self.claim_status,
-            other_cancel_tail: self.claim_tail.is_some() && !self.own_tail,
+            other_cancel_tail: self.other_tail,
             own_cancel_tail: self.own_tail,
-            tail: self.claim_tail,
         };
         assert!(w.claim_terminal(1, Terminal::new(outcome, code), row, claim));
-        if let Some(lost) = self.lost_later {
-            let late = Won {
-                row: lost,
-                step: if self.lost_after_perf {
-                    self.perf_step + 1
-                } else {
-                    self.claim_step + 1
-                },
-                tail: self.lost_tail,
-                ..claim
-            };
-            assert!(!w.claim_terminal(
-                1,
-                Terminal::new(TerminalOutcome::StopFailure, ErrCode::None),
-                lost,
-                late
-            ));
-        }
         let (perf, perf_row) = self.perf;
         let completion = Won {
             row: perf_row,
@@ -1184,7 +1227,6 @@ impl Split {
             status_before: Status::Idle,
             other_cancel_tail: self.perf_other_tail,
             own_cancel_tail: self.perf_own_tail,
-            tail: self.perf_tail,
         };
         if self.run {
             w.perf.registered.insert(1);
@@ -1205,71 +1247,31 @@ fn split_pd(checker: &Checker) -> Option<usize> {
 #[test]
 fn an_sp4b_split_needs_its_full_signature() {
     for (name, split, expected) in [
-        ("PD-22 in full", Split::pd22(), Some(22)),
         ("PD-20 (a) in full", Split::pd20a(), Some(20)),
+        // PD-22 is fixed (and PD-2 with it): the supervisor's `Idle` for a finished current id
+        // (R211.2) claims no terminal, so a claim from R211.2 with any performance outcome is
+        // an SP4(b) failure, inside a cancel's tail or not.
         (
-            "PD-22 without a cancel tail open at the completion",
+            "R211.2's claim then a stop's failure inside a cancel's tail",
+            Split::r211_2(),
+            None,
+        ),
+        (
+            "R211.2's claim then the cancel's own completion",
             Split {
+                perf: (PerfOutcome::Cancelled, "R205.5"),
+                perf_own_tail: true,
                 perf_other_tail: false,
-                perf_tail: None,
-                ..Split::pd22()
+                ..Split::r211_2()
             },
             None,
         ),
         (
-            "PD-22 without the real path's later claim being lost",
+            "R211.2's claim outside any cancel's tail",
             Split {
-                lost_later: None,
-                lost_after_perf: false,
-                ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-22 whose Idle claim fell outside any cancel tail",
-            Split {
-                claim_tail: None,
-                ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-22 whose losing claim fell in another cancel's tail",
-            Split {
-                lost_tail: Some(8),
-                ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-22 whose losing claim is not the cancel's own TERM",
-            Split {
-                lost_later: Some("R203.pre"),
-                ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-22 claimed in a status C3 does not list for R211.2",
-            Split {
-                claim_status: Status::Processing,
-                ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-22 with a performance row outside the signature",
-            Split {
-                perf: (PerfOutcome::Failed, "R213.2"),
-                ..Split::pd22()
-            },
-            None,
-        ),
-        (
-            "PD-22 with another outcome class",
-            Split {
-                perf: (PerfOutcome::NoSpeech, "R203.2"),
-                ..Split::pd22()
+                other_tail: false,
+                perf_other_tail: false,
+                ..Split::r211_2()
             },
             None,
         ),
@@ -1358,64 +1360,6 @@ fn an_sp4b_split_needs_its_full_signature() {
     }
 }
 
-/// D-S2b-11 (f): PD-22's window is the tail of one cancel; its events (the performance
-/// completion, the cancel's lost claim) land in either order, so the split is judged when
-/// the tail closes, not at the first prefix where both outcomes exist.
-#[test]
-fn pd22_defers_its_judgment_until_the_cancel_tail_closes() {
-    // The stop's failure tail completes performance (step 6) before the cancel's `TERM`
-    // is lost (step 7), both inside tail 7.
-    let split = Split {
-        perf_step: 6,
-        lost_after_perf: true,
-        ..Split::pd22()
-    };
-    let mut w = split.world();
-    w.cancel_tail.insert(1, 7);
-    let mut checker = Checker::default();
-    checker.sp4b(&w, 1);
-    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
-    assert_eq!(
-        split_pd(&checker),
-        None,
-        "no verdict while the tail is open"
-    );
-    w.cancel_tail.remove(&1);
-    checker.sp4b(&w, 1);
-    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
-    assert_eq!(split_pd(&checker), Some(22));
-
-    // A window whose cancel never lost a claim is no PD-22: judged at the close, it fails.
-    let no_loser = Split {
-        lost_later: None,
-        ..split
-    };
-    let mut w = no_loser.world();
-    w.cancel_tail.insert(1, 7);
-    let mut checker = Checker::default();
-    checker.sp4b(&w, 1);
-    assert!(checker.violations.is_empty());
-    w.cancel_tail.remove(&1);
-    checker.sp4b(&w, 1);
-    assert!(
-        violations(&checker).contains("SP4(b)"),
-        "{:?}",
-        checker.violations
-    );
-
-    // At the end of the run an open window is judged as it stands.
-    let mut w = no_loser.world();
-    w.cancel_tail.insert(1, 7);
-    let mut checker = Checker::default();
-    checker.sp4b(&w, 1);
-    checker.on_end(&w, &[]);
-    assert!(
-        violations(&checker).contains("SP4(b)"),
-        "{:?}",
-        checker.violations
-    );
-}
-
 /// D-S2b-13 (d): there is no blanket stale-input skip. SP4(b) compares the outcomes a
 /// generation actually has: a stale-input claim for a recording whose run began and ended
 /// differently fails; a completion with no run behind it (an aborted start: seed 8096) is
@@ -1456,7 +1400,6 @@ fn a_completion_follows_the_performance_run_lifecycle() {
         status_before: Status::Idle,
         other_cancel_tail: false,
         own_cancel_tail: false,
-        tail: None,
     };
     // Begun: the outcome.
     let mut w = World::new();
@@ -1494,7 +1437,6 @@ fn an_sp4b_split_is_checked_at_the_prefix_where_both_outcomes_exist() {
         status_before: Status::Idle,
         other_cancel_tail: false,
         own_cancel_tail: false,
-        tail: None,
     };
     w.claim_terminal(
         1,

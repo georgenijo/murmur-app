@@ -393,9 +393,6 @@ pub struct Won {
     pub other_cancel_tail: bool,
     /// This task is itself the cancel whose tail was open.
     pub own_cancel_tail: bool,
-    /// The cancel task whose tail (D released, the clears and emits still to run) was
-    /// open for this recording, whoever wrote the entry: the window's identity.
-    pub tail: Option<TaskId>,
 }
 
 /// A `claim_terminal` call and whether it won.
@@ -404,8 +401,6 @@ pub struct ClaimTry {
     pub row: &'static str,
     pub won: bool,
     pub step: u32,
-    /// The cancel tail open when the call ran (see [`Won::tail`]).
-    pub tail: Option<TaskId>,
 }
 
 #[derive(Debug, Default)]
@@ -823,7 +818,6 @@ impl World {
             row,
             won,
             step: ctx.step,
-            tail: ctx.tail,
         });
         if !won {
             return false;
@@ -871,7 +865,6 @@ impl World {
             status_before: self.status,
             other_cancel_tail: self.cancel_tail.get(&rid).is_some_and(|t| *t != tid),
             own_cancel_tail: self.cancel_tail.get(&rid) == Some(&tid),
-            tail: self.cancel_tail.get(&rid).copied(),
         }
     }
 

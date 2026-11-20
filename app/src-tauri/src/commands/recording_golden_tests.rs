@@ -411,7 +411,7 @@ fn s10c_c8_forced(world: &Arc<World>) {
 }
 
 // --------------- 11: Idle on an already-finished recording (C9)
-// Witnesses PD-2.
+// Witnessed PD-2, retired with PD-22 (D-PD-1: R211.2's `Superseded` claim was both).
 
 /// After S3 (the start failure path) already wrote Idle and claimed a terminal.
 fn s11a_idle_after_a_failed_start(world: &Arc<World>) {
@@ -429,7 +429,7 @@ fn s11b_idle_after_a_finished_stop(world: &Arc<World>) {
     world.notify(1, AudioLifecycleEvent::Idle);
 }
 
-/// With no earlier terminal: the stale-owner terminal is the only one.
+/// With no earlier terminal: R211.2 claims none either (PD-22 fixed), so nothing is claimed.
 fn s11c_idle_when_no_terminal_exists(world: &Arc<World>) {
     world.accept_silently(1);
     world.notify(1, AudioLifecycleEvent::Idle);
@@ -687,8 +687,9 @@ fn verify_s09(text: &str) {
     at_after(run, guard, IDLE_EMIT);
 }
 
-/// PD-2: a supervisor `Idle` for a finished id. With an earlier terminal
-/// (11a, 11b) it adds none; with none (11c) it claims `Superseded`.
+/// PD-22 fixed (and PD-2, the same claim): a supervisor `Idle` for a finished id claims no
+/// terminal. With an earlier terminal (11a, 11b) that one stands alone; with none (11c)
+/// there is none.
 fn verify_s11(text: &str) {
     for prefix in ["11a", "11b"] {
         let run = section(text, prefix);
@@ -700,8 +701,11 @@ fn verify_s11(text: &str) {
         assert_eq!(count(run, "~ terminal 1"), 1, "{prefix}: one terminal");
     }
     let run = section(text, "11c");
-    let notified = at(run, "supervisor.notify 1 Idle");
-    at_after(run, notified, "~ terminal 1 Superseded/StaleOwner");
+    at(run, "supervisor.notify 1 Idle");
+    assert!(
+        !run.contains("~ terminal"),
+        "11c: the supervisor's Idle claims no terminal"
+    );
 }
 
 /// PD-3 (S3): the unconditional `idle` emit after a failed start's ack. 12b:
@@ -997,7 +1001,7 @@ pub(super) fn golden_s11_idle_on_a_finished_recording() {
     check_golden(
         "s11-idle-on-finished-recording",
         "11 Idle on an already-finished recording (C9)",
-        "PD-2",
+        "none (PD-2, retired with PD-22: R211.2 claims no terminal)",
         None,
         &[
             sub("11a after S3 wrote Idle", s11a_idle_after_a_failed_start),
