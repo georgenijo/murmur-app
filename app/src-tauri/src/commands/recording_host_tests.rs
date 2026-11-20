@@ -667,7 +667,12 @@ impl PerformancePort for Shared {
 fn fixture(status: DictationStatus, recording_id: u64) -> (Arc<State>, FakeHost) {
     let app_state = AppState::default();
     app_state.recording_id.store(recording_id, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = status;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        // Live is written directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let state = Arc::new(test_state(app_state));
     let host = FakeHost::new(Arc::clone(&state));
     (state, host)

@@ -205,6 +205,10 @@ mod lifecycle_barrier_tests;
 mod lifecycle_cutover_tests;
 
 #[cfg(test)]
+#[path = "recording_stop_cutover_tests.rs"]
+mod stop_cutover_tests;
+
+#[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
 
@@ -1403,6 +1407,14 @@ impl Drop for PipelineOwner {
     }
 }
 
+// Test builds: the row id the last 204a guard-finish section decided (R204a.x, or R302.1 for
+// the legacy parse origin).
+#[cfg(test)]
+thread_local! {
+    static GUARD_FINISH_ROW: std::cell::RefCell<Option<&'static str>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
 ///
@@ -1633,7 +1645,7 @@ impl<'a> IdleGuard<'a> {
         // a concurrent start advances the ID between our check and the
         // status write.
         let mut dictation = app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+        let view = FieldAdapter::stop_view(app_state, &mut dictation);
         // R302.1: the legacy parse failure is exactly the 204a `LegacyParse` rows,
         // decided by site 302; every other origin is 204a.
         let decide = || {
@@ -1661,6 +1673,9 @@ impl<'a> IdleGuard<'a> {
         #[cfg(feature = "dictation-shadow")]
         flight.history_of(|| owner.as_mut().and_then(|owner| owner.op.take_retired()));
         stop_ports::expect_valid(&decision);
+        // Test builds: the row this 204a section decided, for the origin tests.
+        #[cfg(test)]
+        GUARD_FINISH_ROW.with(|slot| *slot.borrow_mut() = Some(decision.row.0));
         // H2 `ret rid`: after the decision, before its `In` effects. A panic in
         // an effect (the `ST` trace) can no longer leave either entry behind.
         if let Some(owner) = owner.as_mut() {
@@ -2321,7 +2336,7 @@ fn run_pipeline_idle_emit(
     let after_d = AfterD::new();
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+    let view = FieldAdapter::stop_view(app_state, &mut dictation);
     let input = PipelineIdleEmitInput {
         rid: RecordingId(recording_id),
         kind,
@@ -5179,7 +5194,7 @@ async fn process_audio_inner(
         {
             seen_input.occupancy.file_transcribing = start_input.occupancy.file_transcribing;
         }
-        let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+        let view = FieldAdapter::stop_view(app_state, &mut dictation);
         let mut decision =
             decide(|| core_pa::decide_process_audio_start(&view, start_input.clone(), now));
         // D-S1-2: the coordinator mutex is read only when the decision asks, after
@@ -5325,7 +5340,7 @@ async fn process_audio_inner(
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         let now = core_now();
         // R301.6: the start's R103.0 decision under the import's own row id.
         let decision = decide(|| {
@@ -8706,7 +8721,7 @@ async fn stop_native_recording_admitted(
         // Atomic check-and-set + generation capture in a single lock: site 201
         // (R201.2-.8) decides under D, the effects `PH`, `ST`, `AX` run under it.
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         let mut decision = stop_ports::decide(|| core_stop::decide_stop_request(&view, input, now));
         if let Verdict::NeedObservation(ObsKind::TakeInterrupted { id }) = decision.verdict {
             // R201.5: only a `Recovering` stop reads the preserved capture, exactly
@@ -8916,7 +8931,7 @@ async fn stop_native_recording_admitted(
             rid,
         );
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
         #[cfg(feature = "dictation-shadow")]
         let seen_status = capture::SeenStatus::new();
         let decision = op_guard.consume(|op_status| {
@@ -9642,7 +9657,7 @@ fn run_stop_capture_rows<'a>(
     // The decision's `In` effects are the guard's D section: it must not run again.
     guard.disarm();
     let mut dictation = state.app_state.dictation.lock_or_recover();
-    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let view = FieldAdapter::stop_view(&state.app_state, &mut dictation);
     #[cfg(feature = "dictation-shadow")]
     let seen_status = capture::SeenStatus::new();
     let decision = capture_stop.consume(|op_status| {
@@ -11094,7 +11109,12 @@ pub(crate) mod tests {
 
         let app_state = AppState::default();
         app_state.recording_id.store(recording_id, Ordering::SeqCst);
-        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            dictation.status = DictationStatus::Recording;
+            // Live is written directly, so the persisted core is seeded to match.
+            crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+        }
 
         let app = tauri::test::mock_builder()
             .manage(State {
@@ -11218,7 +11238,11 @@ pub(crate) mod tests {
         let recording_id = 384;
         let app_state = AppState::default();
         app_state.recording_id.store(recording_id, Ordering::SeqCst);
-        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            dictation.status = DictationStatus::Processing;
+            crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+        }
         keyboard::set_processing(true);
 
         let app = tauri::test::mock_builder()
@@ -12011,6 +12035,7 @@ pub(crate) mod tests {
         {
             let mut dictation = app_state.dictation.lock().unwrap();
             dictation.status = DictationStatus::Processing;
+            crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
         }
         {
             let _guard = IdleGuard::new(&app_state, rid);
@@ -12024,7 +12049,11 @@ pub(crate) mod tests {
     fn idle_guard_finishes_before_notification_and_ignores_superseded_recordings() {
         let app_state = AppState::default();
         let rid = app_state.next_recording_id();
-        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            dictation.status = DictationStatus::Processing;
+            crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+        }
         let mut guard = IdleGuard::new(&app_state, rid);
         let mut notified = false;
         guard.finish(|dictation| {
@@ -12032,8 +12061,18 @@ pub(crate) mod tests {
             notified = true;
         });
         assert!(notified);
-        app_state.next_recording_id();
-        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        {
+            // A newer recording starts: through the adapter (`ID+`, `ST`), so the persisted
+            // core follows live.
+            let mut dictation = app_state.dictation.lock_or_recover();
+            let newer =
+                crate::dictation_executor::FieldAdapter::alloc_id(&app_state, &mut dictation);
+            crate::dictation_executor::FieldAdapter::set_status(
+                newer,
+                &mut dictation,
+                DictationStatus::Recording,
+            );
+        }
         drop(guard);
         assert_eq!(
             app_state.dictation.lock_or_recover().status,
@@ -12351,6 +12390,10 @@ pub(crate) mod tests {
         let app_state = AppState::default();
         let rid = app_state.next_recording_id();
         {
+            let mut dictation = app_state.dictation.lock().unwrap();
+            crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+        }
+        {
             let _guard = IdleGuard::new(&app_state, rid);
         }
         assert!(!keyboard::is_processing());
@@ -12390,8 +12433,13 @@ pub(crate) mod tests {
             let mut dictation = app_state.dictation.lock().unwrap();
             dictation.status = DictationStatus::Recording;
         }
-        // Simulate new recording starting (increments rid)
-        let _rid2 = app_state.next_recording_id(); // 2
+        // Simulate new recording starting (increments rid): through the adapter, so the
+        // persisted core follows live.
+        let _rid2 = {
+            let mut dictation = app_state.dictation.lock().unwrap();
+            crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+            crate::dictation_executor::FieldAdapter::alloc_id(&app_state, &mut dictation)
+        }; // 2
         {
             let _guard = IdleGuard::new(&app_state, rid1);
             // guard drops here, but rid1 != current_rid(2), so no reset

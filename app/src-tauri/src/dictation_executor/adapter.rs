@@ -282,6 +282,26 @@ impl FieldAdapter {
         )
     }
 
+    /// The decision view of the stop family's entries after the cutover (C9.7 b, C8.6):
+    /// sites 201, 202 (no context), 203, 204a, 204b and the legacy import's 301 (and its
+    /// destination row 301.6), whose finish sections 204a and 204b also serve site 302 and
+    /// all four `IdleGuard` origins. Only the stop family's own wrapper over
+    /// [`Self::persisted_view`] (D-S2c-18): the same persisted M1/M2, the same M3 atomic, M4
+    /// `None` for the same reason, the same C8.6 count-and-re-sync. A test build records
+    /// its reads apart, with the caller (`probe::stop_entry`), so a stop test sees only stop
+    /// entries and which one.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn stop_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            super::probe::stop_entry,
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
     /// The atomics a D-less lifecycle entry (212-215) reads, with no lock.
     pub(crate) fn lock_free_facts(app: &AppState) -> LockFreeFacts {
         #[cfg(test)]

@@ -107,6 +107,49 @@ pub(crate) fn take_lifecycle_entries() -> Vec<EntryRead> {
     )
 }
 
+/// What a stop entry's C8.6 assertion read ([`EntryRead`]) and where the entry is: the
+/// `(file, line)` of its `FieldAdapter::stop_view` call.
+pub(crate) type StopEntryRead = (EntryRead, (&'static str, u32));
+
+static STOP_ENTRIES: std::sync::Mutex<Vec<StopEntryRead>> = std::sync::Mutex::new(Vec::new());
+static STOP_ENTRIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`record_lifecycle_entries`] for the stop family's entries (`FieldAdapter::stop_view`).
+pub(crate) fn record_stop_entries(on: bool) {
+    STOP_ENTRIES_ON.store(on, Ordering::Relaxed);
+}
+
+/// [`lifecycle_entry`] for the stop family: what a stop entry's C8.6 assertion read, as
+/// read at the entry, with the entry's call site.
+pub(crate) fn stop_entry(
+    persisted: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    live: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    caller: &'static std::panic::Location<'static>,
+) {
+    if !STOP_ENTRIES_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    STOP_ENTRIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(((persisted, live), (caller.file(), caller.line())));
+}
+
+/// Every stop entry's read since the last call, oldest first.
+pub(crate) fn take_stop_entries() -> Vec<StopEntryRead> {
+    std::mem::take(
+        &mut *STOP_ENTRIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// The shadow read its own per-thread state (the keyboard write sequence, the ticker
 /// mailbox). A disarmed shadow makes none (D-S2c-10 R4).
 #[cfg(feature = "dictation-shadow")]

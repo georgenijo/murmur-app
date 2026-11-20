@@ -380,6 +380,10 @@ pub(super) struct World {
     /// otherwise stay green until the lifecycle cutover starts reading M1 from
     /// `PersistedCore`.
     divergence_baseline: u64,
+    /// Divergences a test planted on purpose (`plant_core_divergence`): the entry that
+    /// reads the planted core counts each one (C8.6), and the run's invariant allows
+    /// exactly that many, no more.
+    planted_divergences: std::sync::atomic::AtomicU64,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -412,6 +416,7 @@ impl World {
             side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
             bridge_side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
             divergence_baseline: crate::dictation_executor::adapter::core_divergences(),
+            planted_divergences: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -423,6 +428,13 @@ impl World {
     /// `sample` uses; the counter is checked regardless.)
     fn assert_persisted_core(&self, at: &str) {
         self.assert_no_new_divergence(at);
+        // A planted divergence is pending until the entry that reads it has counted it:
+        // the equality is not asserted for the lines in between.
+        if crate::dictation_executor::adapter::core_divergences()
+            < self.divergence_baseline + self.planted_divergences.load(Ordering::SeqCst)
+        {
+            return;
+        }
         let state = self.state();
         let Some(dictation) = state.app_state.dictation.try_lock_or_recover() else {
             return;
@@ -434,7 +446,8 @@ impl World {
     fn assert_no_new_divergence(&self, at: &str) {
         let divergences = crate::dictation_executor::adapter::core_divergences();
         assert!(
-            divergences <= self.divergence_baseline,
+            divergences
+                <= self.divergence_baseline + self.planted_divergences.load(Ordering::SeqCst),
             "persisted-core invariant: FieldAdapter counted {} new divergence(s) at `{at}` \
              (a write to dictation.status or the recording id bypassed the adapter)",
             divergences - self.divergence_baseline
@@ -588,6 +601,18 @@ impl World {
         );
         self.sample();
         self.assert_persisted_core("end of run");
+        // The end-of-run check `plant_core_divergence` promises: the counter is exactly the
+        // baseline plus the divergences planted, so a planted divergence that no switched
+        // entry read (a D-less site reads none) fails the run instead of passing unseen. A
+        // run that planted nothing counted nothing.
+        let planted = self.planted_divergences.load(Ordering::SeqCst);
+        let counted =
+            crate::dictation_executor::adapter::core_divergences() - self.divergence_baseline;
+        assert_eq!(
+            counted, planted,
+            "a planted divergence was never read: {planted} planted, {counted} counted \
+             (no switched entry ran after the plant, or none reads the persisted core)"
+        );
         let state = self.state();
         let status = state.app_state.dictation.lock_or_recover().status;
         let context = (1..=MAX_ID)
@@ -936,6 +961,46 @@ impl World {
         dictation
             .core
             .set_status(crate::dictation_admission::core_status(status));
+    }
+
+    /// A **planted** C8.6 divergence (the stop cutover's tests): put both persisted fields
+    /// off live, as a write that bypassed the adapter would, and allow the run's invariant
+    /// exactly one more counted divergence. The entry that next reads the persisted core
+    /// must count it and re-sync it (`stop_view`); a run in which none does fails
+    /// [`World::finish`]'s end-of-run check (`counted == planted`). The persisted fields are checked equal to live first, so it never
+    /// forgives an earlier violation. Returns the planted `(status, id)` and live's.
+    pub(super) fn plant_core_divergence(
+        &self,
+    ) -> (
+        (
+            murmur_dictation_core::status::Status,
+            murmur_dictation_core::ids::RecordingId,
+        ),
+        (
+            murmur_dictation_core::status::Status,
+            murmur_dictation_core::ids::RecordingId,
+        ),
+    ) {
+        use murmur_dictation_core::status::Status;
+        let state = self.state();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        self.assert_no_new_divergence("plant_core_divergence");
+        self.assert_core_equals_live(&state.app_state, &dictation, "plant_core_divergence");
+        let live = (
+            crate::dictation_admission::core_status(dictation.status),
+            murmur_dictation_core::ids::RecordingId(
+                state.app_state.recording_id.load(Ordering::SeqCst),
+            ),
+        );
+        let other = if live.0 == Status::Recording {
+            Status::Processing
+        } else {
+            Status::Recording
+        };
+        dictation.core.set_status(other);
+        let id = dictation.core.alloc_id();
+        self.planted_divergences.fetch_add(1, Ordering::SeqCst);
+        ((other, id), live)
     }
 
     /// [`World::poke_status`] for the recording id (M2). The only way to set the
