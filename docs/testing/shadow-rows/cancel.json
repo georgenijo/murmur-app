@@ -18,6 +18,6 @@
     {"row": "205.1", "id": "R205.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/cancel/tests.rs", "name": "r205_1_a_stale_expected_owner_is_a_silent_no_op_whatever_the_status", "why": "needs a newer recording to have run against this one (a stale id), which the checklist cannot arrange"},
     {"row": "205.2", "id": "R205.2", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/cancel/tests.rs", "name": "r205_2_idle_is_a_no_op", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
     {"row": "205.3", "id": "R205.3", "kind": "golden", "file": "app/src-tauri/src/commands/recording_pd_witness_tests.rs", "name": "pd18bc_start_in_the_teardown_tail_leaves_recovering", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
-    {"row": "206.2", "id": "R206.2", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/cancel/tests.rs", "name": "r206_2_a_failed_capture_cancel_emits_the_failure_terminal_after_t_for_both_callers", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"}
+    {"row": "206.2", "id": "R206.2", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/cancel/tests.rs", "name": "r206_2_a_failed_capture_cancel_claims_no_terminal_for_both_callers", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"}
   ]
 }

@@ -874,7 +874,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` or `recording_pd25_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-25 each name at least one: renaming
+/// `recording_harness_findings_tests.rs` or `recording_pd25_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-25 each (less the fixed PD-21) name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -897,7 +897,8 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    for pd in 19..=25 {
+    // PD-21 is fixed (see the map's "Fixed" section): no entry in this section.
+    for pd in (19..=25).filter(|pd| *pd != 21) {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1148,7 +1149,7 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// shadow in this process (every sub-run is replayed, `run_sub_run_observed`), and each
 /// PD the allowlist credits is counted. PD-11, PD-14 and PD-17 are not row signatures
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
-/// E8 enumerates every preserved defect, PD-1 to PD-25 (`e8_pds`): each is driven by a
+/// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`]) (`e8_pds`): each is driven by a
 /// named shell fixture, the PD-19 to PD-25 fixtures are replayed through the shadow too
 /// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
@@ -1315,9 +1316,17 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
     );
 }
 
-/// Every preserved defect, PD-1 to PD-25, with the shell fixtures that assert it. Seed
-/// 92,332 of #1157 is not a defect (the generator draws an uncaused `Cancelled`) and is
-/// not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
+/// The PDs a fix PR has fixed and removed (C7.0): no E8 row, no allowlist entry, no
+/// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-21:
+/// `a_timed_out_cancel_claims_nothing_before_a_short_stop` and
+/// `a_timed_out_cancel_claims_nothing_before_the_late_recovery`
+/// (`recording_harness_findings_tests.rs`).
+#[cfg(feature = "dictation-shadow")]
+const FIXED_PDS: &[u8] = &[21];
+
+/// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
+/// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
+/// `Cancelled`) and is not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
 /// [`assert_every_preserved_signature_is_accounted`] fails otherwise.
 #[cfg(feature = "dictation-shadow")]
 fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
@@ -1428,14 +1437,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
             20,
             CrossLedger,
             vec![fx!(f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree)],
-        ),
-        (
-            21,
-            CrossLedger,
-            vec![
-                fx!(f::pd21_timed_out_cancel_then_a_short_stop_disagree),
-                fx!(f::pd21_timed_out_cancel_and_the_late_recovery_disagree),
-            ],
         ),
         (
             22,
@@ -1582,7 +1583,7 @@ fn e8_rejects_a_fixture_the_compiled_harness_skips() {
 }
 
 /// E8's accounting (D-S2c-15 C4), over what [`run_e8_fixtures`] replayed:
-/// * PD-1 to PD-25 each have one row in [`e8_pds`], and a latent PD names no fixture;
+/// * PD-1 to PD-25, less [`FIXED_PDS`], each have one row in [`e8_pds`], and a latent PD names no fixture;
 /// * the PDs of the shadow's allowlist are exactly the `Row` ones, and each was credited;
 /// * the shadow credited nothing else;
 /// * every named fixture is, by its full path, a test the **compiled** harness runs: listed by
@@ -1592,7 +1593,13 @@ fn e8_rejects_a_fixture_the_compiled_harness_skips() {
 fn assert_every_preserved_signature_is_accounted(totals: &crate::dictation_shadow::replay::Totals) {
     let table = e8_pds();
     let numbers: Vec<u8> = table.iter().map(|(pd, _, _)| *pd).collect();
-    assert_eq!(numbers, (1..=25).collect::<Vec<u8>>(), "one E8 row per PD");
+    assert_eq!(
+        numbers,
+        (1..=25)
+            .filter(|pd| !FIXED_PDS.contains(pd))
+            .collect::<Vec<u8>>(),
+        "one E8 row per unfixed PD"
+    );
     let allowlisted: std::collections::BTreeSet<u8> = crate::dictation_shadow::pd::PD_DEFS
         .iter()
         .map(|def| def.pd)
