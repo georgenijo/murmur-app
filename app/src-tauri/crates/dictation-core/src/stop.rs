@@ -285,6 +285,7 @@ pub fn decide_stop_context(core: &DictationCore, input: StopContextInput, now: N
             stage: PerfStage::CaptureFinalization,
             cause: Some(PerfCause::InternalEarlyExit),
             with_audio_duration: false,
+            only_if_run: false,
         }),
     ));
     with_reply(
@@ -473,6 +474,7 @@ pub fn decide_stop_capture_result(
                 stage: PerfStage::CaptureFinalization,
                 cause: Some(PerfCause::AudioCaptureFailed),
                 with_audio_duration: false,
+                only_if_run: false,
             }),
             Reply::Err(ErrText::Shell),
         ),

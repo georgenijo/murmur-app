@@ -135,7 +135,7 @@ R205.4 | Starting,Recording | -
 R205.5 | Processing         | ST:Processing>Idle TERM:UserCancelledProcessing/CancelledProcessing PC:Cancelled
 
 R206.1 | * | -
-R206.2 | * | TERM:PipelineFailure/RuntimeFailure
+R206.2 | * | -
 
 # ---- C3.6 supervisor-thread inputs (207-216)
 R212.1 | *          | [fresh] - / [stale] TERM:Superseded/StaleOwner

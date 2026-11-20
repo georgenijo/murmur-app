@@ -51,8 +51,13 @@ fn tag(placed: &Placed) -> String {
         },
         Effect::Terminal(t) => format!("TERM({:?}/{:?})", t.outcome, t.code),
         Effect::PerfComplete(pc) => format!(
-            "PC({:?},{:?},{:?},duration={})",
-            pc.outcome, pc.stage, pc.cause, pc.with_audio_duration
+            "PC({:?},{:?},{:?},duration={}{})",
+            pc.outcome,
+            pc.stage,
+            pc.cause,
+            pc.with_audio_duration,
+            // PD-24: only the arm out of `Starting` completes only a run that exists.
+            if pc.only_if_run { ",only-if-run" } else { "" }
         ),
         Effect::ClearContext(id) => format!("CX-({})", id.0),
         Effect::KeyboardProcessing(on) => format!("KB({on})"),
@@ -293,7 +298,7 @@ fn r209_3_user_cancel_while_starting() {
             "PDT:EM(recovering)",
             "PDT:PRES(CleanupInProgress)<-#2",
             "PDT:EV(RecoveryStarted)",
-            "PDT:PC(Cancelled,CaptureFinalization,None,duration=false)",
+            "PDT:PC(Cancelled,CaptureFinalization,None,duration=false,only-if-run)",
             "PDT:TERM(UserCancelledStarting/CancelledStarting)",
             "PDT:EV(Cancelled)",
         ],
@@ -335,6 +340,13 @@ fn r209_5_device_or_sleep_recovery_is_a_runtime_interruption() {
         for status in [Status::Starting, Status::Recording] {
             let d = decide_sup_recovering(&core(status, RID), recovering(reason), NOW);
             let terminal = format!("PDT:TERM(RuntimeInterruption/{code})");
+            // PD-24: out of `Starting` the completion needs a run; out of `Recording` the
+            // run was begun, so the claim is the run's own.
+            let completion = if status == Status::Starting {
+                "PDT:PC(Cancelled,CaptureFinalization,None,duration=false,only-if-run)"
+            } else {
+                "PDT:PC(Cancelled,CaptureFinalization,None,duration=false)"
+            };
             row(
                 &d,
                 "R209.5",
@@ -346,7 +358,7 @@ fn r209_5_device_or_sleep_recovery_is_a_runtime_interruption() {
                     "PDT:EM(recovering)",
                     "PDT:PRES(CleanupInProgress)<-#2",
                     "PDT:EV(RecoveryStarted)",
-                    "PDT:PC(Cancelled,CaptureFinalization,None,duration=false)",
+                    completion,
                     &terminal,
                 ],
             );

@@ -288,6 +288,7 @@ pub struct Sup {
     /// out, `audio_lifecycle.rs:3070`).
     pub caller_dead: BTreeSet<TaskId>,
     /// The recordings whose start call's receiver timed out (`await_start_response`).
+    /// Write-only since PD-24's fix removed the signature that read it; kept as model state.
     pub timed_out_starts: BTreeSet<Rid>,
     /// The response channels of the commands in flight, by client task.
     pub replies: BTreeMap<TaskId, ReplyState>,
@@ -442,6 +443,9 @@ pub struct Perf {
     /// aborted start, or a stale generation): `request_completion` answers `Persist`, the
     /// repository finds no active row and records nothing. A claim without an outcome.
     pub no_run: BTreeSet<Rid>,
+    /// Completions `only_if_run` dropped for want of a run, `(id, row)`: the coordinator
+    /// answered `NoRun` and claimed nothing (PD-24's fix).
+    pub dropped: BTreeSet<(Rid, &'static str)>,
 }
 
 #[derive(Debug, Default)]

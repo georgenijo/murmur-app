@@ -10,7 +10,7 @@
 //! executor, and every other effect is the statement the arm ran inline before.
 
 use super::{
-    complete_dictation_performance, emit_dictation_presentation, emit_dictation_terminal,
+    complete_dictation_performance_for, emit_dictation_presentation, emit_dictation_terminal,
     register_partial_ticker_locked, DictationPresentation, State,
 };
 use crate::audio::AudioFailureKind;
@@ -328,13 +328,15 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
                 } else {
                     None
                 };
-                complete_dictation_performance(
+                complete_dictation_performance_for(
                     &self.state.performance,
                     self.recording_id,
                     outcome,
                     Vec::new(),
                     input,
                     None,
+                    None,
+                    pc.only_if_run,
                 );
                 Ok(())
             }

@@ -61,11 +61,13 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// 3,000,000-seed sweep that takes the witness.
 ///
 /// * TEARDOWN_GAP_SEEDS (below): the teardown-gap starts the fix of PD-18 / PD-19 refuses.
-/// * 289,110: PD-21 with a short stop (R206.2, R203.4).
+/// * 289,110: the fixed PD-21 with a short stop (R206.2, R203.4): a failed capture cancel that
+///   claims no terminal, then the stop's own claim wins (`FAILED_CANCEL_SEEDS`).
 /// * 31,086: PD-22 against a stop's performance completion (R211.2, R203.2).
 /// * 154,052: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
-/// * 24,199: PD-24 through an environmental recovery (R102.3, R209.5). The user's cancel
-///   (R102.3, R209.3) is now taken by seed 3,651, inside the range.
+/// * 24,199: the fixed PD-24's environmental recovery (R102.3, R209.5): the Recovering arm
+///   completes no performance for a start whose run its own failure aborted
+///   (`FIXED_START_TIMEOUT_SEEDS`). The user's cancel (R209.3) is seed 3,651, inside the range.
 /// * 73,499: the late main-window start reply and its second stop (#1162, #1169 review), the first
 ///   of 3,000,000 seeds that has the whole sequence tied to one start and one stop.
 ///
@@ -90,7 +92,8 @@ const TEARDOWN_GAP_SEEDS: [(&str, u64); 4] = [
     ("an `Interrupted` end of 8,000 samples or more", 3_086),
 ];
 
-/// A witness of one of PD-20..PD-24: the PD, the seed that takes it, the matched
+/// A witness of one of PD-20, PD-22 and PD-23 (PD-18, PD-19, PD-21 and PD-24 are fixed and have
+/// none): the PD, the seed that takes it, the matched
 /// split `(terminal row, performance row)` where the PD is an SP4(b) split, and the
 /// shell test that reproduces the sequence (`recording_harness_findings_tests.rs`,
 /// D-S2b-5, D-S2b-7 and D-S2b-9 (b)). A `None` shell test is PROVISIONAL "reachable
@@ -105,26 +108,12 @@ struct Witness {
     sig: Option<usize>,
 }
 
-const FINDING_SEEDS: [Witness; 11] = [
+const FINDING_SEEDS: [Witness; 7] = [
     Witness {
         pd: 20,
         seed: 140,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
-        sig: None,
-    },
-    Witness {
-        pd: 21,
-        seed: 289_110,
-        split: Some(("R206.2", "R203.4")),
-        shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
-        sig: None,
-    },
-    Witness {
-        pd: 21,
-        seed: 3,
-        split: Some(("R206.2", "R209.4")),
-        shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
         sig: None,
     },
     Witness {
@@ -171,24 +160,6 @@ const FINDING_SEEDS: [Witness; 11] = [
         split: Some(("R207.3", "R204b.6")),
         shell_test: None,
         sig: Some(2),
-    },
-    Witness {
-        pd: 24,
-        seed: 3_651,
-        split: Some(("R102.3", "R209.3")),
-        shell_test: Some(
-            "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
-        ),
-        sig: Some(3),
-    },
-    Witness {
-        pd: 24,
-        seed: 24_199,
-        split: Some(("R102.3", "R209.5")),
-        shell_test: Some(
-            "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
-        ),
-        sig: Some(4),
     },
 ];
 
@@ -423,7 +394,8 @@ fn ten_thousand_seeds_fit_the_ci_budget() {
 /// The converse (C7.0, C7.5): every PD signature occurs at least once in the
 /// seeds, so an allowlist entry cannot rot, and so does every row of the SP4(b)
 /// signature table and every split a pinned witness names. PD-17 is latent (no
-/// production schedule) and has no witness; PD-18 and PD-19 are fixed and have none.
+/// production schedule) and has no witness; PD-18, PD-19, PD-21 and PD-24 are fixed and have none
+/// (the teardown-gap starts are `TEARDOWN_GAP_SEEDS`; `a_failed_capture_cancel_claims_no_terminal`).
 #[test]
 fn every_preserved_defect_is_witnessed() {
     let summary = summary();
@@ -431,7 +403,7 @@ fn every_preserved_defect_is_witnessed() {
         return; // a short local run does not owe every witness
     }
     let missing: Vec<usize> = (1..=24)
-        .filter(|pd| !matches!(*pd, 17..=19) && summary.pd[*pd].0 == 0)
+        .filter(|pd| !matches!(*pd, 17..=19 | 21 | 24) && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
@@ -471,6 +443,10 @@ fn every_preserved_defect_is_witnessed() {
     assert!(
         silent_windows.is_empty(),
         "teardown-gap windows no gated seed reaches: {silent_windows:?}"
+    );
+    assert_eq!(
+        summary.pd[21].0, 0,
+        "PD-21 was fixed: a failed capture cancel claims no terminal, so no run splits on it"
     );
     // The gates of the cutover (#1169 review): every row of the Smart Auto round and of the legacy
     // import is decided by the gated seeds, and the late start reply the main window writes over
@@ -515,11 +491,11 @@ fn teardown_gap_starts_are_refused_and_the_app_ends_idle() {
     }
 }
 
-/// PD-20..PD-24 each have pinned seeds, and the shell test that reproduces the
-/// sequence is named beside each (D-S2b-5, D-S2b-7). There is no "known findings"
-/// set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
+/// PD-20, PD-22 and PD-23 each have pinned seeds (PD-18, PD-19, PD-21 and PD-24 are fixed), and the
+/// shell test that reproduces the sequence is named beside each (D-S2b-5, D-S2b-7). There is no
+/// "known findings" set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
 #[test]
-fn pd20_to_pd24_have_pinned_seeds() {
+fn pd20_to_pd23_have_pinned_seeds() {
     for witness in &FINDING_SEEDS {
         let report = run_seed(gated(witness.seed));
         assert!(
@@ -549,6 +525,97 @@ fn pd20_to_pd24_have_pinned_seeds() {
         }
         assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
+}
+
+/// The fixed PD-24: the supervisor's `Recovering` arm out of `Starting` completes performance
+/// only for a run that exists, so a start whose own failure already aborted the run leaves no
+/// `Cancelled` claim next to its `CaptureInitFailure` terminal. One pinned seed per cause: the
+/// user's `Cancel{User}` the start's 2 s timeout queues (R209.3) and an environmental recovery
+/// (R209.5). Both used to split (the allowlisted PD-24 signatures). Reverting the fix for
+/// either reason alone fails its seed here.
+const FIXED_START_TIMEOUT_SEEDS: [(&str, u64, &str); 2] = [
+    ("the start timeout's own cancel", 3_651, "R209.3"),
+    ("an environmental recovery", 24_199, "R209.5"),
+];
+
+#[test]
+fn a_recovering_arm_out_of_starting_claims_no_performance_for_a_dead_run() {
+    for (name, seed, row) in FIXED_START_TIMEOUT_SEEDS {
+        let report = run_seed(gated(seed));
+        assert!(
+            report
+                .hits
+                .dropped_completions
+                .get(row)
+                .copied()
+                .unwrap_or(0)
+                > 0,
+            "seed {seed} ({name}) no longer drops {row}'s completion for want of a run: {:?}",
+            report.hits
+        );
+        assert!(
+            report.hits.pairs.keys().all(|(terminal, perf)| {
+                !(*terminal == "R102.3" && matches!(*perf, "R209.3" | "R209.5"))
+            }),
+            "seed {seed} ({name}): the arm completed performance for a dead run: {:?}",
+            report.hits.pairs
+        );
+        assert_eq!(report.hits.pd[24], 0);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    }
+}
+
+/// The fixed PD-21: a failed (or timed-out) capture cancel, R206.2, claims no terminal for a
+/// recording that goes on, so the terminal and the performance record both come from the
+/// path that ends it. One pinned seed per follow-up: a stop that took the capture and
+/// completed with a short outcome (R203.4), and the supervisor's late `Recovering{User}`
+/// (R209.4). Both used to split (`PipelineFailure` against `NoSpeech` / `Cancelled`). The
+/// second now agrees (`UserCancelledRecording` and `Cancelled`); the first falls to PD-5.
+const FAILED_CANCEL_SEEDS: [(&str, u64, &str); 3] = [
+    ("a short stop wins the capture", 289_110, "R203.4"),
+    ("the supervisor recovers late", 3, "R209.4"),
+    // The stop caller of R206.2 (`CancelOrigin::Stop`): a stop cancels a `Starting` recording
+    // (R201.4) and no cancel command runs (no R205.4), so the only R206.2 is the stop's.
+    ("a stop's capture cancel fails", 185, "R201.4"),
+];
+
+#[test]
+fn a_failed_capture_cancel_claims_no_terminal() {
+    for (name, seed, follow_up) in FAILED_CANCEL_SEEDS {
+        let report = run_seed(gated(seed));
+        assert!(
+            report.hits.decided.get("R206.2").copied().unwrap_or(0) > 0,
+            "seed {seed} ({name}) no longer decides a failed capture cancel: {:?}",
+            report.hits
+        );
+        assert!(
+            report.hits.decided.contains_key(follow_up),
+            "seed {seed} ({name}) no longer reaches {follow_up}: {:?}",
+            report.hits
+        );
+        assert!(
+            report
+                .hits
+                .pairs
+                .keys()
+                .all(|(terminal, _)| *terminal != "R206.2"),
+            "seed {seed} ({name}): R206.2 claimed a terminal: {:?}",
+            report.hits.pairs
+        );
+        assert_eq!(report.hits.pd[21], 0);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    }
+    let stop_caller = run_seed(gated(185));
+    assert!(
+        !stop_caller.hits.decided.contains_key("R205.4"),
+        "seed 185 runs a cancel command: {:?}",
+        stop_caller.hits
+    );
+    // The short-stop seed ends in another preserved defect's split now: the worker's runtime
+    // failure reaches R209.2 at `Processing`, which claims `Superseded` for the current id
+    // (PD-5) ahead of the stop's `NoSpeech`. The failed cancel used to claim first.
+    let report = run_seed(gated(289_110));
+    assert!(report.hits.pd[5] > 0, "{:?}", report.hits);
 }
 
 #[test]
@@ -746,6 +813,7 @@ fn perf(outcome: PerfOutcome) -> Effect {
         stage: crate::effects::PerfStage::CaptureFinalization,
         cause: None,
         with_audio_duration: false,
+        only_if_run: false,
     })
 }
 
@@ -1488,6 +1556,7 @@ fn an_sp4b_split_is_checked_at_the_prefix_where_both_outcomes_exist() {
             stage: crate::effects::PerfStage::CaptureFinalization,
             cause: None,
             with_audio_duration: false,
+            only_if_run: false,
         }),
         1,
         1,
