@@ -79,9 +79,9 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// state before #1160: 10,724 -> 11,612 -> 14,033, 19,737 -> 21,272 -> 3,651 (now in range),
 /// 39,219 -> 10,882 -> 492,192, 52,153 -> 81,353 -> 31,086, 101,117 -> 161,052 -> 154,052,
 /// 259,286 -> 2,569,791 -> 2,071,065, 262,762 -> 179,248 -> 81,584,
-/// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499. PD-24's witness 24,199 left with its fix.
-const FIXED_SEEDS: [u64; 8] = [
-    14_033, 81_584, 492_192, 2_071_065, 289_110, 31_086, 154_052, 73_499,
+/// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499. 24,199 is the fixed PD-24's R209.5 regression seed (`FIXED_START_TIMEOUT_SEEDS`).
+const FIXED_SEEDS: [u64; 9] = [
+    14_033, 81_584, 492_192, 2_071_065, 289_110, 31_086, 154_052, 24_199, 73_499,
 ];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
@@ -517,7 +517,7 @@ fn pd18_has_one_seed_per_instance() {
 /// sequence is named beside each (D-S2b-5, D-S2b-7). There is no "known findings"
 /// set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
 #[test]
-fn pd19_to_pd24_have_pinned_seeds() {
+fn pd19_to_pd23_have_pinned_seeds() {
     for witness in &FINDING_SEEDS {
         let report = run_seed(gated(witness.seed));
         assert!(
@@ -545,6 +545,44 @@ fn pd19_to_pd24_have_pinned_seeds() {
                 report.hits
             );
         }
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    }
+}
+
+/// The fixed PD-24: the supervisor's `Recovering` arm out of `Starting` completes performance
+/// only for a run that exists, so a start whose own failure already aborted the run leaves no
+/// `Cancelled` claim next to its `CaptureInitFailure` terminal. One pinned seed per cause: the
+/// user's `Cancel{User}` the start's 2 s timeout queues (R209.3) and an environmental recovery
+/// (R209.5). Both used to split (the allowlisted PD-24 signatures). Reverting the fix for
+/// either reason alone fails its seed here.
+const FIXED_START_TIMEOUT_SEEDS: [(&str, u64, &str); 2] = [
+    ("the start timeout's own cancel", 3_651, "R209.3"),
+    ("an environmental recovery", 24_199, "R209.5"),
+];
+
+#[test]
+fn a_recovering_arm_out_of_starting_claims_no_performance_for_a_dead_run() {
+    for (name, seed, row) in FIXED_START_TIMEOUT_SEEDS {
+        let report = run_seed(gated(seed));
+        assert!(
+            report
+                .hits
+                .dropped_completions
+                .get(row)
+                .copied()
+                .unwrap_or(0)
+                > 0,
+            "seed {seed} ({name}) no longer drops {row}'s completion for want of a run: {:?}",
+            report.hits
+        );
+        assert!(
+            report.hits.pairs.keys().all(|(terminal, perf)| {
+                !(*terminal == "R102.3" && matches!(*perf, "R209.3" | "R209.5"))
+            }),
+            "seed {seed} ({name}): the arm completed performance for a dead run: {:?}",
+            report.hits.pairs
+        );
+        assert_eq!(report.hits.pd[24], 0);
         assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
 }

@@ -421,6 +421,8 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
             if run || !complete.only_if_run {
                 let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
                 cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
+            } else {
+                cx.w.perf.dropped.insert((fx.rid, fx.row));
             }
         }
         Effect::PipelineGuardFinish(outcome) => {

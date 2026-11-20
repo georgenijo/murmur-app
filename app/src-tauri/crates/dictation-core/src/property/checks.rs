@@ -51,6 +51,9 @@ pub struct RunHits {
     pub sig: [u32; SIGNATURES.len()],
     /// Occurrences per matched split `(terminal row, performance row)`.
     pub pairs: BTreeMap<(&'static str, &'static str), u32>,
+    /// Completions `only_if_run` dropped for want of a run, by the row that decided them
+    /// (PD-24's fix: R209.3, R209.5 out of `Starting` after the start's own failure).
+    pub dropped_completions: BTreeMap<&'static str, u32>,
     /// Every decision the flights acted on, by row: the rows the gate must see.
     pub decided: BTreeMap<&'static str, u32>,
     /// Every `NeedObservation` round a flight answered, by the row the verdict names.
@@ -869,6 +872,9 @@ impl Checker {
     /// exemption needs is the recording's own (never a whole run's).
     pub fn on_end(&mut self, w: &World, quiescent_tasks: &[&'static str]) {
         self.sp4a(w);
+        for (_, row) in &w.perf.dropped {
+            *self.hits.dropped_completions.entry(row).or_default() += 1;
+        }
         // A window still open at the end of the run is judged as it stands.
         for rid in std::mem::take(&mut self.sp4b_tail_deferred) {
             self.sp4b_at(w, rid, true);
