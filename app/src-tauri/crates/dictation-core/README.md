@@ -504,12 +504,13 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     (the start timeout's cross-ledger
     claim) is fixed and has no signature: the supervisor's `Recovering` arm out of
     `Starting` completes performance only for a run that exists (`PerfComplete::only_if_run`),
-    and a bare claim by R209.3 or R209.5 is a failure. PD-20 (the cancel of a `Processing` recording) is
+    and a bare claim by R209.3 or R209.5 is a failure. R211.2 (the supervisor's `Idle` for a
+    finished current id) claims no terminal either (PD-22 is fixed, and with it PD-2, which was
+    the same claim): any `Superseded` claim of R211.2 is an SP4(b) failure with every outcome, so
+    the cancel's `TERM` or the stop's own claim owns the terminal. PD-20 (the cancel of a `Processing` recording) is
     fixed and has no signature: its `PC` is the second half of its terminal claim
     (`PerfComplete::follows_terminal`: one model step, and in the shell one port call, `Ports::terminal_then_perf`, inside one critical section of the terminal ledger, only while the claim stands), so a split of
-    R205.5 with a stop's or the pipeline's row is a failure. PD-22 needs the winning `Idle` claim and the losing named
-    claim in the same cancel tail and is judged when that tail closes, because the window's
-    events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
+    R205.5 with a stop's or the pipeline's row is a failure. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
     compares the outcomes a generation actually has, and the model follows the performance
     run's lifecycle (`request_completion`): a completion is the run's outcome once the run
     began, waits while the begin is in flight, is dropped by an abort, and is a bare claim
@@ -558,7 +559,7 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   `seeds_hold_the_properties`.
 * **Layer** (D-S2b-4, D-S2b-7 (c)): the harness runs the real `decide_*` functions over
   a model world, not the shell. Where a model witness and a production-reachable shell
-  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-24 (PD-19 since fixed) were found
+  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-24 (PD-19 and PD-21 to PD-24 since fixed) were found
   this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
   `FINDING_SEEDS`, each beside its shell test). The shell fixtures drive the Stage 0b
   fake host, because the real supervisor has no test seam outside `audio_lifecycle.rs`
@@ -566,9 +567,9 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 289,110, 480,584,
+  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 289,110, 31,086,
   154,052, 24,199, 73,499, 40,309, 220,511) that take the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
-  PD-22 (both rows), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`), the fixed PD-20's cancel losing its claim to the pipeline's success or failure (`FIXED_CANCEL_PROCESSING_SEEDS`) and the late main-window start reply
+  the fixed PD-22's two paths (`IDLE_FINISHED_SEEDS`), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`), the fixed PD-20's cancel losing its claim to the pipeline's success or failure (`FIXED_CANCEL_PROCESSING_SEEDS`) and the late main-window start reply
   with its second stop (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The same
   check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)

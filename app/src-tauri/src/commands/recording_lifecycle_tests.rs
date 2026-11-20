@@ -432,10 +432,11 @@ fn site_211_idle() {
             "R211.1 {status:?}"
         );
     }
-    // R211.2 (PD-2): current and already Idle: superseded, no keyboard reset.
+    // R211.2 (PD-22 fixed, and PD-2 with it): current and already Idle: no terminal, no
+    // keyboard reset. The path that ended the recording owns the terminal.
     assert_eq!(
         run(AudioLifecycleEvent::Idle, Idle, RID, true),
-        untouched(Idle, superseded())
+        untouched(Idle, None)
     );
     // R211.3-.6 (PD-7 for Processing): forced to Idle over any live status.
     for status in [Processing, Starting, Recording, Recovering] {
