@@ -78,7 +78,8 @@ const TERMINAL_AFTER_MISSING_CONTEXT: Option<(DictationTerminalOutcome, Dictatio
 // answered `audio_recovering`, the status stays `Idle`, nothing is published, and the next
 // start after the owner clears is accepted. The three tests below keep PD-19's three
 // driving sequences (harness seeds 492,192, 81,584 and 2,071,065 found them) and assert the
-// fixed replies, statuses and ledger outcomes.
+// fixed replies, statuses and ledger outcomes. A fourth test, after them, adds the sequence
+// where the auto-stop itself takes the retained capture before the owner clears.
 
 /// After the refusal: the status is `Idle`, no `Recovering` was written or published for the
 /// refused start, and (when `after_clear`) the next start after the owner clears is accepted
@@ -372,6 +373,49 @@ pub(super) fn a_start_after_a_refused_auto_stop_is_refused_and_the_app_stays_idl
     repeat(&sub(
         "retiring capture (third entry): the auto-stop runs at Idle and is refused; a start is refused; the owner clears and the app is usable",
         the_auto_stop_is_refused_at_idle_and_a_start_is_refused_then_accepted,
+    ));
+}
+
+// The auto-stop itself takes the retained capture before the owner clears. This is the
+// ordinary 8,000-sample interruption (golden 3a): the runtime failure writes `Recovering`
+// (`2630-2698`), `finish_attempt` stores the capture and notifies `Interrupted`
+// (`2405-2432`), and the arm schedules the auto-stop (R215.2), which runs at `Recovering`
+// and takes the capture (the only remover is `take_interrupted_dictation`, `2713`). The
+// supervisor has not cleared its owner yet (`2460`), so when the stop's pipeline has
+// written `Idle` a start reads cleanup pending: refused, and `Idle` stays. The owner then
+// clears and the next start is accepted.
+
+fn the_auto_stop_takes_the_capture_then_a_start_before_the_owner_clears(world: &Arc<World>) {
+    recording(world);
+    world.runtime_failure(1);
+    world.finish_interrupted(1, 9_000);
+    let requests = world.auto_stop_requests();
+    assert_eq!(requests, vec![1], "the arm scheduled the auto-stop");
+    assert_eq!(status(world), DictationStatus::Recovering);
+    // The auto-stop takes the capture (R201.5 at `Recovering`) and runs the pipeline.
+    let reply = stop_reply(world, Some(1));
+    assert!(
+        matches!(&reply, Ok(value) if value["state"] == "idle"),
+        "the auto-stop ran to the end: {reply:?}"
+    );
+    assert!(
+        audio_lifecycle::take_interrupted_dictation(1).is_none(),
+        "the auto-stop took the retained capture"
+    );
+    assert_eq!(status(world), DictationStatus::Idle);
+    // The owner has not cleared: a start is refused and the status stays `Idle`.
+    assert_eq!(start_reply(world), audio_recovering());
+    the_start_was_refused_without_a_status_write(world);
+    world.release_owner_clear();
+    the_app_is_idle_and_usable_after_the_owner_clears(world);
+}
+
+#[test]
+pub(super) fn a_start_after_the_auto_stop_took_the_retained_capture_is_refused_and_the_app_stays_idle(
+) {
+    repeat(&sub(
+        "retiring capture (auto-stop takes it): the auto-stop takes the capture before the owner clears; a start is refused; the owner clears and the app is usable",
+        the_auto_stop_takes_the_capture_then_a_start_before_the_owner_clears,
     ));
 }
 
