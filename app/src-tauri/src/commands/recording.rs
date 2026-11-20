@@ -80,6 +80,46 @@ fn emit_dictation_terminal_with_capture(
         .app_state
         .dictation_telemetry
         .emit_terminal_with_output(recording_id, outcome, error_code, char_count);
+    complete_dictation_diagnostics(state, recording_id, outcome, error_code, success);
+    telemetry_emitted
+}
+
+/// The cancel of a `Processing` recording's `TERM` and the `PerfComplete` that follows it, as
+/// one critical section of the terminal ledger (PD-20): the terminal claim and the performance
+/// claim (`take_performance`, which answers whether it took it) are made together, or neither
+/// is. See [`DictationTelemetry::claim_terminal_with_performance`] for the lock order.
+fn emit_dictation_terminal_with_performance(
+    state: &State,
+    recording_id: u64,
+    outcome: DictationTerminalOutcome,
+    error_code: DictationErrorCode,
+    take_performance: impl FnOnce() -> bool,
+) -> crate::dictation_telemetry::PairedClaim {
+    let pair = state
+        .app_state
+        .dictation_telemetry
+        .claim_terminal_with_performance(recording_id, outcome, error_code, take_performance);
+    if pair.terminal_won {
+        crate::dictation_telemetry::DictationTelemetry::log_terminal(
+            recording_id,
+            outcome,
+            error_code,
+            0,
+        );
+        // The diagnostics capture is completed by the claim that won, as the other sinks are:
+        // a pair that lost writes nothing here.
+        complete_dictation_diagnostics(state, recording_id, outcome, error_code, None);
+    }
+    pair
+}
+
+fn complete_dictation_diagnostics(
+    state: &State,
+    recording_id: u64,
+    outcome: DictationTerminalOutcome,
+    error_code: DictationErrorCode,
+    success: Option<SuccessfulPrivateCapture<'_>>,
+) {
     let completion = match (outcome, success) {
         (DictationTerminalOutcome::Success, Some(success)) => DictationCaptureCompletion::Success {
             raw_text: success.raw_text,
@@ -106,7 +146,6 @@ fn emit_dictation_terminal_with_capture(
             }
         });
     }
-    telemetry_emitted
 }
 
 fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool {
@@ -3753,7 +3792,9 @@ fn complete_dictation_performance_with_delivery(
 }
 
 /// `complete_dictation_performance_with_delivery`, optionally only for a run that exists
-/// (`PerfComplete::only_if_run`, PD-24).
+/// (`PerfComplete::only_if_run`, PD-24). Answers whether this call took the performance
+/// claim (the completion is persisted, or held until the run's begin resolves): `false` when
+/// another completion already holds it, or `only_if_run` found no run.
 #[allow(clippy::too_many_arguments)]
 fn complete_dictation_performance_for(
     performance: &crate::performance_metrics::PerformanceMetrics,
@@ -3764,7 +3805,7 @@ fn complete_dictation_performance_for(
     runtimes: Option<Vec<RuntimeIdentityV1>>,
     delivery_timing: Option<dt::DeliveryTimingV1>,
     only_if_run: bool,
-) {
+) -> bool {
     let completion = DictationPerformanceCompletion {
         delivery_timing: delivery_timing.map(Box::new),
         outcome,
@@ -3779,11 +3820,35 @@ fn complete_dictation_performance_for(
     ) {
         DictationPerformanceCompletionAction::Persist(completion) => {
             spawn_dictation_performance_completion(performance.clone(), recording_id, completion);
+            true
         }
-        DictationPerformanceCompletionAction::Deferred
-        | DictationPerformanceCompletionAction::AlreadyCompleting
-        | DictationPerformanceCompletionAction::NoRun => {}
+        DictationPerformanceCompletionAction::Deferred => true,
+        DictationPerformanceCompletionAction::AlreadyCompleting
+        | DictationPerformanceCompletionAction::NoRun => false,
     }
+}
+
+/// [`complete_dictation_performance`], answering whether this call took the performance claim
+/// (see [`complete_dictation_performance_for`]). The cancel's terminal-and-performance pair
+/// takes it inside the terminal ledger's critical section (PD-20).
+fn claim_dictation_performance_completion(
+    performance: &crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    outcome: RunOutcomeV1,
+    stages: Vec<StageTimingV1>,
+    input: Option<ContentFreeInputSummaryV1>,
+    runtimes: Option<Vec<RuntimeIdentityV1>>,
+) -> bool {
+    complete_dictation_performance_for(
+        performance,
+        recording_id,
+        outcome,
+        stages,
+        input,
+        runtimes,
+        None,
+        false,
+    )
 }
 
 fn spawn_native_dictation_performance_begin(
@@ -9497,6 +9562,10 @@ async fn stop_native_recording_admitted(
                 recording_id = rid,
                 "dictation pipeline failed"
             );
+            // Test builds: R204b.5's terminal is claimed; the guards (and the performance
+            // completion the guard's drop makes) have not been dropped yet.
+            #[cfg(test)]
+            crate::barrier_hook::at("stop.pipeline_failed_tail_done");
             return Err(error);
         }
     };
@@ -9955,13 +10024,14 @@ async fn cancel_native_recording_inner(
     drop(dictation);
     #[cfg(feature = "dictation-shadow")]
     after_d.submit();
-    // R205.5 `PDT:CX-, MC, TERM, KB, EM, EV` with T still held: keep the
+    // R205.5 `PDT:CX-, MC, TERM, PC, KB, EM, EV` with T still held (PD-20: the `PC` follows
+    // its `TERM` and runs only while that claim stands): keep the
     // transition fence through the old generation's unscoped UI events so a newer
     // start cannot publish `starting` and then be reset by this cancellation's
     // trailing `idle`.
     run_phase(&mut exec, Placement::PostDT, None, rid).map_err(cancel_refused)?;
     // Diagnostics completion is already asynchronous, so releasing immediately
-    // before `PT:PC` never waits on SQLite; R205.4's `PT:CC` is blocking (<= 2 s).
+    // before `PT:CC` never waits on SQLite; R205.4's `PT:CC` is blocking (<= 2 s).
     drop(transition);
     run_phase(&mut exec, Placement::PostT, None, rid).map_err(cancel_refused)?;
     let Some(mut op_guard) = op_guard.take() else {

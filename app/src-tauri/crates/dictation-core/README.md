@@ -507,7 +507,10 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
     and a bare claim by R209.3 or R209.5 is a failure. R211.2 (the supervisor's `Idle` for a
     finished current id) claims no terminal either (PD-22 is fixed, and with it PD-2, which was
     the same claim): any `Superseded` claim of R211.2 is an SP4(b) failure with every outcome, so
-    the cancel's `TERM` or the stop's own claim owns the terminal. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
+    the cancel's `TERM` or the stop's own claim owns the terminal. PD-20 (the cancel of a `Processing` recording) is
+    fixed and has no signature: its `PC` is the second half of its terminal claim
+    (`PerfComplete::follows_terminal`: one model step, and in the shell one port call, `Ports::terminal_then_perf`, inside one critical section of the terminal ledger, only while the claim stands), so a split of
+    R205.5 with a stop's or the pipeline's row is a failure. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
     compares the outcomes a generation actually has, and the model follows the performance
     run's lifecycle (`request_completion`): a completion is the run's outcome once the run
     began, waits while the begin is in flight, is dropped by an abort, and is a bare claim
@@ -564,9 +567,9 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,995` and five fixed seeds (`FIXED_SEEDS`: 289,110, 31,086,
-  154,052, 24,199, 73,499) that take the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
-  the fixed PD-22's two paths (`IDLE_FINISHED_SEEDS`), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`) and the late main-window start reply
+  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 289,110, 31,086,
+  154,052, 24,199, 73,499, 40,309, 220,511) that take the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
+  the fixed PD-22's two paths (`IDLE_FINISHED_SEEDS`), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`), the fixed PD-20's cancel losing its claim to the pipeline's success or failure (`FIXED_CANCEL_PROCESSING_SEEDS`) and the late main-window start reply
   with its second stop (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The same
   check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)

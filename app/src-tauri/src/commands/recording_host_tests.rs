@@ -64,13 +64,14 @@ enum Call {
     PerformanceBeginAbort,
     PerformanceSpawnBegin,
     PerformanceComplete,
+    PerformanceCompleteClaiming,
 }
 
 impl Call {
     /// Adding a variant without listing it here fails to compile, and a
     /// variant missing from this list fails
     /// `call_kinds_match_the_trait_declarations`.
-    const ALL: [Call; 29] = [
+    const ALL: [Call; 30] = [
         Call::EmitJson,
         Call::MicrophoneTransition,
         Call::ResolveSmartAuto,
@@ -100,6 +101,7 @@ impl Call {
         Call::PerformanceBeginAbort,
         Call::PerformanceSpawnBegin,
         Call::PerformanceComplete,
+        Call::PerformanceCompleteClaiming,
     ];
 
     /// `(trait, method)` the variant stands for, and the log label. No
@@ -225,6 +227,11 @@ impl Call {
                 ("PerformancePort", "spawn_begin", "performance.spawn_begin")
             }
             Call::PerformanceComplete => ("PerformancePort", "complete", "performance.complete"),
+            Call::PerformanceCompleteClaiming => (
+                "PerformancePort",
+                "complete_claiming",
+                "performance.complete_claiming",
+            ),
         }
     }
 
@@ -661,6 +668,26 @@ impl PerformancePort for Shared {
                 serde_json::to_string(&outcome).expect("outcome serializes")
             ),
         );
+    }
+
+    fn complete_claiming(
+        &self,
+        recording_id: u64,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> bool {
+        // The recorder has no coordinator: the claim is always taken.
+        self.push(
+            Call::PerformanceCompleteClaiming,
+            format!(
+                "{recording_id} {}",
+                serde_json::to_string(&outcome).expect("outcome serializes")
+            ),
+        );
+        let _ = (stages, input, runtimes);
+        true
     }
 }
 
@@ -1249,6 +1276,37 @@ fn expected_stop_empty_audio() -> Vec<String> {
     trace
 }
 
+fn scenario_stop_capture_failed() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Recording, 7);
+    install_context(&state, 7);
+    host.script().stop_result = Some(Err("scripted capture stop failure".to_string()));
+    let error = stop(&host, &state, None).expect_err("the capture stop fails");
+    assert_eq!(error, "scripted capture stop failure");
+    assert_eq!(status(&state), DictationStatus::Idle);
+    host.recorded()
+}
+
+/// The empty-audio stop's claims and the supervisor stop (R203's failed capture, `Err`), then the
+/// stop failure's own performance completion (R203.1-.2: `PC(Failed, CaptureFinalization,
+/// AudioCaptureFailed)`) and the reset to `idle`.
+fn expected_stop_capture_failed() -> Vec<String> {
+    let mut trace = strings(&[
+        "claim_preview_hide 7",
+        "ax.capture_delivery_target_snapshot",
+        "keyboard.hotkey_release_take_for 7",
+        "keyboard.stop_gesture_take_for 7",
+        "keyboard.set_processing true",
+    ]);
+    trace.push(status_event("processing"));
+    trace.push("supervisor.stop 7 Other".to_string());
+    trace.push(status_event("idle"));
+    trace.push(
+        "performance.complete 7 {\"status\":\"failed\",\"stage\":\"captureFinalization\",\"errorCode\":\"audioCaptureFailed\"}"
+            .to_string(),
+    );
+    trace
+}
+
 fn scenario_stop_pipeline_error() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recording, 7);
     install_context(&state, 7);
@@ -1394,16 +1452,25 @@ fn scenario_cancel_processing() -> Recorded {
     host.recorded()
 }
 
-/// Processing resets the UI (6459, 6460, 6461) and only then completes the
-/// ledger (6471).
+/// Processing completes the ledger right after the terminal claim (PD-20 fixed: the completion
+/// is the claim's second half, so no other path completes performance between the two), and
+/// then resets the UI (6459, 6460, 6461).
 fn expected_cancel_processing() -> Vec<String> {
-    let mut trace = strings(&["keyboard.set_processing false"]);
+    let mut trace = strings(&[
+        "performance.complete_claiming 7 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
+        "keyboard.set_processing false",
+    ]);
     trace.push(status_event("idle"));
-    trace.extend(strings(&[
-        "emit recording-cancelled {\"recordingId\":7}",
-        "performance.complete 7 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
-    ]));
+    trace.extend(strings(&["emit recording-cancelled {\"recordingId\":7}"]));
     trace
+}
+
+fn scenario_cancel_processing_with_the_matching_expectation() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Processing, 7);
+    cancel(&host, &state, Some(7)).expect("the cancel for the live recording succeeds");
+    assert_eq!(status(&state), DictationStatus::Idle);
+    assert!(state.app_state.is_cancelled(7));
+    host.recorded()
 }
 
 #[test]
@@ -1496,6 +1563,11 @@ fn scenarios() -> Vec<Scenario> {
             expected: expected_stop_empty_audio,
         },
         Scenario {
+            name: "stop_capture_failed",
+            run: scenario_stop_capture_failed,
+            expected: expected_stop_capture_failed,
+        },
+        Scenario {
             name: "stop_pipeline_error",
             run: scenario_stop_pipeline_error,
             expected: expected_stop_pipeline_error,
@@ -1528,6 +1600,11 @@ fn scenarios() -> Vec<Scenario> {
         Scenario {
             name: "cancel_processing",
             run: scenario_cancel_processing,
+            expected: expected_cancel_processing,
+        },
+        Scenario {
+            name: "cancel_processing_with_the_matching_expectation",
+            run: scenario_cancel_processing_with_the_matching_expectation,
             expected: expected_cancel_processing,
         },
     ]

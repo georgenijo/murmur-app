@@ -210,6 +210,16 @@ pub(crate) trait Ports {
     fn terminal(&self, effect: &Effect) -> PortResult;
     /// `PA`, `PR`, `PE`, `PGF`, `PCF` (Sync) and `PB`, `PC` (Detached).
     fn perf(&self, effect: &Effect) -> PortResult;
+    /// A `TERM` and the `PC` that follows it (`PerfComplete::follows_terminal`) as **one** port
+    /// call: the two claims are one critical section, so no other path completes performance
+    /// between them (**PD-20**, the cancel of a `Processing` recording, R205.5). The results
+    /// are the terminal's and the performance's, in that order; a completion the pair
+    /// declines (the claim does not stand) still reports `Ok`: the effect ran and completed
+    /// nothing. The default runs the two calls in order, for a port with no ledger to
+    /// share.
+    fn terminal_then_perf(&self, terminal: &Effect, perf: &Effect) -> (PortResult, PortResult) {
+        (self.terminal(terminal), self.perf(perf))
+    }
     /// `KB` (Sync).
     fn keyboard(&self, effect: &Effect) -> PortResult;
     /// `GA`, `PCC`, `PH`, `TS`, `TI`, `SPEC`, `REL`, `TL`, `ACC`, `OBS` (Sync).
@@ -721,8 +731,35 @@ impl<'a> Executor<'a> {
             }
             // ---- everything else is one port call
             Effect::Terminal(_) => {
-                let result = ports.terminal(effect);
-                self.record_port(index, effect, result);
+                // A `PerfComplete` that follows its terminal claim (`follows_terminal`) at the
+                // same placement runs with it as one port call (PD-20).
+                let paired = self
+                    .decision
+                    .effects
+                    .get(index + 1)
+                    .filter(|next| {
+                        next.at == self.decision.effects[index].at
+                            && matches!(&next.effect, Effect::PerfComplete(pc) if pc.follows_terminal)
+                    })
+                    .map(|next| next.effect.clone());
+                match paired {
+                    Some(perf) => {
+                        // The effect points stay in order, both before the one call: there is no
+                        // point between the two claims (they are one step).
+                        #[cfg(test)]
+                        crate::barrier_hook::at(perf.code());
+                        // Through the executor's own ports, not an observing flight's wrapper:
+                        // the wrapper only forwards `TERM` and `PC` and notes nothing for them.
+                        let (terminal, performance) = self.ports.terminal_then_perf(effect, &perf);
+                        self.record_port(index, effect, terminal);
+                        self.record_port(index + 1, &perf, performance);
+                        self.cursor += 1;
+                    }
+                    None => {
+                        let result = ports.terminal(effect);
+                        self.record_port(index, effect, result);
+                    }
+                }
             }
             Effect::PerfAbort
             | Effect::PerfRegister
@@ -992,6 +1029,7 @@ mod tests {
                 cause: None,
                 with_audio_duration: false,
                 only_if_run: false,
+                follows_terminal: false,
             }),
             Effect::ClearContext(id),
             Effect::SetContext(id),

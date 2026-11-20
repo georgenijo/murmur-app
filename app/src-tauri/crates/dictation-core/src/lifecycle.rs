@@ -127,6 +127,7 @@ fn perf_failed(at: Placement, with_audio_duration: bool) -> Placed {
             cause: Some(PerfCause::AudioCaptureFailed),
             with_audio_duration,
             only_if_run: false,
+            follows_terminal: false,
         }),
     )
 }
@@ -327,6 +328,7 @@ pub fn decide_sup_recovering(
                 // receiver timeout queues this very cancel) may already have aborted
                 // the run; the completion then has no run to complete.
                 only_if_run: previous == Status::Starting,
+                follows_terminal: false,
             }),
         ));
     }

@@ -494,7 +494,7 @@ pub(super) fn start_during_cleanup(seq: u64, rec: u64) -> Flight {
     flight(seq, rec, view(Status::Idle, RID), start_input(true))
 }
 
-/// R205.5: `In:ST`, `PDT:CX-, MC, TERM, KB, EM, EV`, `PT:PC`.
+/// R205.5: `In:ST`, `PDT:CX-, MC, TERM, PC, KB, EM, EV` (PD-20: the `PC` follows its `TERM`).
 pub(super) fn cancel(seq: u64, rec: u64) -> Flight {
     flight(
         seq,

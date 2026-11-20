@@ -965,7 +965,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-20, PD-22 and PD-23 each name at least one (PD-18, PD-19, PD-21, PD-24 and PD-25 are fixed): renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-22 and PD-23 each name at least one (PD-18, PD-19, PD-20, PD-21, PD-24 and PD-25 are fixed): renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -984,8 +984,8 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    // PD-18, PD-19, PD-21 and PD-24 are fixed (see the map's "Fixed" section): no entry in this section.
-    for pd in [20, 22, 23] {
+    // PD-18, PD-19, PD-20, PD-21 and PD-24 are fixed (see the map's "Fixed" section): no entry in this section.
+    for pd in [22, 23] {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1053,8 +1053,8 @@ fn every_finding_seed_names_a_real_shell_test() {
     }
     // The floor is the table's own count of witnesses that name a shell test, so a fix PR
     // that removes a witness lowers it with the list, and a parser that skips an entry fails.
+    // The table may be empty (every witness fixed): then both counts are zero.
     let expected = table.matches("shell_test: Some(").count();
-    assert!(expected > 0, "FINDING_SEEDS names no shell test at all");
     assert_eq!(
         named, expected,
         "read {named} shell tests from FINDING_SEEDS, which lists {expected}"
@@ -1242,8 +1242,7 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
 /// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`])
 /// (`e8_pds`): each is driven by a
-/// named shell fixture, the PD-20 fixture is replayed through the shadow too
-/// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
+/// named shell fixture, and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
 /// not run.
 #[cfg(feature = "dictation-shadow")]
@@ -1373,11 +1372,6 @@ enum PdKind {
     /// A property of an effect's implementation, not a row (PD-11, PD-14): the named
     /// fixture is its own `#[test]`, which E8 does not replay.
     Property,
-    /// Not a row signature either: a split between a recording's terminal and its
-    /// performance outcome that the property harness found (PD-19, PD-20). E8 replays
-    /// the named fixtures through the shadow in this process, where each must close
-    /// clean (E7), and the shadow credits nothing for them.
-    CrossLedger,
     /// No production schedule (PD-17): there is no fixture to name.
     Latent,
 }
@@ -1425,9 +1419,10 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 /// `a_timed_out_cancel_claims_nothing_before_the_late_recovery`
 /// (`recording_harness_findings_tests.rs`); PD-24: the `pd24_start_timeout_leaves_…` pair in the
 /// same file; PD-22 (#1157): the `pd22_*` pair of the same file; PD-23 (#1157): the `pd23_*`
-/// tests of the same file; PD-25 (#1157): `recording_pd25_tests.rs`.
+/// tests of the same file; PD-25 (#1157): `recording_pd25_tests.rs`; PD-20: the five `pd20_…` fixtures
+/// in `recording_harness_findings_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[18, 19, 21, 22, 23, 24, 25];
+const FIXED_PDS: &[u8] = &[18, 19, 20, 21, 22, 23, 24, 25];
 
 /// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
 /// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
@@ -1436,8 +1431,7 @@ const FIXED_PDS: &[u8] = &[18, 19, 21, 22, 23, 24, 25];
 #[cfg(feature = "dictation-shadow")]
 fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
     use super::golden_tests as g;
-    use super::harness_findings_tests as f;
-    use PdKind::{CrossLedger, Latent, Property, Row, RowRetired};
+    use PdKind::{Latent, Property, Row, RowRetired};
     vec![
         (
             1,
@@ -1538,13 +1532,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         ),
         (16, Row, vec![fx!(g::golden_s02_cancel_in_each_phase)]),
         (17, Latent, vec![]),
-        (
-            20,
-            CrossLedger,
-            vec![fx!(
-                f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree
-            )],
-        ),
     ]
 }
 

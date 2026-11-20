@@ -324,8 +324,10 @@ fn shadow_effect_in_another_placement_is_placement() {
             effect, placement, ..
         } = msg
         {
+            // R205.5's completion is decided at `PostDT` (PD-20, right after its `TERM`): one
+            // witnessed at `PostT` ran in another placement.
             if matches!(effect.effect, Effect::PerfComplete(_)) {
-                *placement = Placement::PostDT;
+                *placement = Placement::PostT;
             }
         }
     }

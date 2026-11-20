@@ -199,6 +199,18 @@ pub(super) trait PerformancePort: Send + Sync {
         input: Option<ContentFreeInputSummaryV1>,
         runtimes: Option<Vec<RuntimeIdentityV1>>,
     );
+    /// [`PerformancePort::complete`], answering whether this call took the performance claim
+    /// (`false`: another completion already holds it). The cancel's terminal-and-performance
+    /// pair calls it inside the terminal ledger's critical section (PD-20), so it must not
+    /// block or call back into the terminal ledger.
+    fn complete_claiming(
+        &self,
+        recording_id: u64,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> bool;
 }
 
 /// The production host: a concrete `AppHandle`. Every port forwards to the
@@ -492,6 +504,24 @@ impl PerformancePort for TauriHost {
         runtimes: Option<Vec<RuntimeIdentityV1>>,
     ) {
         complete_dictation_performance(
+            &self.performance,
+            recording_id,
+            outcome,
+            stages,
+            input,
+            runtimes,
+        )
+    }
+
+    fn complete_claiming(
+        &self,
+        recording_id: u64,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> bool {
+        claim_dictation_performance_completion(
             &self.performance,
             recording_id,
             outcome,

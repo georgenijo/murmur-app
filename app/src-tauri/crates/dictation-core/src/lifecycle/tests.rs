@@ -51,13 +51,19 @@ fn tag(placed: &Placed) -> String {
         },
         Effect::Terminal(t) => format!("TERM({:?}/{:?})", t.outcome, t.code),
         Effect::PerfComplete(pc) => format!(
-            "PC({:?},{:?},{:?},duration={}{})",
+            "PC({:?},{:?},{:?},duration={}{}{})",
             pc.outcome,
             pc.stage,
             pc.cause,
             pc.with_audio_duration,
             // PD-24: only the arm out of `Starting` completes only a run that exists.
-            if pc.only_if_run { ",only-if-run" } else { "" }
+            if pc.only_if_run { ",only-if-run" } else { "" },
+            // PD-20: the cancel's completion is the second half of its terminal claim.
+            if pc.follows_terminal {
+                ",follows-terminal"
+            } else {
+                ""
+            }
         ),
         Effect::ClearContext(id) => format!("CX-({})", id.0),
         Effect::KeyboardProcessing(on) => format!("KB({on})"),

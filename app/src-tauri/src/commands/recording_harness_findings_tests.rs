@@ -500,15 +500,21 @@ fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
     dictation_performance_begins().claimed_outcome(id)
 }
 
-// ------------------------------------------------------------------ PD-20
-// Harness seed 140 (R205.5 / R203.5; 574 after #1160 and #1162, 76 before). A stop is in its capture stop with T released
-// (status Processing). A cancel takes T and runs R205.5: its `PostDT` `TERM` wins
-// the terminal as `UserCancelledProcessing`. Inside that tail, before the cancel's
-// `PT:PC`, the stop's capture returns zero samples (a sealed delivery of nothing,
-// `audio_lifecycle.rs:2358-2362`) and its R203.5 empty-audio rows finish performance
-// as `NoSpeech`. The cancel's `PT:PC(Cancelled)` then loses the performance claim.
-// (R203.5 is the zero-sample row at status Idle; R203.7 is the short row, 1..4,799
-// samples, at Idle. The seed's split is R203.5, so the stop returns none.)
+// ------------------------------------------------------------------ PD-20 (fixed)
+// Harness seed 140 (R205.5 / R203.5; 574 after #1160 and #1162, 76 before; the PD-20 fix moved
+// the schedules again, the seed still takes this path as a late R203.5 completion). A stop is
+// in its capture stop with T released (status Processing). A cancel takes T and runs R205.5:
+// its `PostDT` `TERM` claims `UserCancelledProcessing`. Inside that tail the stop's capture
+// returns zero samples (a sealed delivery of nothing, `audio_lifecycle.rs:2358-2362`) and its
+// R203.5 empty-audio rows complete performance as `NoSpeech`.
+//
+// Before the fix the cancel's `PC(Cancelled)` came after the tail and lost the performance
+// claim, so the user-visible record split: the terminal (diagnostics, telemetry) said the user
+// cancelled, the performance record said no speech. The fix makes the cancel's `PC` the second
+// half of its `TERM` (the same step, `follows_terminal`), so the stop's late completion decides
+// nothing and both ledgers say `Cancelled`. The (b) shape (another path claims the terminal
+// first, the cancel's own claim is lost) used to leave the performance record `Cancelled` next
+// to that path's terminal; the cancel's completion is skipped now and the path's own stands.
 //
 // Where the empty capture comes from (D-S2b-11 (g)): the recording is started by a
 // **preview handoff**. A Settings microphone test is kept, the confirmed dictation start
@@ -519,7 +525,9 @@ fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
 // fixture drives that start through the host's `start_dictation_recording_after_preview`
 // port (the trace names it) and the stop's empty capture follows.
 
-fn pd20_stop_empty_path_between_cancel_tail_and_perf_complete(world: &Arc<World>) {
+/// Start a recording through the preview handoff (a Settings microphone test is kept), so the
+/// stop that follows has an empty capture.
+fn pd20_start_through_the_preview_handoff(world: &Arc<World>) {
     world.knobs().cold_start = ColdStart::ReadyBeforeContext;
     world
         .state()
@@ -540,6 +548,20 @@ fn pd20_stop_empty_path_between_cancel_tail_and_perf_complete(world: &Arc<World>
     );
     assert_eq!(status(world), DictationStatus::Recording);
     world.knobs().stop_result = Ok(0);
+}
+
+/// The performance outcome the cancel of a processing recording completes.
+fn cancelled_processing(outcome: Option<RunOutcomeV1>) -> bool {
+    matches!(
+        outcome,
+        Some(RunOutcomeV1::Cancelled {
+            stage: PerformanceStageV1::InferenceDecode
+        })
+    )
+}
+
+fn pd20_stop_empty_path_inside_the_cancel_tail_completes_nothing(world: &Arc<World>) {
+    pd20_start_through_the_preview_handoff(world);
     let stop = ParkedStop::start(world);
     assert_eq!(status(world), DictationStatus::Processing);
     let (finish, reply) = stop.finish_into();
@@ -556,7 +578,8 @@ fn pd20_stop_empty_path_between_cancel_tail_and_perf_complete(world: &Arc<World>
     world.reply("stop", &reply);
     assert_eq!(reply, empty_transcription());
     assert_eq!(status(world), DictationStatus::Idle);
-    // The terminal says the user cancelled; the performance record says no speech.
+    // The terminal and the performance record both say the user cancelled: the stop's
+    // R203.5 `NoSpeech` completion, which landed inside the cancel's tail, decided nothing.
     assert_eq!(
         terminal(world, 1),
         Some((
@@ -564,14 +587,306 @@ fn pd20_stop_empty_path_between_cancel_tail_and_perf_complete(world: &Arc<World>
             DictationErrorCode::CancelledProcessing
         ))
     );
+    assert!(cancelled_processing(perf_claim(1)), "{:?}", perf_claim(1));
+}
+
+#[test]
+pub(super) fn pd20_a_cancel_of_a_processing_recording_owns_both_ledgers_against_a_short_stop() {
+    repeat(&sub(
+        "PD-20 (a, fixed): a stop's empty-audio path completes performance inside a cancel's tail (R205.5, R203.5); the cancel's terminal and performance completion agree",
+        pd20_stop_empty_path_inside_the_cancel_tail_completes_nothing,
+    ));
+}
+
+/// PD-20 (b): the stop's empty-audio terminal (R203.pre, `NoSpeech`) is claimed first, and the
+/// cancel runs inside the window between that claim and the stop's decide (the stop's `Pre`
+/// `CX-` follows its `TERM`; status is still `Processing`). The cancel's `TERM` loses, so its
+/// `Cancelled` completion is skipped and the stop's own `NoSpeech` completion stands.
+///
+/// The stop's thread parks at its `Pre` `CX-` (a barrier point, test builds) with T and D free
+/// and the terminal claimed; the cancel then runs to its end on this thread.
+fn pd20_cancel_after_the_stops_terminal_completes_nothing(world: &Arc<World>) {
+    pd20_start_through_the_preview_handoff(world);
+    let (entered, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    world.on("supervisor.stop", move || {
+        let _ = entered.send(());
+        await_release(&release_rx);
+    });
+    let (claimed, claimed_rx) = std::sync::mpsc::channel::<()>();
+    let (resume, resume_rx) = std::sync::mpsc::channel::<()>();
+    let thread_world = Arc::clone(world);
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a stop thread runtime");
+        let _enter = runtime.enter();
+        // The stop's `Pre` effects are `TERM` then `CX-`: stand before the `CX-`, with the
+        // terminal claimed and status still `Processing`.
+        let mut parked = false;
+        let _hook = crate::barrier_hook::install(move |point| {
+            if point == "CX-" && !parked {
+                parked = true;
+                let _ = claimed.send(());
+                await_release(&resume_rx);
+            }
+        });
+        let mut stop = thread_world.stop(None);
+        complete_joining(&mut stop)
+    });
+    if await_arrival(&entered_rx, &thread, "the stop").is_err() {
+        helper_failed(thread, "the stop");
+    }
+    world.note("the stop is in the capture stop, T released");
+    assert_eq!(status(world), DictationStatus::Processing);
+    let _ = release.send(());
+    // The stop's capture stop returned no samples: its `Pre` `TERM` claims `NoSpeech`.
+    if await_arrival(&claimed_rx, &thread, "the stop's terminal claim").is_err() {
+        helper_failed(thread, "the stop's terminal claim");
+    }
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::NoSpeech,
+            DictationErrorCode::EmptyAudio
+        ))
+    );
+    assert_eq!(status(world), DictationStatus::Processing);
+    let mut cancel = world.cancel(None);
+    let cancel_reply = complete(&mut cancel);
+    world.reply_unit("cancel", &cancel_reply);
+    assert_eq!(cancel_reply, Ok(()), "the cancel ran and answered Ok");
+    assert_eq!(status(world), DictationStatus::Idle);
+    // The cancel's `TERM` lost: it completed no performance.
+    assert_eq!(perf_claim(1), None, "the cancel completed no performance");
+    let _ = resume.send(());
+    let stop_reply = join_bounded(thread, "the stop");
+    world.reply("stop", &stop_reply);
+    assert_eq!(stop_reply, empty_transcription());
+    assert_eq!(status(world), DictationStatus::Idle);
+    // The stop's terminal won, and the performance record is the stop's own, not the cancel's.
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::NoSpeech,
+            DictationErrorCode::EmptyAudio
+        ))
+    );
     assert_eq!(perf_claim(1), Some(RunOutcomeV1::NoSpeech));
 }
 
 #[test]
-pub(super) fn pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree() {
+pub(super) fn pd20_a_cancel_after_the_stops_terminal_leaves_the_stops_performance_outcome() {
     repeat(&sub(
-        "PD-20: a stop's empty-audio path completes performance inside a cancel's tail (R205.5, R203.5)",
-        pd20_stop_empty_path_between_cancel_tail_and_perf_complete,
+        "PD-20 (b, fixed): the stop claims its empty-audio terminal first; the cancel of the processing recording loses its claim and completes no performance",
+        pd20_cancel_after_the_stops_terminal_completes_nothing,
+    ));
+}
+
+/// A stop on its own thread, parked first in the supervisor's capture stop (T released), and,
+/// once the capture stop is released, parked again at the barrier point `park_at` of its own tail.
+/// The cancel runs on the test's thread and releases it from a barrier of its own.
+struct StopParkedAt {
+    thread: std::thread::JoinHandle<StopReply>,
+    release_capture_stop: std::sync::mpsc::Sender<()>,
+    at_point: std::sync::mpsc::Receiver<()>,
+    resume: std::sync::mpsc::Sender<()>,
+    park_at: &'static str,
+}
+
+impl StopParkedAt {
+    fn start(world: &Arc<World>, park_at: &'static str) -> Self {
+        let (entered, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_capture_stop, release_rx) = std::sync::mpsc::channel::<()>();
+        world.on("supervisor.stop", move || {
+            let _ = entered.send(());
+            await_release(&release_rx);
+        });
+        let (arrived, at_point) = std::sync::mpsc::channel::<()>();
+        let (resume, resume_rx) = std::sync::mpsc::channel::<()>();
+        let thread_world = Arc::clone(world);
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a stop thread runtime");
+            let _enter = runtime.enter();
+            let mut parked = false;
+            let _hook = crate::barrier_hook::install(move |point| {
+                if point == park_at && !parked {
+                    parked = true;
+                    let _ = arrived.send(());
+                    await_release(&resume_rx);
+                }
+            });
+            let mut stop = thread_world.stop(None);
+            complete_joining(&mut stop)
+        });
+        if await_arrival(&entered_rx, &thread, "the stop").is_err() {
+            helper_failed(thread, "the stop");
+        }
+        world.note("the stop is in the capture stop, T released");
+        Self {
+            thread,
+            release_capture_stop,
+            at_point,
+            resume,
+            park_at,
+        }
+    }
+
+    /// Let the capture stop return and run the stop to `park_at`.
+    fn run_to_its_park(&self) {
+        let _ = self.release_capture_stop.send(());
+        assert!(
+            await_arrival(&self.at_point, &self.thread, "the stop's tail").is_ok(),
+            "the stop never reached {}",
+            self.park_at
+        );
+    }
+
+    fn finish(self) -> StopReply {
+        let _ = self.resume.send(());
+        join_bounded(self.thread, "the stop")
+    }
+}
+
+/// PD-20, the pair is one call: a stop that finishes at the cancel's `PC` point (the reviewer's
+/// probe: the stop's completion between the cancel's `TERM` and `PC`) leaves one winner in both
+/// ledgers. The `TERM` and `PC` points stand together before the pair's one call, so there is no
+/// point *between* the two claims; the stop finishing there claims first, and the cancel's pair
+/// loses as a whole (no terminal, no completion). Both ledgers say the stop's `NoSpeech`.
+fn pd20_stop_finishing_at_the_pc_point(world: &Arc<World>) {
+    pd20_start_through_the_preview_handoff(world);
+    let stop = ParkedStop::start(world);
+    assert_eq!(status(world), DictationStatus::Processing);
+    let (finish, reply) = stop.finish_into();
+    let mut finish = Some(finish);
+    let _hook = crate::barrier_hook::install(move |point| {
+        if point == "PC" {
+            if let Some(finish) = finish.take() {
+                finish();
+            }
+        }
+    });
+    let mut cancel = world.cancel(None);
+    let cancel_reply = complete(&mut cancel);
+    world.reply_unit("cancel", &cancel_reply);
+    assert_eq!(cancel_reply, Ok(()));
+    let reply = reply
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        .expect("the hook finished the stop");
+    assert_eq!(reply, empty_transcription());
+    assert_eq!(status(world), DictationStatus::Idle);
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::NoSpeech,
+            DictationErrorCode::EmptyAudio
+        )),
+        "the stop claimed first: the cancel's pair lost as a whole"
+    );
+    assert_eq!(perf_claim(1), Some(RunOutcomeV1::NoSpeech));
+}
+
+#[test]
+pub(super) fn pd20_a_stop_finishing_at_the_cancels_pc_point_wins_both_ledgers() {
+    repeat(&sub(
+        "PD-20: a stop's empty-audio completion at the cancel's PC point; the pair is one call, so one path owns both ledgers",
+        pd20_stop_finishing_at_the_pc_point,
+    ));
+}
+
+/// PD-20 (b), R204b.6 and R204b.5: the pipeline's terminal is claimed by the stop's own tail
+/// *before* the cancel's pair (the cancel's `In` has written `Idle` already, as the model's seeds
+/// 40,309 and 220,511 do), and the stop's performance completion (R204b.6's `PGF`, R204b.5's
+/// guard drop) has not run yet. The cancel's pair loses its claim and, as one call, takes no
+/// performance claim, so the stop's completion is the recording's outcome. Before the fix the
+/// cancel's `PC(Cancelled)` landed in that window and the user's history said `Cancelled` next to
+/// the pipeline's `Success` (family B of #1157).
+///
+/// The stop's thread parks at `park_at` of its tail; the cancel's barrier at `MC` runs the stop to
+/// it (`MC` is not yet written, so the pipeline's cancellation check still finds nothing).
+fn pd20_cancel_races_the_pipeline_tail(
+    world: &Arc<World>,
+    pipeline_error: Option<&'static str>,
+    park_at: &'static str,
+) -> (StopReply, Option<RunOutcomeV1>) {
+    pd20_start_through_the_preview_handoff(world);
+    world.knobs().stop_result = Ok(16_000);
+    world.knobs().pipeline_error = pipeline_error;
+    let stop = std::rc::Rc::new(StopParkedAt::start(world, park_at));
+    assert_eq!(status(world), DictationStatus::Processing);
+    let hook_stop = std::rc::Rc::clone(&stop);
+    let hook = crate::barrier_hook::install(move |point| {
+        if point == "MC" {
+            hook_stop.run_to_its_park();
+        }
+    });
+    let mut cancel = world.cancel(None);
+    let cancel_reply = complete(&mut cancel);
+    drop(hook);
+    world.reply_unit("cancel", &cancel_reply);
+    assert_eq!(cancel_reply, Ok(()), "the cancel ran and answered Ok");
+    assert_eq!(status(world), DictationStatus::Idle);
+    // The stop's tail claimed its terminal first; its completion is still to come, and the
+    // cancel's pair, which ran in between, completed nothing.
+    let during = perf_claim(1);
+    assert_eq!(
+        during, None,
+        "the cancel's pair took no performance claim while the stop's completion was pending"
+    );
+    let stop = std::rc::Rc::try_unwrap(stop)
+        .ok()
+        .expect("the hook is dropped, so the test owns the stop");
+    let reply = stop.finish();
+    world.reply("stop", &reply);
+    (reply, perf_claim(1))
+}
+
+#[test]
+pub(super) fn pd20_the_pipelines_success_wins_the_terminal_and_the_cancel_completes_nothing() {
+    repeat(&sub(
+        "PD-20 (b, fixed): R204b.6 claims Success before the cancel's pair (family B of #1157); the cancel completes no performance",
+        |world: &Arc<World>| {
+            let (reply, perf) = pd20_cancel_races_the_pipeline_tail(world, None, "PGF");
+            assert_eq!(
+                reply.expect("the stop replied")["text"],
+                "scripted transcript"
+            );
+            assert_eq!(
+                terminal(world, 1),
+                Some((DictationTerminalOutcome::Success, DictationErrorCode::None))
+            );
+            assert_eq!(perf, Some(RunOutcomeV1::Success), "the stop's own completion stands");
+        },
+    ));
+}
+
+#[test]
+pub(super) fn pd20_the_pipelines_failure_wins_the_terminal_and_the_cancel_completes_nothing() {
+    repeat(&sub(
+        "PD-20 (b, fixed): R204b.5 claims PipelineFailure before the cancel's pair; the cancel completes no performance and the guard's drop completes Failed",
+        |world: &Arc<World>| {
+            let (reply, perf) = pd20_cancel_races_the_pipeline_tail(
+                world,
+                Some("scripted pipeline failure"),
+                "stop.pipeline_failed_tail_done",
+            );
+            assert_eq!(reply, Err("scripted pipeline failure".to_string()));
+            assert_eq!(
+                terminal(world, 1),
+                Some((
+                    DictationTerminalOutcome::PipelineFailure,
+                    DictationErrorCode::TranscriptionFailed
+                ))
+            );
+            assert!(
+                matches!(perf, Some(RunOutcomeV1::Failed { .. })),
+                "the guard's drop completed Failed: {perf:?}"
+            );
+        },
     ));
 }
 
@@ -969,7 +1284,7 @@ const CANCELLED_PROCESSING: (DictationTerminalOutcome, DictationErrorCode) = (
 );
 
 /// The cancel runs to its end first: the supervisor's `Idle` inside its tail claims
-/// nothing, so the cancel's own `TERM` is the terminal and its `PT:PC(Cancelled)` is the
+/// nothing, so the cancel's own `TERM+PC(Cancelled)` pair is the terminal and the
 /// performance outcome. Both ledgers name the cancel, and the stop's failure tail that runs
 /// afterwards loses both.
 fn pd22_cancel_owns_both_ledgers_before_the_stops_failure_tail(world: &Arc<World>) {
@@ -1007,8 +1322,8 @@ pub(super) fn pd22_an_expired_stops_idle_claims_no_terminal_and_the_cancel_owns_
 }
 
 /// The stop's continuation is released inside the cancel's tail: R203.2 completes
-/// performance as `Failed` before the cancel's `PT:PC`, and its own terminal is the one that
-/// wins (the supervisor's `Idle` claimed nothing, and the cancel's `TERM` comes after it).
+/// performance as `Failed` before the cancel's `TERM+PC` pair, and its own terminal is the one
+/// that wins (the supervisor's `Idle` claimed nothing, and the cancel's pair loses as a whole).
 fn pd22_stops_failure_tail_owns_both_ledgers(world: &Arc<World>) {
     let stop = the_stop_receive_expired(world);
     let (finish, reply) = stop.finish_into();
@@ -1214,8 +1529,8 @@ fn pd23_c8_forced(world: &Arc<World>) {
 /// released, status already `Idle`) the attempt's `finish_attempt` publishes `Idle` and
 /// clears the owner (`audio_lifecycle.rs:2457-2467`), and only then does the parked
 /// capture stop return its empty reply (`2358-2362`): the stop's R203.5 empty-audio rows
-/// complete performance as `NoSpeech` before the cancel's `PT:PC(Cancelled)`, which then
-/// loses. The terminal is the `Superseded` of the supervisor's `Recovering` arm (R209.2).
+/// complete performance as `NoSpeech` before the cancel's `TERM+PC(Cancelled)` pair, which then
+/// loses as a whole. The terminal is the `Superseded` of the supervisor's `Recovering` arm (R209.2).
 fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
     {
         let mut knobs = world.knobs();

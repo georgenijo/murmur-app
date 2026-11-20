@@ -36,7 +36,17 @@ fn tag(placed: &crate::effects::Placed) -> String {
         Effect::EmitStatus { status, .. } => format!("EM({})", status.as_str()),
         Effect::EmitEvent(kind) => format!("EV({kind:?})"),
         Effect::Terminal(t) => format!("TERM({:?}/{:?})", t.outcome, t.code),
-        Effect::PerfComplete(pc) => format!("PC({:?},{:?},{:?})", pc.outcome, pc.stage, pc.cause),
+        Effect::PerfComplete(pc) => format!(
+            "PC({:?},{:?},{:?}{})",
+            pc.outcome,
+            pc.stage,
+            pc.cause,
+            if pc.follows_terminal {
+                ",follows-terminal"
+            } else {
+                ""
+            }
+        ),
         Effect::ClearContext(id) => format!("CX-({})", id.0),
         Effect::MarkCancelled(id) => format!("MC({})", id.0),
         Effect::KeyboardProcessing(on) => format!("KB({on})"),
@@ -180,10 +190,10 @@ fn r205_5_processing_writes_idle_then_clears_cancels_and_announces() {
                 "PDT:CX-(7)",
                 "PDT:MC(7)",
                 "PDT:TERM(UserCancelledProcessing/CancelledProcessing)",
+                "PDT:PC(Cancelled,InferenceDecode,None,follows-terminal)",
                 "PDT:KB(false)",
                 "PDT:EM(idle)",
                 "PDT:EV(Cancelled)",
-                "PT:PC(Cancelled,InferenceDecode,None)",
             ],
             None,
         );
@@ -216,19 +226,27 @@ fn r205_5_commits_mc_after_the_status_write_and_before_the_terminal() {
     assert!(at("ST→") < at("CX-") && at("CX-") < at("MC"));
     assert!(at("MC") < at("TERM") && at("TERM") < at("KB"));
     assert!(at("KB") < at("EM(idle)") && at("EM(idle)") < at("EV(Cancelled)"));
-    assert!(at("EV(Cancelled)") < at("PC"));
+    // PD-20 (fixed): the completion is the second half of the terminal claim, right after it.
+    assert_eq!(at("PC"), at("TERM") + 1);
 }
 
 #[test]
-fn r205_5_the_perf_completion_alone_runs_after_t_is_released() {
+fn r205_5_the_perf_completion_is_the_terminals_second_half() {
+    // PD-20 (fixed): the completion no longer runs after T is released, on its own. It
+    // follows the terminal claim directly and is flagged as its second half, so the shell
+    // and the model run the pair as one step and only while the claim stands.
     let decided = d_205(Status::Processing, RID, None);
-    let late: Vec<&str> = decided
+    assert!(decided.effects.iter().all(|p| p.at != At::PostT));
+    let term = decided
         .effects
         .iter()
-        .filter(|p| p.at == At::PostT)
-        .map(|p| p.effect.code())
-        .collect();
-    assert_eq!(late, ["PC"]);
+        .position(|p| matches!(p.effect, Effect::Terminal(_)))
+        .expect("the row claims a terminal");
+    let Effect::PerfComplete(pc) = decided.effects[term + 1].effect else {
+        panic!("the effect after the terminal is its performance completion");
+    };
+    assert!(pc.follows_terminal && !pc.only_if_run);
+    assert_eq!(decided.effects[term + 1].at, At::PostDT);
     // Nothing runs under D but the status write (D is released at 6402).
     let under_d: Vec<&str> = decided
         .effects

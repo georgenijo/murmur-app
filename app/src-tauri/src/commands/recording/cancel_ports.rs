@@ -12,7 +12,7 @@
 //! across every port call, so an inline callback that re-enters a family entry is
 //! refused there, before any lock.
 
-use super::{emit_dictation_terminal, DictationHost, State};
+use super::{emit_dictation_terminal_with_performance, DictationHost, State};
 use crate::dictation_context::DictationContextSnapshot;
 use crate::dictation_executor::convert::{
     cancel_reason_from_core, error_code_from_core, terminal_outcome_from_core,
@@ -25,7 +25,7 @@ use crate::performance_metrics::{PerformanceStageV1, RunOutcomeV1};
 use crate::state::{AppState, DictationState};
 use murmur_dictation_core::decision::{Decision, InvalidKind};
 use murmur_dictation_core::effects::Placement;
-use murmur_dictation_core::effects::{Effect, EventKind, PerfCause, PerfOutcome, PerfStage};
+use murmur_dictation_core::effects::{Effect, EventKind, PerfOutcome, PerfStage};
 use murmur_dictation_core::ids::RecordingId;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -116,6 +116,75 @@ impl<'a> CancelPorts<'a> {
     }
 }
 
+impl CancelPorts<'_> {
+    /// The terminal claim, and with `perf` the performance claim that is its second half
+    /// (`PerfComplete::follows_terminal`), as one critical section of the terminal ledger
+    /// (**PD-20**): the pair claims both or neither. The performance claim is taken only while
+    /// the terminal claim stands: it wins, or it lost to a stale-owner `Superseded` (PD-22's
+    /// split); a claim lost to the recording's own end (a stop's or the pipeline's terminal) is
+    /// that path's to complete, and a performance claim another path already holds makes the
+    /// whole pair lose. The effect ran in every case; the completion it declines is `Ok`.
+    fn claim_pair(&self, terminal: &Effect, perf: Option<&Effect>) -> (PortResult, PortResult) {
+        let Effect::Terminal(terminal) = terminal else {
+            return (Err(PortFailure), Err(PortFailure));
+        };
+        let completion = match perf.map(|perf| self.completion(perf)) {
+            Some(Some(completion)) => Some(completion),
+            Some(None) => return (Err(PortFailure), Err(PortFailure)),
+            None => None,
+        };
+        let outcome = terminal_outcome_from_core(terminal.outcome);
+        let code = error_code_from_core(terminal.code);
+        let recording_id = self.recording_id;
+        let pair = emit_dictation_terminal_with_performance(
+            self.state,
+            recording_id,
+            outcome,
+            code,
+            || match completion {
+                Some(run_outcome) => self.host.performance().complete_claiming(
+                    recording_id,
+                    run_outcome,
+                    Vec::new(),
+                    None,
+                    None,
+                ),
+                None => true,
+            },
+        );
+        if outcome == DictationTerminalOutcome::UserCancelledProcessing {
+            tracing::info!(
+                target: "pipeline",
+                "cancel_native_recording: processing cancelled (recording_id={})",
+                self.recording_id
+            );
+        }
+        // The ledger's answer is the witness: `Lost` (another sink won) is a
+        // failure of this claim, never a constant success.
+        let terminal_result = if pair.terminal_won {
+            Ok(())
+        } else {
+            Err(PortFailure)
+        };
+        (terminal_result, Ok(()))
+    }
+
+    /// The run outcome a cancel's `PC` completes (`None`: not one the cancel completes).
+    fn completion(&self, perf: &Effect) -> Option<RunOutcomeV1> {
+        let Effect::PerfComplete(pc) = perf else {
+            return None;
+        };
+        let stage = match pc.stage {
+            PerfStage::InferenceDecode => PerformanceStageV1::InferenceDecode,
+            PerfStage::CaptureFinalization => return None,
+        };
+        match (pc.outcome, pc.cause) {
+            (PerfOutcome::Cancelled, None) => Some(RunOutcomeV1::Cancelled { stage }),
+            _ => None,
+        }
+    }
+}
+
 impl Ports for CancelPorts<'_> {
     fn app_state(&self) -> &AppState {
         &self.state.app_state
@@ -151,55 +220,23 @@ impl Ports for CancelPorts<'_> {
     }
 
     fn terminal(&self, effect: &Effect) -> PortResult {
-        let Effect::Terminal(terminal) = effect else {
-            return Err(PortFailure);
-        };
-        let outcome = terminal_outcome_from_core(terminal.outcome);
-        let code = error_code_from_core(terminal.code);
-        let claimed = emit_dictation_terminal(self.state, self.recording_id, outcome, code);
-        if outcome == DictationTerminalOutcome::UserCancelledProcessing {
-            tracing::info!(
-                target: "pipeline",
-                "cancel_native_recording: processing cancelled (recording_id={})",
-                self.recording_id
-            );
-        }
-        // The ledger's answer is the witness: `Lost` (another sink won) is a
-        // failure of this claim, never a constant success.
-        if claimed {
-            Ok(())
-        } else {
-            Err(PortFailure)
-        }
+        self.claim_pair(effect, None).0
+    }
+
+    fn terminal_then_perf(&self, terminal: &Effect, perf: &Effect) -> (PortResult, PortResult) {
+        self.claim_pair(terminal, Some(perf))
     }
 
     fn perf(&self, effect: &Effect) -> PortResult {
-        let Effect::PerfComplete(pc) = effect else {
+        // The cancel's only completion is R205.5's, which the executor runs with its `TERM`
+        // (`terminal_then_perf`); a bare one is the plain completion.
+        let Some(outcome) = self.completion(effect) else {
             return Err(PortFailure);
         };
-        let stage = match pc.stage {
-            PerfStage::InferenceDecode => PerformanceStageV1::InferenceDecode,
-            PerfStage::CaptureFinalization => return Err(PortFailure),
-        };
-        match (pc.outcome, pc.cause) {
-            (PerfOutcome::Cancelled, None) => {
-                self.host.performance().complete(
-                    self.recording_id,
-                    RunOutcomeV1::Cancelled { stage },
-                    Vec::new(),
-                    None,
-                    None,
-                );
-                Ok(())
-            }
-            (
-                PerfOutcome::Cancelled,
-                Some(PerfCause::AudioCaptureFailed | PerfCause::InternalEarlyExit),
-            )
-            | (PerfOutcome::Failed | PerfOutcome::NoSpeech | PerfOutcome::Completed, _) => {
-                Err(PortFailure)
-            }
-        }
+        self.host
+            .performance()
+            .complete(self.recording_id, outcome, Vec::new(), None, None);
+        Ok(())
     }
 
     fn keyboard(&self, effect: &Effect) -> PortResult {

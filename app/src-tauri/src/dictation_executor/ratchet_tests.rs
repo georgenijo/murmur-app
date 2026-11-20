@@ -67,10 +67,11 @@ const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
     // The stop's emit sits inside the `StopHooks.terminal` closure that the executor's
     // `TERM` invokes; the closure is part of this function, so it is attributed here.
     ("commands/recording.rs", "stop_native_recording_admitted", 1),
-    // The four families' `TERM` ports: the executor's terminal effect.
+    // The four families' `TERM` ports: the executor's terminal effect. The cancel's
+    // is `claim_pair`, which `TERM` and the paired `PC` (PD-20) both reach.
     (
         "commands/recording/cancel_ports.rs",
-        "<CancelPorts<'_> as Ports>::terminal",
+        "CancelPorts<'_>::claim_pair",
         1,
     ),
     (

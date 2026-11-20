@@ -558,10 +558,13 @@ impl World {
             seen.cancelled_through = cancelled_through;
         }
         for recording_id in 1..=id {
+            // `unless_locked`: a port can be reached inside the terminal ledger's critical
+            // section (the cancel's terminal-and-performance pair), the way one is reached with
+            // the dictation lock held. The skip is decided by the call stack alone.
             let terminal = state
                 .app_state
                 .dictation_telemetry
-                .terminal_for_test(recording_id)
+                .terminal_for_test_unless_locked(recording_id)
                 .map(|(outcome, code)| format!("{outcome:?}/{code:?}"));
             if let Some(terminal) = terminal {
                 if seen.terminals.get(&recording_id) != Some(&terminal) {
@@ -1845,6 +1848,30 @@ impl PerformancePort for World {
             input,
             runtimes,
         );
+    }
+
+    fn complete_claiming(
+        &self,
+        recording_id: u64,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> bool {
+        // The same trace line as `complete`: the call is the effect that ran; whether it took
+        // the claim shows in the `perf-claim` lines.
+        self.push(format!(
+            "performance.complete {recording_id} {}",
+            serde_json::to_string(&outcome).expect("outcome serializes")
+        ));
+        claim_dictation_performance_completion(
+            &self.state().performance,
+            recording_id,
+            outcome,
+            stages,
+            input,
+            runtimes,
+        )
     }
 }
 

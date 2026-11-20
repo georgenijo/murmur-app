@@ -167,6 +167,15 @@ impl DictationErrorCode {
     }
 }
 
+/// What [`DictationTelemetry::claim_terminal_with_performance`] decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PairedClaim {
+    /// The terminal claim was made (first wins).
+    pub(crate) terminal_won: bool,
+    /// The performance claim was taken by the pair.
+    pub(crate) performance_taken: bool,
+}
+
 #[derive(Debug, Default)]
 struct AttemptState {
     terminal: Option<(DictationTerminalOutcome, DictationErrorCode)>,
@@ -231,6 +240,70 @@ impl DictationTelemetry {
         true
     }
 
+    /// The terminal claim and the performance claim of one recording as **one critical
+    /// section** (PD-20: the cancel of a `Processing` recording, R205.5's `TERM` and the
+    /// `PerfComplete` that follows it).
+    ///
+    /// The ledger's lock is held across `take_performance`, which takes the performance claim
+    /// (the begin coordinator's `entries` lock, then released) and answers whether it took it.
+    /// **Lock order: this ledger's lock, then the coordinator's `entries` lock; both are leaf
+    /// locks** (the coordinator never calls back into the ledger, `take_performance` must not),
+    /// and neither is held across anything that blocks. A path that completes performance
+    /// without this lock (a stop's rows, the pipeline guard) either took the claim before
+    /// `take_performance`, so this pair loses as a whole (no terminal claimed, nothing
+    /// completed), or comes after it and finds the claim taken.
+    ///
+    /// The claim stands for the pair while the ledger holds nothing for the id, or a stale-owner
+    /// `Superseded` (PD-22's split: the cancel still completes performance); a terminal of the
+    /// recording's own end (a stop's or the pipeline's) is that path's to complete, so the
+    /// pair claims and completes nothing.
+    pub(crate) fn claim_terminal_with_performance(
+        &self,
+        recording_id: u64,
+        outcome: DictationTerminalOutcome,
+        error_code: DictationErrorCode,
+        take_performance: impl FnOnce() -> bool,
+    ) -> PairedClaim {
+        let mut state = self.inner.lock_or_recover();
+        let Some(attempt) = state.attempts.get_mut(&recording_id) else {
+            // A terminal for an id the ledger never accepted claims nothing (PD-10); the
+            // completion stands on its own, as it did before.
+            return PairedClaim {
+                terminal_won: false,
+                performance_taken: take_performance(),
+            };
+        };
+        match attempt.terminal {
+            Some((DictationTerminalOutcome::Superseded, _)) => PairedClaim {
+                terminal_won: false,
+                performance_taken: take_performance(),
+            },
+            Some(_) => PairedClaim {
+                terminal_won: false,
+                performance_taken: false,
+            },
+            None => {
+                if !take_performance() {
+                    return PairedClaim {
+                        terminal_won: false,
+                        performance_taken: false,
+                    };
+                }
+                attempt.terminal = Some((outcome, error_code));
+                #[cfg(test)]
+                self.successful_claims
+                    .lock_or_recover()
+                    .entry(recording_id)
+                    .or_default()
+                    .push((outcome, error_code));
+                PairedClaim {
+                    terminal_won: true,
+                    performance_taken: true,
+                }
+            }
+        }
+    }
+
     /// Test builds only: the successful terminal claims for `recording_id`, in order.
     #[cfg(test)]
     pub(crate) fn successful_claims_for_test(
@@ -256,6 +329,21 @@ impl DictationTelemetry {
             .and_then(|attempt| attempt.terminal)
     }
 
+    /// `terminal_for_test` that never waits for the ledger's lock (`None` while another
+    /// call holds it): a port reached inside [`Self::claim_terminal_with_performance`]'s
+    /// critical section (the cancel's pair) may be sampled by a recording harness.
+    #[cfg(test)]
+    pub(crate) fn terminal_for_test_unless_locked(
+        &self,
+        recording_id: u64,
+    ) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
+        self.inner
+            .try_lock_or_recover()?
+            .attempts
+            .get(&recording_id)
+            .and_then(|attempt| attempt.terminal)
+    }
+
     #[cfg(test)]
     pub(crate) fn emit_terminal(
         &self,
@@ -276,6 +364,17 @@ impl DictationTelemetry {
         if !self.claim_terminal(recording_id, outcome, error_code) {
             return false;
         }
+        Self::log_terminal(recording_id, outcome, error_code, char_count);
+        true
+    }
+
+    /// The terminal's log event, written once after the claim (never under the ledger's lock).
+    pub(crate) fn log_terminal(
+        recording_id: u64,
+        outcome: DictationTerminalOutcome,
+        error_code: DictationErrorCode,
+        char_count: u64,
+    ) {
         if outcome.is_failure() {
             tracing::error!(
                 target: "pipeline",
@@ -307,7 +406,6 @@ impl DictationTelemetry {
                 "dictation reached terminal outcome"
             );
         }
-        true
     }
 }
 
@@ -337,6 +435,107 @@ mod tests {
         assert_eq!(
             telemetry.terminal_for_test(7),
             Some((DictationTerminalOutcome::Success, DictationErrorCode::None))
+        );
+    }
+
+    /// PD-20: the terminal claim and the performance claim are one critical section. The
+    /// pair wins only when the performance claim is taken; a terminal of the recording's own
+    /// end leaves both alone; a stale-owner `Superseded` still lets the performance complete.
+    #[test]
+    fn the_paired_claim_takes_both_ledgers_or_neither() {
+        use std::cell::Cell;
+        const CANCEL: DictationTerminalOutcome = DictationTerminalOutcome::UserCancelledProcessing;
+        const CODE: DictationErrorCode = DictationErrorCode::CancelledProcessing;
+        let telemetry = DictationTelemetry::default();
+
+        // Nothing in the ledger yet and the performance claim is free: both are taken.
+        telemetry.accepted(1);
+        let won = telemetry.claim_terminal_with_performance(1, CANCEL, CODE, || true);
+        assert_eq!(
+            won,
+            PairedClaim {
+                terminal_won: true,
+                performance_taken: true
+            }
+        );
+        assert_eq!(telemetry.terminal_for_test(1), Some((CANCEL, CODE)));
+
+        // The performance claim was already taken by another path: the pair loses as a whole,
+        // and the terminal stays unclaimed for that path to take.
+        telemetry.accepted(2);
+        let lost = telemetry.claim_terminal_with_performance(2, CANCEL, CODE, || false);
+        assert_eq!(
+            lost,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: false
+            }
+        );
+        assert_eq!(telemetry.terminal_for_test(2), None);
+        assert!(telemetry.successful_claims_for_test(2).is_empty());
+
+        // The recording's own end holds the terminal: nothing is completed, and the
+        // performance closure never runs.
+        telemetry.accepted(3);
+        assert!(telemetry.claim_terminal(
+            3,
+            DictationTerminalOutcome::Success,
+            DictationErrorCode::None
+        ));
+        let ran = Cell::new(false);
+        let behind = telemetry.claim_terminal_with_performance(3, CANCEL, CODE, || {
+            ran.set(true);
+            true
+        });
+        assert_eq!(
+            behind,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: false
+            }
+        );
+        assert!(!ran.get());
+
+        // A stale-owner `Superseded` holds the terminal: the cancel's terminal loses, its
+        // performance completion still runs (PD-22).
+        telemetry.accepted(4);
+        assert!(telemetry.claim_terminal(
+            4,
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner
+        ));
+        // The ledger's lock is held across the claim: the id's terminal is set, yet a probe
+        // that never waits for the lock reads nothing.
+        assert!(telemetry.terminal_for_test_unless_locked(4).is_some());
+        let held = Cell::new(false);
+        let superseded = telemetry.claim_terminal_with_performance(4, CANCEL, CODE, || {
+            held.set(telemetry.terminal_for_test_unless_locked(4).is_none());
+            true
+        });
+        assert!(held.get(), "the ledger's lock is held across the claim");
+        assert_eq!(
+            superseded,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: true
+            }
+        );
+        assert_eq!(
+            telemetry.terminal_for_test(4),
+            Some((
+                DictationTerminalOutcome::Superseded,
+                DictationErrorCode::StaleOwner
+            ))
+        );
+
+        // An id the ledger never accepted claims no terminal; the completion stands alone.
+        let unknown = telemetry.claim_terminal_with_performance(99, CANCEL, CODE, || true);
+        assert_eq!(
+            unknown,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: true
+            }
         );
     }
 
