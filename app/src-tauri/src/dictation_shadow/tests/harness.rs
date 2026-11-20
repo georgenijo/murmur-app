@@ -527,6 +527,7 @@ pub(super) fn stale_stop(seq: u64, rec: u64) -> Flight {
             observed_current_id: RID,
             interrupted: Some(None),
             entered: NOW,
+            taken_earlier: false,
         }),
     )
 }

@@ -423,6 +423,12 @@ pub struct AppState {
     /// another lock, an await or an effect (appendix C1.4.1).
     #[allow(dead_code)] // Stage 2a PR 0: first readers arrive with the family PRs.
     pub(crate) core_history: crate::core_history::CoreHistoryLock,
+    /// The most recent recording ids whose preserved capture a stop or disposal took
+    /// (`take_interrupted_dictation` found it). The supervisor's take is destructive, so a
+    /// later take of the same id finds nothing whether it was taken or never preserved;
+    /// this tells the two apart for the stale stop (R201.1, PD-25): the earlier taker
+    /// owns that recording's terminal. A leaf `std` mutex, held for one insert or lookup.
+    interrupted_taken: Mutex<std::collections::BTreeSet<u64>>,
     /// True while a file transcription is running. Live recording and file
     /// transcription share one Whisper backend, so they must be mutually
     /// exclusive — this flag lets each path refuse to start over the other.
@@ -442,6 +448,25 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// How many recent ids [`Self::note_interrupted_taken`] remembers.
+    const INTERRUPTED_TAKEN_KEPT: usize = 16;
+
+    /// Record that a take of `recording_id`'s preserved capture found it.
+    pub(crate) fn note_interrupted_taken(&self, recording_id: u64) {
+        let mut taken = self.interrupted_taken.lock_or_recover();
+        taken.insert(recording_id);
+        while taken.len() > Self::INTERRUPTED_TAKEN_KEPT {
+            taken.pop_first();
+        }
+    }
+
+    /// Whether an earlier take of `recording_id`'s preserved capture found it.
+    pub(crate) fn interrupted_taken_earlier(&self, recording_id: u64) -> bool {
+        self.interrupted_taken
+            .lock_or_recover()
+            .contains(&recording_id)
+    }
+
     /// Whether meeting capture or crash recovery currently owns the shared ASR
     /// runtime. Callers still serialize ownership claims with
     /// `recording_transition`; this helper keeps the fail-fast policy uniform.
@@ -644,6 +669,7 @@ impl Default for AppState {
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),
             core_history: crate::core_history::CoreHistoryLock::default(),
+            interrupted_taken: Mutex::new(std::collections::BTreeSet::new()),
             file_transcribing: AtomicBool::new(false),
             microphone_preview: crate::microphone_preview::MicrophonePreviewState::default(),
             correction_matcher: Mutex::new(None),
