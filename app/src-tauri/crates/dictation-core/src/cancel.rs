@@ -22,8 +22,9 @@
 //! * **R205.4 reply.** `Ok(())`; the capture cancel's own result is site 206's.
 //! * **Site 206 reply.** The success reply is the caller's: stop answers
 //!   `{"type":"recording_cancelled","state":"recovering"}`, cancel `Ok(())`
-//!   ([`CancelOrigin`]). The `Err` row is the same for both callers: a `PT`
-//!   `TERM(PipelineFailure/RuntimeFailure)` and the error text of the failed call.
+//!   ([`CancelOrigin`]). The `Err` row is the same for both callers: no effect and the
+//!   error text of the failed call (**PD-21**, fixed: it used to claim
+//!   `PipelineFailure/RuntimeFailure`).
 //! * **Op status.** Site 206 carries a token, and no row branches on its
 //!   `op_status` (C1.4.1 rule 3).
 //!

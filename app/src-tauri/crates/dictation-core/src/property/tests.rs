@@ -567,9 +567,12 @@ fn pd19_to_pd24_have_pinned_seeds() {
 /// completed with a short outcome (R203.4), and the supervisor's late `Recovering{User}`
 /// (R209.4). Both used to split (`PipelineFailure` against `NoSpeech` / `Cancelled`). The
 /// second now agrees (`UserCancelledRecording` and `Cancelled`); the first falls to PD-5.
-const FAILED_CANCEL_SEEDS: [(&str, u64, &str); 2] = [
+const FAILED_CANCEL_SEEDS: [(&str, u64, &str); 3] = [
     ("a short stop wins the capture", 289_110, "R203.4"),
     ("the supervisor recovers late", 3, "R209.4"),
+    // The stop caller of R206.2 (`CancelOrigin::Stop`): a stop cancels a `Starting` recording
+    // (R201.4) and no cancel command runs (no R205.4), so the only R206.2 is the stop's.
+    ("a stop's capture cancel fails", 185, "R201.4"),
 ];
 
 #[test]
@@ -598,6 +601,12 @@ fn a_failed_capture_cancel_claims_no_terminal() {
         assert_eq!(report.hits.pd[21], 0);
         assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
+    let stop_caller = run_seed(gated(185));
+    assert!(
+        !stop_caller.hits.decided.contains_key("R205.4"),
+        "seed 185 runs a cancel command: {:?}",
+        stop_caller.hits
+    );
     // The short-stop seed ends in another preserved defect's split now: the worker's runtime
     // failure reaches R209.2 at `Processing`, which claims `Superseded` for the current id
     // (PD-5) ahead of the stop's `NoSpeech`. The failed cancel used to claim first.
