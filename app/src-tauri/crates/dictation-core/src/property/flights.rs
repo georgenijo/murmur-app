@@ -1236,6 +1236,7 @@ impl Task for StopFlight {
                     observed_current_id: RecordingId(current),
                     interrupted: None,
                     entered: at,
+                    taken_earlier: false,
                 };
                 if input.is_stale() {
                     // R201.1: T held, no D; the stale path takes the interrupted
@@ -1265,6 +1266,7 @@ impl Task for StopFlight {
                             earlier,
                         });
                         input.interrupted = Some(taken.map(meta_of));
+                        input.taken_earlier = earlier.is_some();
                     }
                     let direct = core_stop::decide_stop_request_stale(input, at).expect("stale");
                     let decision = once(

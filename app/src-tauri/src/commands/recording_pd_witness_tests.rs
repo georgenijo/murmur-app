@@ -917,7 +917,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` or `recording_pd25_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-20..PD-25 each name at least one: renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-20..PD-24 each name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -926,13 +926,9 @@ fn the_property_harness_section_names_real_shell_tests() {
     let section = harness_section(&map);
     let names = finding_witness_names(section);
     let mut running = std::collections::BTreeSet::new();
-    for file in [
-        "recording_harness_findings_tests.rs",
-        "recording_pd25_tests.rs",
-    ] {
-        let source = std::fs::read_to_string(root.join(file)).expect("a findings test file");
-        running.extend(running_tests(&source));
-    }
+    let source = std::fs::read_to_string(root.join("recording_harness_findings_tests.rs"))
+        .expect("a findings test file");
+    running.extend(running_tests(&source));
     assert!(!names.is_empty(), "the section names no shell witness");
     for name in &names {
         assert!(
@@ -940,7 +936,7 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    for pd in 20..=25 {
+    for pd in 20..=24 {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1191,8 +1187,9 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// shadow in this process (every sub-run is replayed, `run_sub_run_observed`), and each
 /// PD the allowlist credits is counted. PD-11, PD-14 and PD-17 are not row signatures
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
-/// E8 enumerates every preserved defect, PD-1 to PD-25 (`e8_pds`): each is driven by a
-/// named shell fixture, the PD-19 to PD-25 fixtures are replayed through the shadow too
+/// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`])
+/// (`e8_pds`): each is driven by a
+/// named shell fixture, the PD-20 to PD-24 fixtures are replayed through the shadow too
 /// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
 /// not run.
@@ -1313,7 +1310,7 @@ enum PdKind {
     /// fixture is its own `#[test]`, which E8 does not replay.
     Property,
     /// Not a row signature either: a split between a recording's terminal and its
-    /// performance outcome that the property harness found (PD-19 to PD-25). E8 replays
+    /// performance outcome that the property harness found (PD-19 to PD-24). E8 replays
     /// the named fixtures through the shadow in this process, where each must close
     /// clean (E7), and the shadow credits nothing for them.
     CrossLedger,
@@ -1358,15 +1355,20 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
     );
 }
 
-/// Every preserved defect, PD-1 to PD-25, with the shell fixtures that assert it. Seed
-/// 92,332 of #1157 is not a defect (the generator draws an uncaused `Cancelled`) and is
-/// not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
+/// The PDs a fix PR has fixed and removed (C7.0): no E8 row, no allowlist entry, no
+/// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-25
+/// (#1157): `recording_pd25_tests.rs`.
+#[cfg(feature = "dictation-shadow")]
+const FIXED_PDS: &[u8] = &[18, 19, 25];
+
+/// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
+/// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
+/// `Cancelled`) and is not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
 /// [`assert_every_preserved_signature_is_accounted`] fails otherwise.
 #[cfg(feature = "dictation-shadow")]
 fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
     use super::golden_tests as g;
     use super::harness_findings_tests as f;
-    use super::pd25_tests as p;
     use PdKind::{CrossLedger, Latent, Property, Row};
     vec![
         (1, Row, vec![fx!(g::golden_s04_interruption_under_8000_samples)]),
@@ -1486,14 +1488,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
             vec![
                 fx!(f::pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree),
                 fx!(f::pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree),
-            ],
-        ),
-        (
-            25,
-            CrossLedger,
-            vec![
-                fx!(p::pd25_import_allocates_while_a_scoped_stop_for_the_old_generation_is_queued),
-                fx!(p::pd25_start_allocates_while_a_scoped_stop_for_the_old_generation_is_queued),
             ],
         ),
     ]
@@ -1616,7 +1610,7 @@ fn e8_rejects_a_fixture_the_compiled_harness_skips() {
 const RETIRED_PDS_WITH_DEAD_SHADOW_ROWS: [u8; 1] = [18];
 
 /// E8's accounting (D-S2c-15 C4), over what [`run_e8_fixtures`] replayed:
-/// * PD-1 to PD-25 each have one row in [`e8_pds`], and a latent PD names no fixture;
+/// * PD-1 to PD-25, less [`FIXED_PDS`], each have one row in [`e8_pds`], and a latent PD names no fixture;
 /// * the PDs of the shadow's allowlist are exactly the `Row` ones, and each was credited;
 /// * the shadow credited nothing else;
 /// * every named fixture is, by its full path, a test the **compiled** harness runs: listed by
@@ -1629,9 +1623,9 @@ fn assert_every_preserved_signature_is_accounted(totals: &crate::dictation_shado
     assert_eq!(
         numbers,
         (1..=25)
-            .filter(|pd| !matches!(pd, 18 | 19))
+            .filter(|pd| !FIXED_PDS.contains(pd))
             .collect::<Vec<u8>>(),
-        "one E8 row per PD (PD-18 and PD-19 are fixed and have none)"
+        "one E8 row per unfixed PD (PD-18, PD-19 and PD-25 are fixed and have none)"
     );
     // A retired PD (fixed, so it has no E8 row) may still have a dead entry in the shadow's
     // allowlist, which only the shadow's own retirement deletes: editing `pd.rs` makes a PR a

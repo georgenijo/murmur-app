@@ -69,7 +69,7 @@ R104.6 | Recording            | -
 R104.7 | *                    | -
 
 # ---- C3.5 stop family (201-206)
-R201.1 | *          | TERM:Superseded/StaleOwner
+R201.1 | *          | - / TERM:Superseded/StaleOwner
 R201.2 | Processing | -
 R201.3 | Idle       | -
 R201.4 | Starting   | -
