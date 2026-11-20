@@ -85,9 +85,7 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// 259,286 -> 2,569,791 -> 2,071,065, 262,762 -> 179,248 -> 81,584,
 /// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499; 24,199 is the PD-24 (R209.5) witness,
 /// formerly seed 5,206 in range.
-const FIXED_SEEDS: [u64; 7] = [
-    289_110, 31_086, 154_052, 24_199, 73_499, 40_309, 220_511,
-];
+const FIXED_SEEDS: [u64; 7] = [289_110, 31_086, 154_052, 24_199, 73_499, 40_309, 220_511];
 
 /// The teardown-gap starts, one seed per window (the fixed PD-18 and PD-19): a start
 /// refused by R101.12 while the retiring capture's cleanup is pending, no restorer of

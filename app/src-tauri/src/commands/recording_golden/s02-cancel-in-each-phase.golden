@@ -151,8 +151,8 @@ delivery 1: operation done, D released next
 ~ status Processing -> Idle
 ~ context 1 cleared
 ~ cancelled_through 1
-~ terminal 1 UserCancelledProcessing/CancelledProcessing
 performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
+~ terminal 1 UserCancelledProcessing/CancelledProcessing
 ~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 keyboard.set_processing false
 ~ processing false
@@ -224,8 +224,8 @@ gate pipeline wait
 ~ status Processing -> Idle
 ~ context 1 cleared
 ~ cancelled_through 1
-~ terminal 1 UserCancelledProcessing/CancelledProcessing
 performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
+~ terminal 1 UserCancelledProcessing/CancelledProcessing
 ~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 keyboard.set_processing false
 ~ processing false
@@ -294,8 +294,8 @@ gate pipeline wait
 ~ status Processing -> Idle
 ~ context 1 cleared
 ~ cancelled_through 1
-~ terminal 1 UserCancelledProcessing/CancelledProcessing
 performance.complete 1 {"status":"cancelled","stage":"inferenceDecode"}
+~ terminal 1 UserCancelledProcessing/CancelledProcessing
 ~ perf-claim 1 {"status":"cancelled","stage":"inferenceDecode"}
 keyboard.set_processing false
 ~ processing false

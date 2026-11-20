@@ -9562,6 +9562,10 @@ async fn stop_native_recording_admitted(
                 recording_id = rid,
                 "dictation pipeline failed"
             );
+            // Test builds: R204b.5's terminal is claimed; the guards (and the performance
+            // completion the guard's drop makes) have not been dropped yet.
+            #[cfg(test)]
+            crate::barrier_hook::at("stop.pipeline_failed_tail_done");
             return Err(error);
         }
     };

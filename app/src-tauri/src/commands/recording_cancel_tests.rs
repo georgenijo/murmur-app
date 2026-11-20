@@ -813,7 +813,8 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
 }
 
 /// R205.5's exact order (appendix C: `In:ST→Idle`; `PDT:CX-, MC, TERM, PC, KB, EM, EV`; the `PC`
-/// is the terminal claim's second half, PD-20). A barrier before each effect observes what the earlier effects did and
+/// is the terminal claim's second half, PD-20: the two run as one port call, so both points
+/// come before either claim). A barrier before each effect observes what the earlier effects did and
 /// what the later ones have not yet done, so each statement of the tail is pinned
 /// to its place, not only the first port after it (`cancel_window_preserved`).
 #[test]
@@ -895,16 +896,18 @@ pub(super) fn processing_cancel_tail_runs_in_r205_5_order() {
         "MC ran, TERM has not: {}",
         state(3)
     );
+    // `TERM` and `PC` are one port call (PD-20: one critical section of the terminal ledger),
+    // so their two points stand together, before both claims: there is no point between them.
     assert!(
-        state(4).contains("terminal=true kb_processing=true idle_emitted=false")
+        state(4).starts_with("status=Idle context=cleared cancelled=true terminal=false")
             && state(4).contains("perf_claimed=false"),
-        "TERM ran, PC has not: {}",
+        "TERM and PC are one call: neither claim is made at PC's point: {}",
         state(4)
     );
     assert!(
-        state(5).contains("kb_processing=true idle_emitted=false")
+        state(5).contains("terminal=true kb_processing=true idle_emitted=false")
             && state(5).contains("perf_claimed=true"),
-        "PC ran (right after the terminal claim), KB has not: {}",
+        "TERM and PC ran together, KB has not: {}",
         state(5)
     );
     assert!(

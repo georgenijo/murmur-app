@@ -558,8 +558,8 @@ fn assert_read_processing_3(entries: &[(String, Pair, Pair)], what: &str) {
     );
 }
 
-/// #1170's exact tail-order test (R205.5: `In:ST→Idle`; `PDT:CX-, MC, TERM, KB, EM, EV`;
-/// `PT:PC`, T held from `ST` through `EV` and released only before `PC`), run again through
+/// #1170's tail-order test, in the PD-20 order (R205.5: `In:ST→Idle`; `PDT:CX-, MC, TERM+PC`
+/// (one pair, claimed together), `KB, EM, EV`; T held from `ST` through `EV`), run again through
 /// the switched entry. The entries that ran are exact: the cancel's one D entry, once, reading
 /// the persisted core, and the run reaches `project()` not at all (a processing cancel starts
 /// nothing).

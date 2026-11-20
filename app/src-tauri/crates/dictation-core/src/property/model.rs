@@ -819,10 +819,11 @@ impl World {
         ctx: Won,
     ) -> bool {
         let won = self.ledger.accepted.contains(&rid) && !self.ledger.claimed.contains_key(&rid);
-        self.ledger.tries.entry(rid).or_default().push(ClaimTry {
-            row,
-            won,
-        });
+        self.ledger
+            .tries
+            .entry(rid)
+            .or_default()
+            .push(ClaimTry { row, won });
         if !won {
             return false;
         }

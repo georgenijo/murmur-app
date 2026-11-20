@@ -438,6 +438,107 @@ mod tests {
         );
     }
 
+    /// PD-20: the terminal claim and the performance claim are one critical section. The
+    /// pair wins only when the performance claim is taken; a terminal of the recording's own
+    /// end leaves both alone; a stale-owner `Superseded` still lets the performance complete.
+    #[test]
+    fn the_paired_claim_takes_both_ledgers_or_neither() {
+        use std::cell::Cell;
+        const CANCEL: DictationTerminalOutcome = DictationTerminalOutcome::UserCancelledProcessing;
+        const CODE: DictationErrorCode = DictationErrorCode::CancelledProcessing;
+        let telemetry = DictationTelemetry::default();
+
+        // Nothing in the ledger yet and the performance claim is free: both are taken.
+        telemetry.accepted(1);
+        let won = telemetry.claim_terminal_with_performance(1, CANCEL, CODE, || true);
+        assert_eq!(
+            won,
+            PairedClaim {
+                terminal_won: true,
+                performance_taken: true
+            }
+        );
+        assert_eq!(telemetry.terminal_for_test(1), Some((CANCEL, CODE)));
+
+        // The performance claim was already taken by another path: the pair loses as a whole,
+        // and the terminal stays unclaimed for that path to take.
+        telemetry.accepted(2);
+        let lost = telemetry.claim_terminal_with_performance(2, CANCEL, CODE, || false);
+        assert_eq!(
+            lost,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: false
+            }
+        );
+        assert_eq!(telemetry.terminal_for_test(2), None);
+        assert!(telemetry.successful_claims_for_test(2).is_empty());
+
+        // The recording's own end holds the terminal: nothing is completed, and the
+        // performance closure never runs.
+        telemetry.accepted(3);
+        assert!(telemetry.claim_terminal(
+            3,
+            DictationTerminalOutcome::Success,
+            DictationErrorCode::None
+        ));
+        let ran = Cell::new(false);
+        let behind = telemetry.claim_terminal_with_performance(3, CANCEL, CODE, || {
+            ran.set(true);
+            true
+        });
+        assert_eq!(
+            behind,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: false
+            }
+        );
+        assert!(!ran.get());
+
+        // A stale-owner `Superseded` holds the terminal: the cancel's terminal loses, its
+        // performance completion still runs (PD-22).
+        telemetry.accepted(4);
+        assert!(telemetry.claim_terminal(
+            4,
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner
+        ));
+        // The ledger's lock is held across the claim: the id's terminal is set, yet a probe
+        // that never waits for the lock reads nothing.
+        assert!(telemetry.terminal_for_test_unless_locked(4).is_some());
+        let held = Cell::new(false);
+        let superseded = telemetry.claim_terminal_with_performance(4, CANCEL, CODE, || {
+            held.set(telemetry.terminal_for_test_unless_locked(4).is_none());
+            true
+        });
+        assert!(held.get(), "the ledger's lock is held across the claim");
+        assert_eq!(
+            superseded,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: true
+            }
+        );
+        assert_eq!(
+            telemetry.terminal_for_test(4),
+            Some((
+                DictationTerminalOutcome::Superseded,
+                DictationErrorCode::StaleOwner
+            ))
+        );
+
+        // An id the ledger never accepted claims no terminal; the completion stands alone.
+        let unknown = telemetry.claim_terminal_with_performance(99, CANCEL, CODE, || true);
+        assert_eq!(
+            unknown,
+            PairedClaim {
+                terminal_won: false,
+                performance_taken: true
+            }
+        );
+    }
+
     #[test]
     fn stale_terminal_cannot_consume_a_newer_attempt() {
         let telemetry = DictationTelemetry::default();
