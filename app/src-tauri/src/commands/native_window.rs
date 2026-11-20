@@ -317,7 +317,7 @@ fn queue_on_main_queue(f: impl FnOnce() + Send + 'static) {
 
 /// Set the window's alpha on the main queue, behind any queued tao setters.
 #[cfg(target_os = "macos")]
-fn queue_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
+fn queue_window_alpha<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, alpha: f64) {
     let window = window.clone();
     queue_on_main_queue(crate::main_thread_watch::job(
         "native_window.set_alpha",
@@ -332,7 +332,7 @@ fn queue_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn queue_window_alpha(_window: &tauri::WebviewWindow, _alpha: f64) {}
+fn queue_window_alpha<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>, _alpha: f64) {}
 
 /// Show/hide/reposition transport for the non-activating dictation preview.
 /// Geometry stays in `commands/dictation_preview.rs`; native window mutations
@@ -369,7 +369,10 @@ impl PopoverSpec {
         }
     }
 
-    fn window(&self, app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    fn window<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+    ) -> Result<tauri::WebviewWindow<R>, String> {
         use tauri::Manager;
         app.get_webview_window(self.label)
             .ok_or_else(|| format!("{} window is unavailable", self.label))
@@ -520,7 +523,7 @@ impl PopoverSpec {
     /// Conceal the window if it was shown: fully transparent and click-through,
     /// still ordered in. Missing or never-shown windows are not an error: both
     /// callers treat "already gone" as already hidden.
-    pub(crate) fn hide(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    pub(crate) fn hide<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<(), String> {
         use tauri::Manager;
         self.presented.store(false, Ordering::SeqCst);
         if !self.ordered_in.load(Ordering::SeqCst) {
@@ -547,7 +550,12 @@ impl PopoverSpec {
     /// changes — used once at startup so the window has a sane size before
     /// its first `show`. Errors are ignored, matching prior behavior: an
     /// initial-size failure is not worth surfacing since `show` sizes again.
-    pub(crate) fn apply_initial_size(&self, app: &tauri::AppHandle, width: f64, height: f64) {
+    pub(crate) fn apply_initial_size<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        width: f64,
+        height: f64,
+    ) {
         use tauri::Manager;
         if let Some(window) = app.get_webview_window(self.label) {
             let _ = crate::main_thread_watch::queued_section(

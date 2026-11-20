@@ -201,6 +201,10 @@ mod lifecycle_tests;
 mod lifecycle_barrier_tests;
 
 #[cfg(test)]
+#[path = "recording_lifecycle_cutover_tests.rs"]
+mod lifecycle_cutover_tests;
+
+#[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
 
@@ -427,8 +431,8 @@ pub(crate) fn ticker_note(
 /// Spawn the live-preview ticker. `register` runs under the dictation lock
 /// (see [`register_partial_ticker_locked`]); no ticker runs if it refuses.
 #[cfg(not(feature = "dictation-shadow"))]
-fn spawn_dictation_partial_ticker(
-    app: tauri::AppHandle,
+fn spawn_dictation_partial_ticker<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     recording_id: u64,
     register: impl FnOnce() -> bool,
 ) {
@@ -501,8 +505,8 @@ fn spawn_dictation_partial_ticker(
 /// one lookup is [`ticker_start_check`], so the skip it takes is the witness of that
 /// lookup and nothing is read twice (D-S2c-10 R2).
 #[cfg(feature = "dictation-shadow")]
-fn spawn_dictation_partial_ticker(
-    app: tauri::AppHandle,
+fn spawn_dictation_partial_ticker<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     recording_id: u64,
     register: impl FnOnce() -> bool,
 ) {
@@ -586,7 +590,7 @@ async fn run_partial_ticker_loop(
 /// Start the incremental VAD (streaming setting, workstream E1) for a recording
 /// that has just become `Recording`. Reads only the context frozen at recording
 /// start; the batch VAD at Stop stays the fallback for every failure.
-fn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {
+fn spawn_vad_stream<R: tauri::Runtime>(app: tauri::AppHandle<R>, recording_id: u64) {
     let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
         return;
     };
@@ -697,8 +701,8 @@ fn commit_stream_piece(
     }
 }
 
-async fn decode_one_dictation_partial(
-    app: &tauri::AppHandle,
+async fn decode_one_dictation_partial<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     recording_id: u64,
     preview: WhisperPreview,
 ) -> bool {
@@ -6662,7 +6666,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             #[cfg(feature = "dictation-shadow")]
             let after_d = AfterD::new();
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::lifecycle_view(&state.app_state, &mut dictation);
             let mut input = core_lifecycle::SupReadyInput {
                 rid,
                 context_present: None,
@@ -6749,7 +6753,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             #[cfg(feature = "dictation-shadow")]
             let after_d = AfterD::new();
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::lifecycle_view(&state.app_state, &mut dictation);
             let decision =
                 decide_guarded(|| core_lifecycle::decide_sup_still_connecting(&view, rid, now));
             #[cfg(feature = "dictation-shadow")]
@@ -6787,7 +6791,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             #[cfg(feature = "dictation-shadow")]
             let after_d = AfterD::new();
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::lifecycle_view(&state.app_state, &mut dictation);
             let decision =
                 decide_guarded(|| core_lifecycle::decide_sup_recovering(&view, input, now));
             #[cfg(feature = "dictation-shadow")]
@@ -6893,7 +6897,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             #[cfg(feature = "dictation-shadow")]
             let after_d = AfterD::new();
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::lifecycle_view(&state.app_state, &mut dictation);
             let decision =
                 decide_guarded(|| core_lifecycle::decide_sup_cleanup_finished(&view, rid, now));
             #[cfg(feature = "dictation-shadow")]
@@ -7029,7 +7033,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
                     None,
                 );
                 let mut dictation = state.app_state.dictation.lock_or_recover();
-                let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+                let view = FieldAdapter::lifecycle_view(&state.app_state, &mut dictation);
                 let decision = decide_guarded(|| {
                     core_lifecycle::decide_sup_interrupted_short_idle(&view, rid, now)
                 })
@@ -7077,7 +7081,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
             #[cfg(feature = "dictation-shadow")]
             let after_d = AfterD::new();
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let view = FieldAdapter::lifecycle_view(&state.app_state, &mut dictation);
             let decision = decide_guarded(|| core_lifecycle::decide_sup_idle(&view, rid, now));
             #[cfg(feature = "dictation-shadow")]
             {

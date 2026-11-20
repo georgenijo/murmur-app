@@ -192,15 +192,89 @@ impl FieldAdapter {
     /// `NeedObservation(ContextPresence)` after its stale check, decision
     /// D-S1-2), so the leaf-mutex read stays where today's code does it. The crate
     /// test `no_lifecycle_decision_reads_m3_or_m4` pins that.
+    #[cfg_attr(test, track_caller)]
     pub(crate) fn project_lifecycle_view(
         app: &AppState,
         dictation: &DictationState,
     ) -> DictationCore {
         #[cfg(test)]
         super::probe::view();
+        #[cfg(test)]
+        super::probe::projected(std::panic::Location::caller());
         DictationCore::project(
             core_status(dictation.status),
             RecordingId(app.recording_id.load(Ordering::SeqCst)),
+            LiveObs {
+                cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
+                context_for: None,
+            },
+        )
+    }
+
+    /// The decision view of the lifecycle family's D entries (207-211, 216) after the
+    /// cutover (C9.7 b, C8.6): M1 and M2 come from the **persisted core**, not from the
+    /// live fields, and M3 is the same atomic observation [`Self::project_lifecycle_view`]
+    /// makes (M4 stays `None` for the same reason). `DictationCore::project` is not
+    /// called.
+    ///
+    /// **The C8.6 assertion** runs here, on every lifecycle entry and under the D hold the
+    /// entry already has: the persisted M1/M2 are compared with the live `status` and
+    /// `recording_id`. A difference is **counted** ([`core_divergences`], the summary's
+    /// `core_divergences` and the soak's `diff_kind 5` gate) and then **re-synced** from
+    /// live through [`Self::seed_core`], never ignored, so the decision below runs on a
+    /// persisted core that equals live. Before either happens, a test build records the
+    /// persisted and live values exactly as read (`probe::lifecycle_entry`), so a test can
+    /// prove the entry read the persisted fields before any later adapter write repaired
+    /// them.
+    ///
+    /// Nothing is added under D beyond what [`Self::project_lifecycle_view`] did: the
+    /// same two atomic loads and the same single view.
+    pub(crate) fn lifecycle_view(app: &AppState, dictation: &mut DictationState) -> DictationCore {
+        Self::persisted_view(
+            app,
+            dictation,
+            #[cfg(test)]
+            |persisted, live, _| super::probe::lifecycle_entry(persisted, live),
+            #[cfg(test)]
+            std::panic::Location::caller(),
+        )
+    }
+
+    /// The one body of the cut-over views (see [`Self::lifecycle_view`]). `record` and
+    /// `caller` are the family's probe and the entry's call site in a test build.
+    fn persisted_view(
+        app: &AppState,
+        dictation: &mut DictationState,
+        #[cfg(test)] record: fn(
+            (
+                murmur_dictation_core::status::Status,
+                murmur_dictation_core::ids::RecordingId,
+            ),
+            (
+                murmur_dictation_core::status::Status,
+                murmur_dictation_core::ids::RecordingId,
+            ),
+            &'static std::panic::Location<'static>,
+        ),
+        #[cfg(test)] caller: &'static std::panic::Location<'static>,
+    ) -> DictationCore {
+        #[cfg(test)]
+        super::probe::view();
+        let live_status = core_status(dictation.status);
+        let live_id = RecordingId(app.recording_id.load(Ordering::SeqCst));
+        #[cfg(test)]
+        record(
+            (dictation.core.status(), dictation.core.current_id()),
+            (live_status, live_id),
+            caller,
+        );
+        if dictation.core.status() != live_status || dictation.core.current_id() != live_id {
+            CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
+            // Re-sync through the one seeder: no other method builds a core.
+            Self::seed_core(app, dictation);
+        }
+        DictationCore::new(
+            dictation.core,
             LiveObs {
                 cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
                 context_for: None,

@@ -239,6 +239,11 @@ pub(super) struct Knobs {
     /// test (R215.2 `RS`; production's scheduler spawns the same task). Off, it
     /// drops the task, and so the owner, as an unrun spawn would.
     pub(super) carry_auto_stop_owner: bool,
+    /// Both ready entry points hand the side-task pair to the **production** spawners
+    /// (`spawn_vad_stream`, `spawn_dictation_partial_ticker`, generic over the runtime
+    /// since the lifecycle cutover) instead of the harness's own stand-in (D-S2c-16
+    /// amendment 1 c). The spawners' `register` runs through the same trace line either way.
+    pub(super) real_spawners: bool,
     /// A stop whose reply never comes from the supervisor: the receive timed out or
     /// the channel closed. Production returns it whatever the owner is, so it is
     /// separate from `stop_result`, which is the supervisor's own reply and is applied
@@ -263,6 +268,7 @@ impl Default for Knobs {
             smart_auto: None,
             smart_destination_emit_error: false,
             carry_auto_stop_owner: false,
+            real_spawners: false,
             stop_transport_failure: None,
         }
     }
@@ -766,6 +772,24 @@ impl World {
         self.side_task_spawns.load(Ordering::SeqCst)
     }
 
+    /// The two spawns an entry point makes for a ready recording, with the **production**
+    /// spawners: the pair `handle_audio_lifecycle` and `publish_recording_ready_if_audio_ready`
+    /// pass. `register` is wrapped so the trace line the fake spawner writes is the one
+    /// the real spawner's `register` call writes, and only if it ran.
+    fn run_real_spawners(
+        &self,
+        app: MockHandle,
+        recording_id: u64,
+        register: Box<dyn FnOnce() -> bool + '_>,
+    ) {
+        spawn_vad_stream(app.clone(), recording_id);
+        spawn_dictation_partial_ticker(app, recording_id, || {
+            let registered = register();
+            self.push(format!("SD ticker {recording_id} registered={registered}"));
+            registered
+        });
+    }
+
     pub(super) fn bridge_side_task_spawns(&self) -> usize {
         self.bridge_side_task_spawns.load(Ordering::SeqCst)
     }
@@ -1009,6 +1033,10 @@ impl World {
                     // The ticker's own preconditions are production's: a recorded
                     // context and a model that supports a live preview.
                     world.bridge_side_task_spawns.fetch_add(1, Ordering::SeqCst);
+                    if world.knobs().real_spawners {
+                        world.run_real_spawners(app, recording_id, register);
+                        return;
+                    }
                     let state = app.state::<State>();
                     if !ticker_can_start(&state.app_state, recording_id) {
                         return;
@@ -1853,6 +1881,10 @@ impl DictationHost for Host {
             |recording_id| world.is_dictation_recording(recording_id),
             |app, recording_id, register| {
                 world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
+                if world.knobs().real_spawners {
+                    world.run_real_spawners(app.clone(), recording_id, register);
+                    return;
+                }
                 let state = app.state::<State>();
                 if !ticker_can_start(&state.app_state, recording_id) {
                     return;

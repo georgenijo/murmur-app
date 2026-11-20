@@ -59,6 +59,36 @@ pub const MODEL_SHA256: &str = "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef1
 #[cfg(test)]
 pub(crate) static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Serializes the tests that point the model store at a temporary directory: `load_verified`
+/// deletes a model that fails verification, so a test that resets [`ROOT_OVERRIDE`] while
+/// another still relies on it would aim that deletion at the wrong store.
+#[cfg(test)]
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Owns both the store lock and the [`ROOT_OVERRIDE`] for its lifetime: the override is set
+/// when it is built and reset (still under the lock) when it drops. Every test that sets the
+/// override goes through it, never through the static directly.
+#[cfg(test)]
+pub(crate) struct StoreOverride {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl StoreOverride {
+    pub(crate) fn set(root: &std::path::Path) -> Self {
+        let guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        *ROOT_OVERRIDE.lock_or_recover() = Some(root.to_path_buf());
+        Self { _guard: guard }
+    }
+}
+
+#[cfg(test)]
+impl Drop for StoreOverride {
+    fn drop(&mut self) {
+        *ROOT_OVERRIDE.lock_or_recover() = None;
+    }
+}
+
 /// Root of the hash-versioned streaming VAD model store.
 pub fn models_root() -> Option<PathBuf> {
     #[cfg(test)]
@@ -884,6 +914,8 @@ pub fn start<R: tauri::Runtime>(
     is_current: impl Fn(&crate::state::AppState, u64) -> bool + Send + 'static,
 ) -> bool {
     use tauri::Manager;
+    #[cfg(test)]
+    test_starts::note(recording_id);
     if !model_installed() {
         return false;
     }
@@ -939,6 +971,30 @@ pub fn start<R: tauri::Runtime>(
         return false;
     }
     true
+}
+
+/// Test builds: the recordings `start` was entered for, so a test can prove the production
+/// VAD spawner reached it (D-S2c-16 amendment 1 c).
+#[cfg(test)]
+pub(crate) mod test_starts {
+    static STARTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn note(recording_id: u64) {
+        STARTED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(recording_id);
+    }
+
+    /// How many times `start` was entered for `recording_id` so far.
+    pub(crate) fn count(recording_id: u64) -> usize {
+        STARTED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|id| **id == recording_id)
+            .count()
+    }
 }
 
 fn emit_outcome(

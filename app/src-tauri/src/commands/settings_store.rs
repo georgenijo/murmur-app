@@ -263,14 +263,66 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
 /// The per-bundle app data directory that owns every durable host-written
 /// file. Shared so non-command hosts (the capture backend memo) publish beside
 /// `settings.json` instead of resolving their own directory.
-pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    // Test builds: once a test has installed a sandbox, every resolution lands in it (a mock
+    // app's own data directory is under the real user's `Application Support`) and is recorded.
+    #[cfg(test)]
+    if let Some(dir) = test_data_dir::sandbox() {
+        return Ok(test_data_dir::returned(dir));
+    }
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Durable data directory unavailable: {e}"))?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
+    #[cfg(test)]
+    let dir = test_data_dir::returned(dir);
     Ok(dir)
+}
+
+/// Test-only data-directory sandbox. A test that runs code which resolves the durable data
+/// directory through a mock app (the Live Words ticker task reads `settings.json`) installs it
+/// first, so that read, and the quarantine a bad file would get, stay in a temporary directory.
+/// Process-global and never uninstalled: a detached task can outlive the test that started it,
+/// and must not fall back to the real directory when the test ends.
+#[cfg(test)]
+pub(crate) mod test_data_dir {
+    use super::*;
+
+    static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    static RETURNED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// The sandbox, created on first use and installed for the rest of the process.
+    pub(crate) fn install() -> PathBuf {
+        SANDBOX
+            .get_or_init(|| {
+                // One fixed directory (the tests only read it, so processes share it and
+                // nothing accumulates per run).
+                let dir = std::env::temp_dir().join("murmur-test-data-dir");
+                std::fs::create_dir_all(&dir).expect("the test data directory");
+                dir
+            })
+            .clone()
+    }
+
+    /// The installed sandbox, if any. Not a record: a record of this constant would hold
+    /// whatever `data_dir` did.
+    pub(super) fn sandbox() -> Option<PathBuf> {
+        SANDBOX.get().cloned()
+    }
+
+    /// Record the path `data_dir` is about to return, on either exit (the sandbox or the
+    /// real directory), and hand it back unchanged.
+    pub(super) fn returned(dir: PathBuf) -> PathBuf {
+        RETURNED.lock_or_recover().push(dir.clone());
+        dir
+    }
+
+    /// Every path `data_dir` returned since the last call.
+    pub(crate) fn take_returned() -> Vec<PathBuf> {
+        std::mem::take(&mut *RETURNED.lock_or_recover())
+    }
 }
 
 /// Runs between a rejected read and the quarantine decision, so a test can
@@ -321,7 +373,9 @@ async fn load_blob_off_main(
 
 /// Synchronous settings read for startup code that already runs before the
 /// first frame is requested (see `launch::prepare`).
-pub(crate) fn read_settings_blob(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+pub(crate) fn read_settings_blob<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<String>, String> {
     read_blob_serialized(&data_dir(app)?, SETTINGS)
 }
 

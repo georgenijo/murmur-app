@@ -109,7 +109,7 @@ SHADOW_DIFF_ALLOW: dict[str, tuple] = {
 # (each has its own `use` statement); `State` and `commanded` are shared, so unlisted.
 SHADOW_TWINS: dict[str, list[dict]] = {
     "app/src-tauri/src/commands/recording.rs": [
-        {"first": "fn spawn_dictation_partial_ticker(", "form": "frozen", "pair": "3ec58dd4b5441fa6", "why": "the shared ticker lookup (`ticker_start_check`) replaces the spawner's head, so the skip taken is the witness of that one lookup (D-S2c-10 R2)"},
+        {"first": "fn spawn_dictation_partial_ticker<R: tauri::Runtime>(", "form": "frozen", "pair": "2d7d4689ffd5cf2b", "why": "the shared ticker lookup (`ticker_start_check`) replaces the spawner's head, so the skip taken is the witness of that one lookup (D-S2c-10 R2)"},
         {"first": "self.history.ret_pipeline(self.rid);", "form": "frozen", "pair": "b9e8f6659edbbaf5", "why": "keeps the answer of the H2 retirement, which the original discards, for the flight's H2 witness"},
         {"first": "let pre = stop_ports::try_run_phase(", "form": "closed", "why": 'the original plus `.attach_flight(<flight>)` on its executor, the one insertion of the closed list (D-S2c-12 b)'},
         {"first": "stop_ports::run_phase(", "form": "closed", "why": 'the original plus `.attach_flight(<flight>)` on its executor, the one insertion of the closed list (D-S2c-12 b)'},

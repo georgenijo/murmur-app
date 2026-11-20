@@ -17,6 +17,96 @@ pub(crate) fn view() {
     VIEWS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// One `FieldAdapter::project_lifecycle_view` call (the `DictationCore::project` entry),
+/// with its caller. Counted always; the caller is remembered only while a test records
+/// (`record_projections`). The lifecycle cutover's not-called test reads these.
+pub(crate) fn projected(caller: &'static std::panic::Location<'static>) {
+    PROJECTED.fetch_add(1, Ordering::Relaxed);
+    if PROJECTION_SITES_ON.load(Ordering::Relaxed) {
+        PROJECTION_SITES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((caller.file(), caller.line()));
+    }
+}
+
+static PROJECTED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_SITES_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static PROJECTION_SITES: std::sync::Mutex<Vec<(&'static str, u32)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Start or stop remembering where `project_lifecycle_view` calls came from (all threads).
+pub(crate) fn record_projections(on: bool) {
+    PROJECTION_SITES_ON.store(on, Ordering::Relaxed);
+}
+
+/// The `(file, line)` of every projection since the last call, oldest first.
+pub(crate) fn take_projection_sites() -> Vec<(&'static str, u32)> {
+    std::mem::take(
+        &mut *PROJECTION_SITES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+/// `DictationCore::project` entries so far.
+pub(crate) fn projections() -> u64 {
+    PROJECTED.load(Ordering::Relaxed)
+}
+
+/// What a lifecycle entry's C8.6 assertion read: the persisted M1/M2 and the live
+/// `status`/`recording_id`, **as read at the entry**, before the entry re-synced a
+/// divergence or ran any effect.
+pub(crate) type EntryRead = (
+    (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+);
+
+static LIFECYCLE_ENTRIES: std::sync::Mutex<Vec<EntryRead>> = std::sync::Mutex::new(Vec::new());
+static LIFECYCLE_ENTRIES_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Start or stop remembering each lifecycle entry's read (all threads). Off by default:
+/// remembering allocates, which the allocation pins under D must not see.
+pub(crate) fn record_lifecycle_entries(on: bool) {
+    LIFECYCLE_ENTRIES_ON.store(on, Ordering::Relaxed);
+}
+
+pub(crate) fn lifecycle_entry(
+    persisted: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+    live: (
+        murmur_dictation_core::status::Status,
+        murmur_dictation_core::ids::RecordingId,
+    ),
+) {
+    if !LIFECYCLE_ENTRIES_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    LIFECYCLE_ENTRIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((persisted, live));
+}
+
+/// Every lifecycle entry's read since the last call, oldest first.
+pub(crate) fn take_lifecycle_entries() -> Vec<EntryRead> {
+    std::mem::take(
+        &mut *LIFECYCLE_ENTRIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// The shadow read its own per-thread state (the keyboard write sequence, the ticker
 /// mailbox). A disarmed shadow makes none (D-S2c-10 R4).
 #[cfg(feature = "dictation-shadow")]

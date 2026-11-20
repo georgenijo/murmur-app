@@ -3,14 +3,17 @@
 //! Both ready entry points hand a recording's side tasks to the production spawners: the
 //! lifecycle bridge's `Ready` (`handle_audio_lifecycle`) and the start command's R104.2
 //! (`publish_recording_ready_if_audio_ready`) each run `spawn_vad_stream` and
-//! `spawn_dictation_partial_ticker(.., register)`. The spawners need a Wry `AppHandle`, which
-//! no test can build (the golden harness runs on the mock runtime and supplies its own
-//! spawn closure), so the handoff has two halves here:
+//! `spawn_dictation_partial_ticker(.., register)`. Since the lifecycle cutover the spawners
+//! (and the window helpers they reach) are generic over the Tauri runtime, so the handoff has
+//! two halves here:
 //!
-//! * **Runtime, at both entry points, through the real ports and decisions.** A supported
-//!   model hands the spawn closure the recording, whose `register` passes the production
-//!   ticker gate; a genuine skip (an unsupported model) hands it too, and the spawner returns
-//!   before `register`: nothing is registered.
+//! * **Runtime, at both entry points, through the real ports, decisions and the real
+//!   spawners** (`World::run_real_spawners`, the `real_spawners` knob, on the mock runtime).
+//!   An eligible recording (a model that supports a live preview, streaming and VAD on, a VAD
+//!   model file at the path the spawner checks) is registered once by the production ticker
+//!   spawner's own `register` call and reaches `vad_stream::start` once; a genuine skip (an
+//!   unsupported model, streaming off) makes the spawners return before `register` and before
+//!   `start`: nothing is registered and no stream starts.
 //! * **Structure, on the production source of the spawners and of both entry callbacks**
 //!   (D-S2c-16). Parsed with `syn`, so a formatting change cannot hide a defect and a comment
 //!   cannot fake one, and counting only what a body **executes**: a call inside a closure or a
@@ -33,8 +36,14 @@
 //!   say which. `CONTROLS` are the mutations that must break their pin. The
 //!   structural check stays as documentation and an extra guard.
 //!
-//! The spawners themselves run only in the lifecycle cutover PR's runtime check (D-S2c-16:
-//! a cutover blocker).
+//! **Re-pin at the lifecycle cutover (D-S2c-16 amendment 1 c).** Making the three spawners
+//! generic over the runtime changed their signatures and nothing else: the ticker spawner (both
+//! `cfg` variants) and `spawn_vad_stream` gained `<R: tauri::Runtime>` and take
+//! `AppHandle<R>`; every statement of every body, the `register()` guard, the ticker task and
+//! the `vad_stream::start` call are token-for-token what they were, and the two ready callbacks
+//! (pinned unchanged) still call both spawners with `register` passed through. The ticker and
+//! the VAD therefore still start for every eligible recording, which the runtime half above now
+//! shows by running the real spawners at both entry points.
 #![cfg(test)]
 
 use super::golden_harness::*;
@@ -47,89 +56,219 @@ use syn::visit::Visit;
 
 const REGISTERED: &str = "SD ticker 1 registered=true";
 
-/// How many times the entry handed the pair to its spawner, and how many tickers the
-/// spawner then registered.
-fn handoff(world: &Arc<World>, spawns: usize) -> (usize, usize) {
-    let registered = world
-        .trace()
-        .iter()
-        .filter(|line| line.starts_with("SD ticker "))
-        .count();
-    (spawns, registered)
+/// What the entry handed the **production** spawners, and what they did with it.
+struct Handoff {
+    /// Times the entry handed the pair to its spawn closure.
+    spawns: usize,
+    /// Tickers the production ticker spawner registered (its `register` call).
+    registered: usize,
+    /// Times the production VAD spawner reached `vad_stream::start`.
+    vad_starts: usize,
 }
 
-fn set_context_model(world: &Arc<World>, model: &str) {
+/// Run both entry points through the real `spawn_vad_stream` and
+/// `spawn_dictation_partial_ticker` (generic over the runtime since the lifecycle cutover),
+/// on the mock runtime. `eligible` installs a recorded context the spawners accept: a model
+/// that supports a live preview, streaming on, VAD on, and a VAD model file at the path the
+/// spawner checks. Otherwise the model does not support a live preview and streaming is off,
+/// so both spawners return before they register or start anything.
+struct Case {
+    eligible: bool,
+    /// Keeps the VAD model path pointed at a directory that holds (or lacks) the file.
+    _vad_dir: tempfile::TempDir,
+    _vad: crate::vad::test_seam::Installed,
+    vad_starts_before: usize,
+    /// The streaming-model store, pointed at the case's directory for the case's length. The
+    /// guard owns the store lock and the override (shared with the VAD store tests), and
+    /// resets the override when the case drops.
+    _store: crate::vad_stream::StoreOverride,
+    models_root: std::path::PathBuf,
+    /// The durable data directory every resolution lands in (see `test_data_dir`).
+    data_sandbox: std::path::PathBuf,
+}
+
+impl Case {
+    fn new(world: &Arc<World>, eligible: bool) -> Self {
+        let dir = tempfile::tempdir().expect("a directory for the VAD model path");
+        if eligible {
+            std::fs::write(dir.path().join(crate::vad::VAD_MODEL_FILENAME), b"vad")
+                .expect("the VAD model file the spawner checks");
+        }
+        let dir_path = dir.path().to_path_buf();
+        let vad = crate::vad::test_seam::install(dir.path());
+        // Nothing the real spawners reach may leave the sandbox. `vad_stream::start` checks the
+        // streaming model store, and `load_verified(.., true)` deletes an installed model that
+        // fails verification, so the store is the case's empty directory, never the real one.
+        // The ticker task reads `settings.json` through the mock app, whose data directory is
+        // under the real user's `Application Support` and whose bad file would be quarantined,
+        // so the data directory is a process-wide temporary one.
+        let store = crate::vad_stream::StoreOverride::set(dir.path());
+        let data_sandbox = crate::commands::settings_store::test_data_dir::install();
+        crate::commands::settings_store::test_data_dir::take_returned();
+        world.knobs().real_spawners = true;
+        {
+            let state = world.state();
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            dictation.model_name = Self::model(eligible).to_string();
+            dictation.streaming_pipeline_enabled = eligible;
+            dictation.vad_sensitivity = 50;
+        }
+        Self {
+            eligible,
+            _vad_dir: dir,
+            _vad: vad,
+            _store: store,
+            vad_starts_before: crate::vad_stream::test_starts::count(1),
+            models_root: dir_path,
+            data_sandbox,
+        }
+    }
+
+    /// Neither the streaming-model store nor the durable data directory is the real one:
+    /// the store is the case's temporary directory (so `start` found no model to verify or
+    /// delete), and every data-directory resolution the spawners and the ticker task made
+    /// is the temporary sandbox, which is under the system temporary directory.
+    fn assert_nothing_left_the_sandbox(&self, world: &Arc<World>) {
+        assert_eq!(
+            crate::vad_stream::models_root().as_deref(),
+            Some(self.models_root.as_path()),
+            "the streaming-model store is the case's directory"
+        );
+        assert!(
+            !crate::vad_stream::model_installed(),
+            "no model is installed in the sandbox, so `start` has nothing to verify or delete"
+        );
+        let temp = std::env::temp_dir();
+        assert!(self.models_root.starts_with(&temp));
+        assert!(self.data_sandbox.starts_with(&temp));
+        // The ticker task resolves the data directory on a detached task, after the case
+        // cancels the recording, so whether it has done so by now is a race: it proves nothing
+        // either way. This call is the proof: the production `data_dir` on the world's own
+        // app handle returns the sandbox, not the mock app's directory under the real user's
+        // `Application Support`.
+        let resolved = crate::commands::settings_store::data_dir(&world.app_handle())
+            .expect("the data directory resolves");
+        assert_eq!(
+            resolved, self.data_sandbox,
+            "the durable data directory is the sandbox, not the real one"
+        );
+        // Every resolution so far (the spawners', the ticker task's, and the one above) is
+        // the path `data_dir` actually returned; none is outside the sandbox.
+        for returned in crate::commands::settings_store::test_data_dir::take_returned() {
+            assert_eq!(
+                returned, self.data_sandbox,
+                "a data-directory resolution left the sandbox"
+            );
+        }
+    }
+
+    fn model(eligible: bool) -> &'static str {
+        if eligible {
+            "base.en"
+        } else {
+            "small.en"
+        }
+    }
+
+    /// The handoff the entry made, after `spawns` times through its spawn closure.
+    fn handoff(&self, world: &Arc<World>, spawns: usize) -> Handoff {
+        // Retire the recording so the ticker task the spawner started (it is detached and
+        // runs after the test) ends at its first check instead of ticking.
+        world.state().app_state.cancel_recording(1);
+        Handoff {
+            spawns,
+            registered: world
+                .trace()
+                .iter()
+                .filter(|line| line.starts_with("SD ticker "))
+                .count(),
+            vad_starts: crate::vad_stream::test_starts::count(1) - self.vad_starts_before,
+        }
+    }
+
+    fn assert_handed_off(&self, world: &Arc<World>, handoff: &Handoff, entry: &str) {
+        self.assert_nothing_left_the_sandbox(world);
+        assert!(
+            handoff.spawns >= 1,
+            "{entry} handed the pair to the spawners"
+        );
+        if self.eligible {
+            assert_eq!(
+                handoff.registered, 1,
+                "{entry}: the production ticker spawner registered the supported model's ticker once"
+            );
+            assert_eq!(
+                handoff.vad_starts, 1,
+                "{entry}: the production VAD spawner started the stream once"
+            );
+        } else {
+            assert_eq!(
+                handoff.registered, 0,
+                "{entry}: an unsupported model spawns no ticker: the spawner returns before `register`"
+            );
+            assert_eq!(
+                handoff.vad_starts, 0,
+                "{entry}: streaming off spawns no VAD stream: the spawner returns before `start`"
+            );
+        }
+    }
+}
+
+/// The bridge's `Ready` for a recording whose context is installed with the case's model.
+fn bridge_ready(world: &Arc<World>, case: &Case) {
     world.install_context(1);
     let state = world.state();
     let mut context = state
         .app_state
         .active_context(1)
         .expect("the fixture installed a context");
-    Arc::make_mut(&mut context).transcription.model_name = model.to_string();
+    {
+        let transcription = &mut Arc::make_mut(&mut context).transcription;
+        transcription.model_name = Case::model(case.eligible).to_string();
+        transcription.streaming_pipeline_enabled = case.eligible;
+        transcription.vad_sensitivity = 50;
+    }
     state.app_state.set_active_context(1, context);
-}
-
-/// The bridge's `Ready` for a recording whose context is installed.
-fn bridge_ready(world: &Arc<World>, model: &str) {
-    set_context_model(world, model);
     world.notify(1, AudioLifecycleEvent::Ready);
 }
 
+fn through_the_bridge(world: &Arc<World>, eligible: bool) {
+    let case = Case::new(world, eligible);
+    bridge_ready(world, &case);
+    let handoff = case.handoff(world, world.bridge_side_task_spawns());
+    assert_eq!(handoff.spawns, 1, "the bridge's Ready handed the pair once");
+    case.assert_handed_off(world, &handoff, "the bridge's Ready");
+    if eligible {
+        assert!(world.trace().contains(&REGISTERED.to_string()));
+    }
+}
+
 /// The start command: its cold start reaches R104.2 once the context is installed, with
-/// the model the setting names.
-fn start_command(world: &Arc<World>, model: &str) {
-    world
-        .state()
-        .app_state
-        .dictation
-        .lock_or_recover()
-        .model_name = model.to_string();
+/// the settings the case names.
+fn through_the_start_command(world: &Arc<World>, eligible: bool) {
+    let case = Case::new(world, eligible);
     recording(world);
+    let handoff = case.handoff(world, world.side_task_spawns());
+    case.assert_handed_off(world, &handoff, "the start command's R104.2");
+    if eligible {
+        assert!(world.trace().contains(&REGISTERED.to_string()));
+    }
 }
 
 fn supported_through_the_bridge(world: &Arc<World>) {
-    bridge_ready(world, "base.en");
-    let (spawns, registered) = handoff(world, world.bridge_side_task_spawns());
-    assert_eq!(
-        spawns, 1,
-        "the bridge's Ready handed the pair to the spawner"
-    );
-    assert_eq!(registered, 1, "the supported model's ticker was registered");
-    assert!(world.trace().contains(&REGISTERED.to_string()));
+    through_the_bridge(world, true);
 }
 
 fn skipped_through_the_bridge(world: &Arc<World>) {
-    bridge_ready(world, "small.en");
-    let (spawns, registered) = handoff(world, world.bridge_side_task_spawns());
-    assert_eq!(
-        spawns, 1,
-        "the bridge's Ready handed the pair to the spawner"
-    );
-    assert_eq!(
-        registered, 0,
-        "an unsupported model spawns nothing: the spawner returns before `register`"
-    );
+    through_the_bridge(world, false);
 }
 
 fn supported_through_the_start_command(world: &Arc<World>) {
-    start_command(world, "base.en");
-    let (spawns, registered) = handoff(world, world.side_task_spawns());
-    assert!(spawns >= 1, "R104.2 handed the pair to the spawner");
-    assert_eq!(
-        registered, 1,
-        "the supported model's ticker was registered once, at R104.2"
-    );
-    assert!(world.trace().contains(&REGISTERED.to_string()));
+    through_the_start_command(world, true);
 }
 
 fn skipped_through_the_start_command(world: &Arc<World>) {
-    start_command(world, "small.en");
-    let (spawns, registered) = handoff(world, world.side_task_spawns());
-    assert!(spawns >= 1, "R104.2 handed the pair to the spawner");
-    assert_eq!(
-        registered, 0,
-        "an unsupported model spawns nothing: the spawner returns before `register`"
-    );
+    through_the_start_command(world, false);
 }
 
 #[test]
@@ -172,9 +311,8 @@ fn a_genuine_skip_spawns_nothing_at_both_ready_entry_points() {
     }
 }
 
-/// With the feature, the production spawner's own check names the skip reason, so a skip
-/// is a genuine one for the right reason: the production `ticker_start_check` on the
-/// recorded context, the same function the spawner and the harness's spawner run.
+/// The skip is the right one: with the real spawners, each skip reason is the spawner's own
+/// check on the recorded context, not the harness's.
 #[cfg(feature = "dictation-shadow")]
 #[test]
 fn the_skip_reason_is_the_production_checks() {
@@ -582,13 +720,13 @@ fn handoff_defects(source: &str) -> Vec<String> {
 const PINS: [(&str, &str); 5] = [
     (
         "the ticker spawner, default build (`spawn_dictation_partial_ticker`, cfg(not(feature)))",
-        "0c896bdc613ea45a",
+        "68177ec303ffd7ab",
     ),
     (
         "the ticker spawner, dictation-shadow build (`spawn_dictation_partial_ticker`, cfg(feature))",
-        "ad397eed99fc8e72",
+        "1cec9d24dd8c21fe",
     ),
-    ("the VAD spawner (`spawn_vad_stream`)", "916425f266e46c7e"),
+    ("the VAD spawner (`spawn_vad_stream`)", "8e8a87889467da65"),
     (
         "the bridge `Ready` ready callback (`handle_audio_lifecycle`)",
         "f9e709a6da9034c2",
@@ -853,8 +991,8 @@ const SPLIT_BRIDGE_CRATE: Control = split_bridge!(
 const DUPLICATE_VAD: Control = (
     "a second `spawn_vad_stream`",
     &[(
-        "fn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {",
-        "#[cfg(test)]\nfn spawn_vad_stream(_other: u8) {}\n\nfn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {",
+        "fn spawn_vad_stream<R: tauri::Runtime>(app: tauri::AppHandle<R>, recording_id: u64) {",
+        "#[cfg(test)]\nfn spawn_vad_stream(_other: u8) {}\n\nfn spawn_vad_stream<R: tauri::Runtime>(app: tauri::AppHandle<R>, recording_id: u64) {",
     )],
     &["the VAD spawner"],
 );
