@@ -16,7 +16,7 @@
 //! continuation spec.
 //!
 //! Row ids are the C3.6 ids. A row that reproduces a preserved defect keeps it
-//! (PD-1, PD-2, PD-4, PD-5, PD-7, PD-18, ...); the row's doc names it.
+//! (PD-1, PD-2, PD-4, PD-5, PD-7, ...); the row's doc names it.
 
 use crate::decision::{ContKind, ContinuationSpec, Decision, ObsKind, RowId, StaleKind, Verdict};
 use crate::effects::{
@@ -417,10 +417,10 @@ pub fn decide_sup_cleanup_finished(core: &DictationCore, rid: RecordingId, _now:
 /// Site 211, `Idle` (R211.1-.6), everything under D.
 ///
 /// * R211.1 `rid != current`, R211.2 current and already `Idle`
-///   (**PD-2**, **PD-18 (b)**): `In:TERM(Superseded/StaleOwner)`, no `KB` reset.
+///   (**PD-2**): `In:TERM(Superseded/StaleOwner)`, no `KB` reset.
 /// * R211.3-.6 current and `Processing` / `Starting` / `Recording` / `Recovering`
 ///   (**PD-7** for `Processing`: the supervisor forces `Idle` over a running
-///   pipeline; **PD-18 (b)** for `Recovering`): `In:TERM(PipelineFailure/
+///   pipeline): `In:TERM(PipelineFailure/
 ///   RuntimeFailure)`, `PC(Failed)`, `ST→Idle`, `CX-`, `KB(false)`, `EM(idle)`.
 pub fn decide_sup_idle(core: &DictationCore, rid: RecordingId, _now: Now) -> Decision {
     if rid != core.current_id {
@@ -634,7 +634,7 @@ pub const SHORT_IDLE_PRE_ROW: RowId = RowId("R216.1");
 /// that holds D for **one statement** (5228-5230) with **no id or status guard**
 /// (**PD-1**), then `PDT:KB(false)`, `EM(idle)`. The `Pre` effects come first.
 ///
-/// R216.1 `Recovering` (**PD-15**: `TI(d)` is destructive; **PD-18 (a)**),
+/// R216.1 `Recovering` (**PD-15**: `TI(d)` is destructive),
 /// R216.2 `Idle`, R216.3 `Starting` / `Recording` (kills a live recording of the
 /// same id), R216.4 `Processing` (**PD-7**), R216.5 `rid != current`: `Idle`
 /// written over a newer recording (no production schedule, D3).

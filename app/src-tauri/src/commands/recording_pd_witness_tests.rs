@@ -249,11 +249,16 @@ fn pd05_supervisor_events_for_the_current_id_claim_superseded() {
 }
 
 // ----------------------------------------------------------- PD-6 (b)
-// C7.1 PD-6 (b), rows R204a.3 / R102.3: a pipeline guard whose id is still
-// current overwrites status `Recovering` (published by R101.12 while cleanup
-// was pending) with Idle before `CleanupFinished`. The golden scenarios 5 and
-// 9 witness (a), the re-write over Idle. The fake pipeline holds the real
-// `IdleGuard`, so the guard itself does the overwrite.
+// C7.1 PD-6 (b), rows R204a.2 / R102.3: a pipeline guard whose id is still
+// current writes Idle again over an Idle the user's cancel already wrote,
+// before the sealed stop's `CleanupFinished`. The golden scenarios 5 and 9
+// witness (a), the re-write over Idle. The fake pipeline holds the real
+// `IdleGuard`, so the guard itself does the write. Its `Recovering` variant
+// (R204a.3: the guard overwriting a `Recovering` that R101.12 published while
+// cleanup was pending) is gone with the PD-18 / PD-19 fix: R101.12 writes no
+// status, and nothing else makes `Recovering` current while a pipeline runs
+// (R209.2 leaves a `Processing` status alone), so the row is kept only by its
+// unit test (`r204a_1_to_4_the_guard_writes_idle_on_an_id_match_whatever_the_status`).
 //
 // The schedule uses only events production can send. A supervisor `Idle` for
 // the sealed attempt is not one (`finish_attempt` sends `Idle` only when no
@@ -261,9 +266,10 @@ fn pd05_supervisor_events_for_the_current_id_claim_superseded() {
 // the status reaches Idle by a user cancel of Processing instead (golden 2e):
 // the cancel resets the UI and leaves the owner `Stopping`, which is the
 // barrier. The sealed stop's `clear_owner` has not run when the start looks at
-// the owner (`is_dictation_cleanup_pending`), so the start takes R101.12.
+// the owner (`is_dictation_cleanup_pending`), so the start is refused by R101.12
+// and leaves the status `Idle`.
 
-fn pd06b_pipeline_guard_overwrites_recovering(world: &Arc<World>) {
+fn pd06b_pipeline_guard_rewrites_idle_while_the_owner_is_stopping(world: &Arc<World>) {
     let mut stop = processing_with_the_pipeline_running(world);
     cancelled(world, "cancel");
     assert_eq!(status(world), DictationStatus::Idle);
@@ -278,16 +284,20 @@ fn pd06b_pipeline_guard_overwrites_recovering(world: &Arc<World>) {
         0,
         "the sealed stop's owner clear has not run"
     );
-    world.note("the sealed stop's owner is still Stopping: a start takes R101.12");
+    world.note("the sealed stop's owner is still Stopping: a start is refused by R101.12");
     assert_eq!(start_reply(world), audio_recovering("recovering"));
-    assert_eq!(status(world), DictationStatus::Recovering);
+    assert_eq!(
+        status(world),
+        DictationStatus::Idle,
+        "the refusal writes no status (PD-18 / PD-19 fix)"
+    );
     assert_eq!(
         count(
             &world.trace(),
             "supervisor.is_dictation_cleanup_pending 1 -> true"
         ),
         1,
-        "the start took R101.12 because cleanup was pending"
+        "the start was refused because cleanup was pending"
     );
     world.open_gate("pipeline");
     let reply = complete(&mut stop);
@@ -296,24 +306,25 @@ fn pd06b_pipeline_guard_overwrites_recovering(world: &Arc<World>) {
     assert_eq!(
         count(&trace, "supervisor.notify 1 CleanupFinished"),
         0,
-        "the guard's overwrite precedes the sealed stop's CleanupFinished"
+        "the guard's write precedes the sealed stop's CleanupFinished"
     );
     let returned = position(&trace, "pipeline 1 returns");
-    let overwritten = returned
-        + trace[returned..]
-            .iter()
-            .position(|line| line == "~ status Recovering -> Idle")
-            .expect("PD-6: the pipeline guard wrote Idle over Recovering");
     let guard = position(&trace, "pipeline 1 idle_guard wrote_idle=true");
-    assert!(overwritten < guard, "the overwrite is the guard's finish");
+    assert!(returned < guard, "the guard's finish follows the pipeline");
+    assert!(
+        !trace[returned..]
+            .iter()
+            .any(|line| line == "~ status Recovering -> Idle"),
+        "there is no Recovering for the guard to overwrite: {trace:#?}"
+    );
     assert_eq!(status(world), DictationStatus::Idle);
 }
 
 #[test]
-fn pd06_pipeline_guard_overwrites_recovering() {
+fn pd06_pipeline_guard_rewrites_idle_while_the_owner_is_stopping() {
     repeat(&sub(
-        "PD-6 (b) R204a.3",
-        pd06b_pipeline_guard_overwrites_recovering,
+        "PD-6 (b) R204a.2",
+        pd06b_pipeline_guard_rewrites_idle_while_the_owner_is_stopping,
     ));
 }
 
@@ -665,24 +676,38 @@ fn pd14_ticker_task_panic_never_runs_the_hide() {
     }
 }
 
-// --------------------------------------------------------------- PD-18
-// C7.1 PD-18 (b) and (c): a start that takes R101.12 in the gap between the
-// attempt's last notification and `clear_owner` (audio_lifecycle.rs:2460)
-// leaves status `Recovering` with nothing to restore Idle. Golden 4d witnesses
-// (a). The plan allows (b) and (c) to be property witnesses at 2b; the fake
-// supervisor can hold the gap open, so they are also witnessed here.
+// ------------------------------------------------- the retiring capture (PD-18, fixed)
+// PD-18 (b) and (c), and (a) in golden 4d: a start that takes R101.12 in the gap between the
+// attempt's last notification and `clear_owner` (audio_lifecycle.rs:2460) used to write
+// `Idle -> Recovering` and leave nothing to restore Idle. R101.12 is a pure refusal now: the
+// start is answered `audio_recovering`, the status stays `Idle` and nothing is published. The
+// fake supervisor can hold the gap open, so (b) and (c) are witnessed here as well as by the
+// property harness.
 
-/// After the owner is cleared: nothing restores Idle, and no other actor can.
-fn pd18_nothing_restores_idle(world: &Arc<World>, held_at: &str) {
-    assert_eq!(status(world), DictationStatus::Recovering);
+/// After the owner is cleared the app is `Idle` and usable: the stop and the cancel find
+/// nothing to act on, and a start is accepted with the next id.
+fn pd18_the_app_is_idle_and_usable(world: &Arc<World>, held_at: &str) {
+    assert_eq!(status(world), DictationStatus::Idle);
     assert_eq!(
         world.state().app_state.recording_id.load(Ordering::SeqCst),
         1
     );
-    assert_eq!(stop_reply(world, None), audio_recovering("recovering"));
+    assert_eq!(
+        stop_reply(world, None),
+        Ok(serde_json::json!({ "type": "not_recording", "state": "idle" }))
+    );
     cancelled(world, "cancel");
-    assert_eq!(start_reply(world), audio_recovering("recovering"));
-    assert_eq!(status(world), DictationStatus::Recovering);
+    assert_eq!(status(world), DictationStatus::Idle);
+    assert_eq!(
+        start_reply(world),
+        Ok(serde_json::json!({
+            "recordingId": 2,
+            "state": "starting",
+            "type": "recording_starting"
+        })),
+        "the start after the owner clears is accepted"
+    );
+    assert_eq!(status(world), DictationStatus::Recording);
     let trace = world.trace();
     let held = position(&trace, held_at);
     assert!(
@@ -690,6 +715,20 @@ fn pd18_nothing_restores_idle(world: &Arc<World>, held_at: &str) {
             .iter()
             .any(|line| line.starts_with("supervisor.notify 1 ")),
         "no notification follows the gap: {trace:#?}"
+    );
+}
+
+/// The refused start wrote nothing: no `Idle -> Recovering`, no `recovering` emit after the
+/// cleanup-pending read.
+fn pd18_the_refusal_wrote_nothing(world: &Arc<World>) {
+    let trace = world.trace();
+    let pending = position(&trace, "supervisor.is_dictation_cleanup_pending 1 -> true");
+    assert!(
+        !trace[pending..].iter().any(|line| {
+            line.starts_with("~ status Idle -> Recovering")
+                || line == "emit recording-status-changed \"recovering\""
+        }),
+        "a refused start writes and publishes nothing: {trace:#?}"
     );
 }
 
@@ -707,9 +746,10 @@ fn pd18b_start_in_the_idle_arm_tail(world: &Arc<World>) {
     assert_eq!(status(world), DictationStatus::Idle);
     world.hold_owner_clear(1);
     assert_eq!(start_reply(world), audio_recovering("recovering"));
-    assert_eq!(status(world), DictationStatus::Recovering);
+    assert_eq!(status(world), DictationStatus::Idle);
+    pd18_the_refusal_wrote_nothing(world);
     world.release_owner_clear();
-    pd18_nothing_restores_idle(world, "supervisor.hold_before_owner_clear 1");
+    pd18_the_app_is_idle_and_usable(world, "supervisor.hold_before_owner_clear 1");
 }
 
 /// (c) Unsealed delivered stop: the stop reply is delivered without a sealed
@@ -728,37 +768,39 @@ fn pd18c_start_after_an_unsealed_delivered_stop(world: &Arc<World>) {
     );
     assert_eq!(status(world), DictationStatus::Idle);
     assert_eq!(start_reply(world), audio_recovering("recovering"));
-    assert_eq!(status(world), DictationStatus::Recovering);
+    assert_eq!(status(world), DictationStatus::Idle);
+    pd18_the_refusal_wrote_nothing(world);
     world.release_owner_clear();
-    pd18_nothing_restores_idle(world, "supervisor.hold_before_owner_clear 1");
+    pd18_the_app_is_idle_and_usable(world, "supervisor.hold_before_owner_clear 1");
 }
 
-/// Control: a sealed stop is not an instance. A start taken while the sealed
-/// stop's owner is still `Stopping` also reads cleanup pending, but the
-/// supervisor's `CleanupFinished` after `clear_owner` restores Idle.
-fn pd18c_control_sealed_stop_restores_idle(world: &Arc<World>) {
+/// Control: a sealed stop. A start taken while the sealed stop's owner is still `Stopping`
+/// also reads cleanup pending and is refused with the status left `Idle`; the supervisor's
+/// `CleanupFinished` after `clear_owner` then finds `Idle` (R210.2) and the app is usable.
+fn pd18c_control_sealed_stop_leaves_idle(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Ok(0);
     assert!(stop_reply(world, None).is_ok());
     assert_eq!(start_reply(world), audio_recovering("recovering"));
-    assert_eq!(status(world), DictationStatus::Recovering);
+    assert_eq!(status(world), DictationStatus::Idle);
+    pd18_the_refusal_wrote_nothing(world);
     world.note("the supervisor finishes the sealed stop: clear_owner, then CleanupFinished");
     world.finish_sealed_stop(1);
     assert_eq!(status(world), DictationStatus::Idle);
 }
 
 #[test]
-fn pd18bc_start_in_the_teardown_tail_leaves_recovering() {
+fn a_start_in_the_teardown_tail_is_refused_and_the_app_stays_idle() {
     repeat(&sub(
-        "PD-18 control: sealed stop",
-        pd18c_control_sealed_stop_restores_idle,
+        "retiring capture control: sealed stop",
+        pd18c_control_sealed_stop_leaves_idle,
     ));
     repeat(&sub(
-        "PD-18 (b) Idle-arm tail",
+        "retiring capture (b) Idle-arm tail",
         pd18b_start_in_the_idle_arm_tail,
     ));
     repeat(&sub(
-        "PD-18 (c) unsealed delivered stop",
+        "retiring capture (c) unsealed delivered stop",
         pd18c_start_after_an_unsealed_delivered_stop,
     ));
 }
@@ -810,12 +852,13 @@ fn pd_witness_map_is_complete_and_names_real_tests() {
             "PD-{number} missing"
         );
     }
-    for instance in ["a", "b", "c"] {
-        assert!(
-            seen.contains(&format!("PD-18 ({instance})")),
-            "PD-18 ({instance}) missing"
-        );
-    }
+    // PD-18 and PD-19 are fixed: their rows are gone from the map (C7.0).
+    assert!(
+        !seen
+            .iter()
+            .any(|id| id.starts_with("PD-18") || id.starts_with("PD-19")),
+        "PD-18 / PD-19 were fixed and have no row in the map"
+    );
 }
 
 /// The names of the functions of `source` that Cargo runs: a `#[test]` function without
@@ -874,7 +917,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-23 each (PD-21 and PD-25 are fixed) name at least one: renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-20, PD-22 and PD-23 each name at least one (PD-18, PD-19, PD-21, PD-24 and PD-25 are fixed): renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -893,8 +936,8 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    // PD-21 is fixed (see the map's "Fixed" section): no entry in this section.
-    for pd in (19..=23).filter(|pd| *pd != 21) {
+    // PD-18, PD-19, PD-21 and PD-24 are fixed (see the map's "Fixed" section): no entry in this section.
+    for pd in [20, 22, 23] {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1151,7 +1194,7 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
 /// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`])
 /// (`e8_pds`): each is driven by a
-/// named shell fixture, the PD-19 to PD-23 fixtures are replayed through the shadow too
+/// named shell fixture, the PD-20, PD-22 and PD-23 fixtures are replayed through the shadow too
 /// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
 /// not run.
@@ -1251,7 +1294,7 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     let _e7_dump = std::env::var_os("MURMUR_E7_PER_ROW_OUT").map(E7Dump);
     // PD-4 is not here: its signature needs the `Superseded` claim R207.3 no longer makes
     // (PD-23 fixed), so it is `RowRetired` and the shadow credits it nothing.
-    let missing: Vec<u8> = [1_u8, 2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
+    let missing: Vec<u8> = [1_u8, 2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16]
         .into_iter()
         .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)
         .collect();
@@ -1334,7 +1377,7 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 /// same file; PD-23 (#1157): the `pd23_*` tests of the same file; PD-25 (#1157):
 /// `recording_pd25_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[21, 23, 24, 25];
+const FIXED_PDS: &[u8] = &[18, 19, 21, 23, 24, 25];
 
 /// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
 /// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
@@ -1382,7 +1425,7 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
             vec![
                 fx!(g::golden_s05_timeout_teardown),
                 fx!(g::golden_s09_supervisor_idle_during_processing),
-                fx!(pd06_pipeline_guard_overwrites_recovering),
+                fx!(pd06_pipeline_guard_rewrites_idle_while_the_owner_is_stopping),
             ],
         ),
         (
@@ -1445,23 +1488,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         ),
         (16, Row, vec![fx!(g::golden_s02_cancel_in_each_phase)]),
         (17, Latent, vec![]),
-        (
-            18,
-            Row,
-            vec![
-                fx!(g::golden_s04_interruption_under_8000_samples),
-                fx!(pd18bc_start_in_the_teardown_tail_leaves_recovering),
-            ],
-        ),
-        (
-            19,
-            CrossLedger,
-            vec![
-                fx!(f::pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering),
-                fx!(f::pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering),
-                fx!(f::pd19_a_refused_auto_stop_leaves_the_capture_and_recovering),
-            ],
-        ),
         (
             20,
             CrossLedger,
@@ -1588,6 +1614,14 @@ fn e8_rejects_a_fixture_the_compiled_harness_skips() {
     );
 }
 
+/// The PDs that are fixed (no E8 row) and still have an entry in the shadow's allowlist
+/// (`pd::PD_DEFS`). The entry is dead: the fix removed the effects that defined it, so it can
+/// never be credited, and E8 asserts that. The shadow's retirement deletes it with the rest of
+/// `pd.rs` (an edit of that file is a shadow change, which `check_shadow_diff.py` holds to
+/// insertion only, so the live fix PR cannot carry it).
+#[cfg(feature = "dictation-shadow")]
+const RETIRED_PDS_WITH_DEAD_SHADOW_ROWS: [u8; 1] = [18];
+
 /// E8's accounting (D-S2c-15 C4), over what [`run_e8_fixtures`] replayed:
 /// * PD-1 to PD-25, less [`FIXED_PDS`], each have one row in [`e8_pds`], and a latent PD names no fixture;
 /// * the PDs of the shadow's allowlist are exactly the `Row` ones (and the `RowRetired` ones, which
@@ -1605,12 +1639,24 @@ fn assert_every_preserved_signature_is_accounted(totals: &crate::dictation_shado
         (1..=25)
             .filter(|pd| !FIXED_PDS.contains(pd))
             .collect::<Vec<u8>>(),
-        "one E8 row per unfixed PD"
+        "one E8 row per unfixed PD (PD-18, PD-19 and PD-25 are fixed and have none)"
     );
+    // A retired PD (fixed, so it has no E8 row) may still have a dead entry in the shadow's
+    // allowlist, which only the shadow's own retirement deletes: editing `pd.rs` makes a PR a
+    // shadow change, and `check_shadow_diff.py` holds that to insertion only, which no live fix
+    // satisfies. The shadow must credit such an entry zero times.
     let allowlisted: std::collections::BTreeSet<u8> = crate::dictation_shadow::pd::PD_DEFS
         .iter()
         .map(|def| def.pd)
+        .filter(|pd| !RETIRED_PDS_WITH_DEAD_SHADOW_ROWS.contains(pd))
         .collect();
+    for pd in RETIRED_PDS_WITH_DEAD_SHADOW_ROWS {
+        assert_eq!(
+            totals.pd_witness.get(&pd).copied().unwrap_or(0),
+            0,
+            "PD-{pd} is fixed: no fixture, golden or replayed sequence may make the shadow credit it"
+        );
+    }
     let rows: std::collections::BTreeSet<u8> = table
         .iter()
         .filter(|(_, kind, _)| *kind == PdKind::Row)

@@ -928,8 +928,9 @@ fn expected_start_refused() -> Vec<String> {
 }
 
 /// An Idle status with the previous owner still being cleaned up: the start
-/// reads the pending cleanup of the current id (5599), writes `Recovering` with
-/// that id and answers `audio_recovering` before any allocation or AX sample.
+/// reads the pending cleanup of the current id (5599) and answers `audio_recovering`
+/// before any allocation or AX sample. It writes and publishes nothing (R101.12 is a
+/// pure refusal since the PD-18 / PD-19 fix): the status stays `Idle`.
 fn scenario_start_cleanup_pending() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 7);
     host.script().cleanup_pending = true;
@@ -938,19 +939,17 @@ fn scenario_start_cleanup_pending() -> Recorded {
         reply,
         serde_json::json!({ "type": "audio_recovering", "state": "recovering" })
     );
-    assert_eq!(status(&state), DictationStatus::Recovering);
+    assert_eq!(status(&state), DictationStatus::Idle);
     assert_eq!(state.app_state.recording_id.load(Ordering::SeqCst), 7);
     host.recorded()
 }
 
 fn expected_start_cleanup_pending() -> Vec<String> {
-    let mut trace = strings(&[
+    strings(&[
         "mic_transition",
         "keyboard.is_app_disabled",
         "supervisor.is_dictation_cleanup_pending 7",
-    ]);
-    trace.push(status_event("recovering"));
-    trace
+    ])
 }
 
 fn scenario_start_app_disabled() -> Recorded {

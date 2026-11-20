@@ -1083,7 +1083,7 @@ mod tests {
             Admission::Admit(_)
         ));
 
-        // The retiring capture: `audio_recovering` and the start publishes Recovering.
+        // The retiring capture: `audio_recovering`, and nothing is published.
         assert!(matches!(
             dictation_start_cleanup_admission(false),
             Admission::Admit(_)
@@ -1091,7 +1091,6 @@ mod tests {
         let Admission::RefuseWith(code) = dictation_start_cleanup_admission(true) else {
             panic!("a retiring capture refuses");
         };
-        assert!(code.publishes_recovering());
         assert_eq!(
             code.reply()
                 .map(|(kind, state)| (kind.as_str(), state.as_str())),

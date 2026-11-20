@@ -85,12 +85,6 @@ pub enum Note {
         /// The task and row that took it earlier, if one did.
         earlier: Option<(&'static str,)>,
     },
-    /// The stop the supervisor's `Interrupted` arm spawned (`RS`, R215.2) ended its
-    /// decision without taking the preserved capture of `rid` (refused at `Idle` or
-    /// `Starting`, or nothing to take): the interrupted capture is left in the store.
-    AutoStopTookNothing {
-        rid: Rid,
-    },
     /// A start future was dropped at an await point.
     StartDropped {
         rid: Rid,

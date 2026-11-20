@@ -2,7 +2,7 @@
   "family": "lifecycle",
   "sites": [207, 208, 209, 210, 211, 212, 213, 214, 215, 216],
   "basis": "E3 (appendix C8.5): every row id of the family is hit >= 5 times in the union of the native checklist runs and the golden replay, or is listed in not_natively_reachable with the golden or unit test that drives it. Keys are `<site>.<row ordinal>` as in the summary's per_row (a suffixed row keeps its number and adds 100 per suffix step: R203.3a is 203.103). The list is reviewed with each cutover PR.",
-  "pds": [1, 2, 5, 7, 15, 18],
+  "pds": [1, 2, 5, 7, 15],
   "runbook_driven": [{"row": "209.5", "step": "Default input switch"}],
   "rows": [
     {"row": "212.1", "id": "R212.1"},
@@ -54,7 +54,7 @@
     {"row": "209.6", "id": "R209.6", "kind": "golden", "file": "app/src-tauri/src/commands/recording_golden_tests.rs", "name": "golden_s03_interruption_of_8000_samples_or_more", "why": "needs a supervisor event the checklist does not produce (sleep, deadline or still-connecting)"},
     {"row": "209.7", "id": "R209.7", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r209_7_hard_deadline_clears_the_context_but_claims_no_terminal_and_no_perf", "why": "needs a supervisor event the checklist does not produce (sleep, deadline or still-connecting)"},
     {"row": "210.1", "id": "R210.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r210_1_cleanup_for_a_non_current_recording_does_nothing", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
-    {"row": "210.3", "id": "R210.3", "kind": "golden", "file": "app/src-tauri/src/commands/recording_pd_witness_tests.rs", "name": "pd18bc_start_in_the_teardown_tail_leaves_recovering", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
+    {"row": "210.3", "id": "R210.3", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r210_3_cleanup_while_recovering_restores_idle", "why": "a state or ordering the checklist cannot set up on demand (a race or an uncommon state)"},
     {"row": "213.1", "id": "R213.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r213_1_init_failure_for_a_non_current_recording_records_the_failure_then_supersedes", "why": "needs a supervisor fault (initialization failure, stall or interruption) the checklist cannot cause"},
     {"row": "213.2", "id": "R213.2", "kind": "golden", "file": "app/src-tauri/src/commands/recording_golden_tests.rs", "name": "golden_s12_start_failure_vs_initialization_failed", "why": "needs a supervisor fault (initialization failure, stall or interruption) the checklist cannot cause"},
     {"row": "214.1", "id": "R214.1", "kind": "unit", "file": "app/src-tauri/crates/dictation-core/src/lifecycle/tests.rs", "name": "r214_1_recovery_stall_for_the_current_recording_is_published", "why": "needs a supervisor fault (initialization failure, stall or interruption) the checklist cannot cause"},

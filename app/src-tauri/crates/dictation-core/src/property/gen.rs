@@ -376,7 +376,7 @@ pub fn scenario(rng: &mut Rng, extra: &mut Rng) -> Scenario {
             ));
         }
     }
-    // A late start a stop or a cancel can run into (the PD-18 windows).
+    // A late start a stop or a cancel can run into (the windows of a retiring capture's teardown).
     if rng.chance(1, 2) {
         let base = cmds.iter().map(|(at, _)| *at).max().unwrap_or(0);
         cmds.push((base.saturating_sub(rng.below(30) as u32), start(rng, extra)));

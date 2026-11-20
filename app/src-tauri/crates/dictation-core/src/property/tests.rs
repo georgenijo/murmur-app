@@ -1,5 +1,5 @@
 //! The property suite (C7.5): 10,000 fixed seeds, the per-PD converse witness, the
-//! PD-18 instance seeds, the PD-19..PD-22 witness seeds, determinism, and unit
+//! teardown-gap seeds of the fixed PD-18 / PD-19, the PD-20..PD-24 witness seeds, determinism, and unit
 //! tests of the checker itself (a checker that cannot fail proves nothing).
 
 use super::checks::{Checker, SIGNATURES};
@@ -60,13 +60,7 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// converse check, and a witness that drifted away fails it. Each is the first seed of a
 /// 3,000,000-seed sweep that takes the witness.
 ///
-/// * 14,033: PD-18 (c), the unsealed stop.
-/// * 81,584: PD-19 through a dropped start (no context was ever installed).
-/// * 492,192: PD-19 through `TerminationUnconfirmed`.
-/// * 2,071,065: PD-19's refused auto-stop (the capture stays in the store and no ordinary
-///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
-///   unscoped stop IPC, one in four generated stops, takes the capture when it lands, and
-///   a window sends no stop that it has not seen `Recording` for.
+/// * TEARDOWN_GAP_SEEDS (below): the teardown-gap starts the fix of PD-18 / PD-19 refuses.
 /// * 289,110: the fixed PD-21 with a short stop (R206.2, R203.4): a failed capture cancel that
 ///   claims no terminal, then the stop's own claim wins (`FAILED_CANCEL_SEEDS`).
 /// * 31,086: PD-22 against a stop's performance completion (R211.2, R203.2).
@@ -83,21 +77,23 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// state before #1160: 10,724 -> 11,612 -> 14,033, 19,737 -> 21,272 -> 3,651 (now in range),
 /// 39,219 -> 10,882 -> 492,192, 52,153 -> 81,353 -> 31,086, 101,117 -> 161,052 -> 154,052,
 /// 259,286 -> 2,569,791 -> 2,071,065, 262,762 -> 179,248 -> 81,584,
-/// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499.
-const FIXED_SEEDS: [u64; 9] = [
-    14_033, 81_584, 492_192, 2_071_065, 289_110, 31_086, 154_052, 24_199, 73_499,
+/// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499; 24,199 is the PD-24 (R209.5) witness,
+/// formerly seed 5,206 in range.
+const FIXED_SEEDS: [u64; 5] = [289_110, 31_086, 154_052, 24_199, 73_499];
+
+/// The teardown-gap starts, one seed per window (the fixed PD-18 and PD-19): a start
+/// refused by R101.12 while the retiring capture's cleanup is pending, no restorer of
+/// `Idle` is coming and no pipeline runs, so the old row's `Idle→Recovering` write would
+/// have stranded the app. Indexed as `RunHits::refused_in_teardown_gap`.
+const TEARDOWN_GAP_SEEDS: [(&str, u64); 4] = [
+    ("(a) a short `Interrupted` end", 654),
+    ("(b) the Idle-arm tail", 121),
+    ("(c) an unsealed delivered stop", 658),
+    ("an `Interrupted` end of 8,000 samples or more", 3_086),
 ];
 
-/// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
-/// range that ends stuck in `Recovering` through that instance, with the generation's
-/// own evidence (R101.12 in the gap after its last restorer).
-const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 654),
-    ("(b) Idle-arm tail", 121),
-    ("(c) unsealed stop", 14_033),
-];
-
-/// A witness of one of PD-19..PD-22 (PD-21, PD-23 and PD-24 are fixed and have none): the PD, the seed that takes it, the matched
+/// A witness of one of PD-20 and PD-22 (PD-18, PD-19, PD-21, PD-23 and PD-24 are fixed and have
+/// none): the PD, the seed that takes it, the matched
 /// split `(terminal row, performance row)` where the PD is an SP4(b) split, and the
 /// shell test that reproduces the sequence (`recording_harness_findings_tests.rs`,
 /// D-S2b-5, D-S2b-7 and D-S2b-9 (b)). A `None` shell test is PROVISIONAL "reachable
@@ -112,28 +108,7 @@ struct Witness {
     sig: Option<usize>,
 }
 
-const FINDING_SEEDS: [Witness; 6] = [
-    Witness {
-        pd: 19,
-        seed: 492_192,
-        split: None,
-        shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
-        sig: None,
-    },
-    Witness {
-        pd: 19,
-        seed: 81_584,
-        split: None,
-        shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
-        sig: None,
-    },
-    Witness {
-        pd: 19,
-        seed: 2_071_065,
-        split: None,
-        shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
-        sig: None,
-    },
+const FINDING_SEEDS: [Witness; 3] = [
     Witness {
         pd: 20,
         seed: 140,
@@ -191,9 +166,8 @@ struct Summary {
     elapsed: Duration,
     failing: Vec<(u64, Vec<String>)>,
     pd: Vec<(u32, Option<u64>)>,
-    pd18: Vec<(u32, Option<u64>)>,
-    /// PD-19 runs per entry (`RunHits::pd19`): occurrences and first seed.
-    pd19: Vec<(u32, Option<u64>)>,
+    /// Starts refused in a teardown gap (`RunHits::refused_in_teardown_gap`): occurrences and first seed.
+    teardown_gap: Vec<(u32, Option<u64>)>,
     sig: Vec<(u32, Option<u64>)>,
     /// Matched SP4(b) splits `(terminal row, performance row)`: occurrences and first seed.
     pairs: BTreeMap<(&'static str, &'static str), (u32, u64)>,
@@ -220,8 +194,7 @@ fn summarize(list: Vec<u64>) -> Summary {
     let mut summary = Summary {
         seeds: list.len() as u64,
         pd: vec![(0, None); 25],
-        pd18: vec![(0, None); 3],
-        pd19: vec![(0, None); 3],
+        teardown_gap: vec![(0, None); 4],
         sig: vec![(0, None); SIGNATURES.len()],
         ..Summary::default()
     };
@@ -235,16 +208,10 @@ fn summarize(list: Vec<u64>) -> Summary {
                 summary.pd[pd].1.get_or_insert(seed);
             }
         }
-        for (instance, count) in report.hits.pd18.iter().enumerate() {
+        for (window, count) in report.hits.refused_in_teardown_gap.iter().enumerate() {
             if *count > 0 {
-                summary.pd18[instance].0 += count;
-                summary.pd18[instance].1.get_or_insert(seed);
-            }
-        }
-        for (entry, count) in report.hits.pd19.iter().enumerate() {
-            if *count > 0 {
-                summary.pd19[entry].0 += count;
-                summary.pd19[entry].1.get_or_insert(seed);
+                summary.teardown_gap[window].0 += count;
+                summary.teardown_gap[window].1.get_or_insert(seed);
             }
         }
         for (pair, count) in &report.hits.pairs {
@@ -297,10 +264,9 @@ fn summarize(list: Vec<u64>) -> Summary {
             summary.pd[pd].0, summary.pd[pd].1
         );
     }
-    eprintln!("property: PD-18 stuck runs (a, b, c): {:?}", summary.pd18);
     eprintln!(
-        "property: PD-19 entries (TerminationUnconfirmed, dropped start, refused auto-stop): {:?}",
-        summary.pd19
+        "property: starts refused in a teardown gap (short interrupt, Idle-arm tail, unsealed stop, long interrupt): {:?}",
+        summary.teardown_gap
     );
     for row in START_GATE_ROWS.iter().chain(&IMPORT_GATE_ROWS) {
         eprintln!(
@@ -397,8 +363,8 @@ fn ten_thousand_seeds_fit_the_ci_budget() {
 /// The converse (C7.0, C7.5): every PD signature occurs at least once in the
 /// seeds, so an allowlist entry cannot rot, and so does every row of the SP4(b)
 /// signature table and every split a pinned witness names. PD-17 is latent (no
-/// production schedule) and has no witness; PD-18 has one per instance (a later test); PD-21 is
-/// fixed and has none (`a_failed_capture_cancel_claims_no_terminal`).
+/// production schedule) and has no witness; PD-18, PD-19, PD-21 and PD-24 are fixed and have none
+/// (the teardown-gap starts are `TEARDOWN_GAP_SEEDS`; `a_failed_capture_cancel_claims_no_terminal`).
 #[test]
 fn every_preserved_defect_is_witnessed() {
     let summary = summary();
@@ -406,8 +372,8 @@ fn every_preserved_defect_is_witnessed() {
         return; // a short local run does not owe every witness
     }
     let missing: Vec<usize> = (1..=24)
-        // PD-17 is latent; PD-21, PD-23 and PD-24 are fixed and their signatures are gone.
-        .filter(|pd| !matches!(*pd, 17 | 21 | 23 | 24) && summary.pd[*pd].0 == 0)
+        // PD-17 is latent; PD-18, PD-19, PD-21, PD-23 and PD-24 are fixed and their signatures are gone.
+        .filter(|pd| !matches!(*pd, 17..=19 | 21 | 23 | 24) && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
@@ -432,6 +398,21 @@ fn every_preserved_defect_is_witnessed() {
     assert_eq!(
         summary.pd[17].0, 0,
         "PD-17 is latent: no schedule reaches it"
+    );
+    // PD-18 and PD-19 are fixed: nothing strands the app in `Recovering`, so neither is ever hit.
+    assert_eq!(
+        (summary.pd[18].0, summary.pd[19].0),
+        (0, 0),
+        "PD-18 / PD-19 were fixed: no run may hit them"
+    );
+    // The fix is exercised: every teardown-gap window the old defect needed is reached by the
+    // gated seeds, and `seeds_hold_the_properties` shows each of those runs ends in `Idle`.
+    let silent_windows: Vec<usize> = (0..4)
+        .filter(|window| summary.teardown_gap[*window].0 == 0)
+        .collect();
+    assert!(
+        silent_windows.is_empty(),
+        "teardown-gap windows no gated seed reaches: {silent_windows:?}"
     );
     assert_eq!(
         summary.pd[21].0, 0,
@@ -466,26 +447,29 @@ fn every_preserved_defect_is_witnessed() {
     );
 }
 
-/// PD-18's three instances each end a run stuck in `Recovering` through the
-/// generation's own evidence. One pinned seed per instance.
+/// The fixed PD-18 / PD-19: each teardown-gap window has a pinned seed whose run reaches it
+/// and ends with every property holding (the app is back in `Idle`: a run that ends in
+/// `Recovering` fails liveness).
 #[test]
-fn pd18_has_one_seed_per_instance() {
-    for (index, (name, seed)) in PD18_SEEDS.iter().enumerate() {
+fn teardown_gap_starts_are_refused_and_the_app_ends_idle() {
+    for (index, (name, seed)) in TEARDOWN_GAP_SEEDS.iter().enumerate() {
         let report = run_seed(gated(*seed));
         assert!(
-            report.hits.pd18[index] > 0,
-            "seed {seed} no longer ends stuck through PD-18 {name}: {:?}",
+            report.hits.refused_in_teardown_gap[index] > 0,
+            "seed {seed} no longer refuses a start in the teardown gap {name}: {:?}",
             report.hits
         );
         assert!(report.violations.is_empty(), "{:?}", report.violations);
+        assert_eq!(report.hits.pd[18], 0);
+        assert_eq!(report.hits.pd[19], 0);
     }
 }
 
-/// PD-19..PD-22 each have pinned seeds (PD-21, PD-23 and PD-24 are fixed), and the shell test that reproduces the
-/// sequence is named beside each (D-S2b-5, D-S2b-7). There is no "known findings"
-/// set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
+/// PD-20 and PD-22 each have pinned seeds (PD-18, PD-19, PD-21, PD-23 and PD-24 are fixed), and the
+/// shell test that reproduces the sequence is named beside each (D-S2b-5, D-S2b-7). There is no
+/// "known findings" set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
 #[test]
-fn pd19_to_pd22_have_pinned_seeds() {
+fn pd20_and_pd22_have_pinned_seeds() {
     for witness in &FINDING_SEEDS {
         let report = run_seed(gated(witness.seed));
         assert!(
@@ -1758,59 +1742,23 @@ fn a_dropped_start_exempts_only_its_own_recording_in_starting_or_recording() {
     );
 }
 
-/// A run that ends in `Recovering` needs the stranded generation's own evidence
-/// (C7.3, PD-18 and PD-19); evidence of another generation, or part of PD-19's, does not
-/// count.
+/// A run that ends in `Recovering` is stuck, whatever the generation's history: the
+/// stranding PD-18 and PD-19 described is fixed, so no evidence exempts it (C7.3).
 #[test]
-fn a_stuck_recovering_run_needs_the_generations_own_pd18_or_pd19_evidence() {
-    let stranded = |rid: Rid, ended_by: EndedBy| {
-        let mut checker = Checker::default();
-        let mut out = StepOut::default();
-        let mut d = decision("R101.12", rid, rid);
-        d.cleanup_pending = true;
-        d.ended_by = Some(ended_by);
-        out.decisions.push(d);
-        checker.on_step(&World::new(), &out);
-        checker
-    };
+fn a_run_that_ends_in_recovering_is_a_liveness_failure() {
     let mut w = World::new();
     w.current_id = 1;
     w.status = Status::Recovering;
-
     // No evidence at all.
     let mut checker = Checker::default();
     checker.on_end(&w, &[]);
-    assert!(violations(&checker).contains("without PD-18/PD-19 evidence"));
-
-    // PD-18 (a): a short `Interrupted` end and R101.12 in the gap, for this recording.
-    let short = EndedBy::Recover {
-        interrupted: Some(1_000),
-    };
-    let mut checker = stranded(1, short);
-    checker.on_end(&w, &[]);
-    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
-    assert_eq!(checker.hits.pd18, [1, 0, 0]);
-
-    // The same evidence for another recording does not cover this one.
-    let mut checker = stranded(2, short);
-    checker.on_end(&w, &[]);
-    assert!(violations(&checker).contains("without PD-18/PD-19 evidence"));
-
-    // A long `Interrupted` end is PD-19 only with the whole story: the stop's capture
-    // take, the stop path's own `Idle`, the refused auto-stop. The R101.12 alone fails.
-    let long = EndedBy::Recover {
-        interrupted: Some(12_000),
-    };
-    let mut checker = stranded(1, long);
-    checker.on_end(&w, &[]);
-    assert!(violations(&checker).contains("without PD-18/PD-19 evidence"));
-
-    // D-S2b-13 (c): a preserved capture nobody took is no exemption. With the long end and
-    // the R101.12 gap alone it is still a stuck run, and a later stop does not count: the
-    // user's stop in `Recovering` is suppressed by the frontend.
-    let mut w = World::new();
-    w.current_id = 1;
-    w.status = Status::Recovering;
+    assert!(
+        violations(&checker).contains("status Recovering at the end for id 1"),
+        "{:?}",
+        checker.violations
+    );
+    // The old stranding evidence (R101.12 in the gap of a short or a long `Interrupted` end,
+    // a preserved capture left in the store) exempts nothing any more.
     w.preserved.insert(
         1,
         Preserved {
@@ -1818,53 +1766,22 @@ fn a_stuck_recovering_run_needs_the_generations_own_pd18_or_pd19_evidence() {
             code: ErrCode::StreamInvalidated,
         },
     );
-    let mut checker = stranded(1, long);
-    checker.on_end(&w, &[]);
-    assert!(
-        violations(&checker).contains("without PD-18/PD-19 evidence"),
-        "{:?}",
-        checker.violations
-    );
-    // With the refused auto-stop that took nothing, the capture still in the store and no
-    // stop that took it, it is PD-19's third entry.
-    let mut checker = stranded(1, long);
-    let mut out = StepOut::default();
-    out.notes.push(Note::AutoStopTookNothing { rid: 1 });
-    checker.on_step(&World::new(), &out);
-    checker.on_end(&w, &[]);
-    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
-    assert_eq!(checker.hits.pd19, [0, 0, 1]);
-    // A stop that did take the capture leaves no capture in the store: another entry.
-    let mut taken = World::new();
-    taken.current_id = 1;
-    taken.status = Status::Recovering;
-    let mut checker = stranded(1, long);
-    let mut out = StepOut::default();
-    out.notes.push(Note::AutoStopTookNothing { rid: 1 });
-    checker.on_step(&World::new(), &out);
-    checker.on_end(&taken, &[]);
-    assert!(
-        violations(&checker).contains("without PD-18/PD-19 evidence"),
-        "{:?}",
-        checker.violations
-    );
-}
-
-/// The seeded runs witness PD-19 with the whole story, so the evidence is real.
-#[test]
-fn pd19_is_witnessed_with_its_whole_story() {
-    // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
-    // that leaves the capture in the store (no user-accessible recovery).
-    for (seed, entries) in [
-        (492_192, [1, 0, 0]),
-        (81_584, [0, 1, 0]),
-        (2_071_065, [0, 0, 1]),
-    ] {
-        let report = run_seed(gated(seed));
-        assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
-        assert_eq!(report.hits.pd19, entries, "{seed}: {:?}", report.hits);
-        assert_eq!(report.hits.pd18, [0, 0, 0]);
-        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    for interrupted in [1_000, 12_000] {
+        let mut checker = Checker::default();
+        let mut out = StepOut::default();
+        let mut d = decision("R101.12", 1, 1);
+        d.cleanup_pending = true;
+        d.ended_by = Some(EndedBy::Recover {
+            interrupted: Some(interrupted),
+        });
+        out.decisions.push(d);
+        checker.on_step(&World::new(), &out);
+        checker.on_end(&w, &[]);
+        assert!(
+            violations(&checker).contains("status Recovering at the end for id 1"),
+            "{interrupted}: {:?}",
+            checker.violations
+        );
     }
 }
 

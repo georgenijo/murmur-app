@@ -37,7 +37,7 @@ R101.8  | Starting   | -
 R101.9  | Recording  | -
 R101.10 | Recovering | -
 R101.11 | Processing | -
-R101.12 | Idle       | ST:Idle>Recovering
+R101.12 | Idle       | -
 R101.13 | Idle       | -
 R101.14 | Idle       | -
 R101.15 | Idle       | ST:Idle>Starting
