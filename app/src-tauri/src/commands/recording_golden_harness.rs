@@ -558,10 +558,13 @@ impl World {
             seen.cancelled_through = cancelled_through;
         }
         for recording_id in 1..=id {
+            // `unless_locked`: a port can be reached inside the terminal ledger's critical
+            // section (the cancel's terminal-and-performance pair), the way one is reached with
+            // the dictation lock held. The skip is decided by the call stack alone.
             let terminal = state
                 .app_state
                 .dictation_telemetry
-                .terminal_for_test(recording_id)
+                .terminal_for_test_unless_locked(recording_id)
                 .map(|(outcome, code)| format!("{outcome:?}/{code:?}"));
             if let Some(terminal) = terminal {
                 if seen.terminals.get(&recording_id) != Some(&terminal) {

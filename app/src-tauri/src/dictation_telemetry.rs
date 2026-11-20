@@ -329,6 +329,21 @@ impl DictationTelemetry {
             .and_then(|attempt| attempt.terminal)
     }
 
+    /// `terminal_for_test` that never waits for the ledger's lock (`None` while another
+    /// call holds it): a port reached inside [`Self::claim_terminal_with_performance`]'s
+    /// critical section (the cancel's pair) may be sampled by a recording harness.
+    #[cfg(test)]
+    pub(crate) fn terminal_for_test_unless_locked(
+        &self,
+        recording_id: u64,
+    ) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
+        self.inner
+            .try_lock_or_recover()?
+            .attempts
+            .get(&recording_id)
+            .and_then(|attempt| attempt.terminal)
+    }
+
     #[cfg(test)]
     pub(crate) fn emit_terminal(
         &self,
