@@ -8931,8 +8931,8 @@ async fn stop_native_recording_admitted(
                         )
                     })
                 });
-                // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
-                // effect.
+                // R206.1 and R206.2 have no effect (R206.2 only answers the error;
+                // PD-21 fixed).
                 let mut finish_exec = executor(&ports, cancel_decision.clone());
                 stop_ports::expect_valid(&cancel_decision);
                 #[cfg(feature = "dictation-shadow")]
@@ -10000,7 +10000,7 @@ async fn cancel_native_recording_inner(
             )
         })
     });
-    // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
+    // R206.1 and R206.2 have no effect (R206.2 only answers the error; PD-21 fixed).
     #[cfg(feature = "dictation-shadow")]
     if let Some(op_status) = seen_status.get(&flight_206) {
         flight_206.history_of(|| op_guard.take_retired());

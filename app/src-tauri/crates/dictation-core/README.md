@@ -565,10 +565,10 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,992` and eight fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
-  2,071,065, 289,110, 31,086, 154,052, 73,499) that take the PD-18 (unsealed stop),
-  PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), PD-21 (short stop),
-  PD-22 (both rows) and the late main-window start reply
+  environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
+  2,071,065, 289,110, 31,086, 154,052, 24,199, 73,499) that take the PD-18 (unsealed stop),
+  PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), the fixed PD-21's failed capture cancel followed by a short stop (`FAILED_CANCEL_SEEDS`),
+  PD-22 (both rows), the fixed PD-24's environmental recovery (`FIXED_START_TIMEOUT_SEEDS`) and the late main-window start reply
   with its second stop (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The same
   check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)

@@ -294,17 +294,16 @@ fn r206_1_a_successful_capture_cancel_has_no_effect_and_the_callers_own_reply() 
 }
 
 #[test]
-fn r206_2_a_failed_capture_cancel_emits_the_failure_terminal_after_t_for_both_callers() {
+fn r206_2_a_failed_capture_cancel_claims_no_terminal_for_both_callers() {
+    // PD-21 fixed: the recording is not over (a stop goes on, or the supervisor still
+    // handles the queued `Cancel{User}`), so the failure only answers the caller's error.
     for origin in [CancelOrigin::Stop, CancelOrigin::Cancel] {
         let decided = d_206(Err(()), origin, OpStatus::Outstanding);
         assert_eq!(decided.row.0, "R206.2");
         assert_eq!(decided.verdict, Verdict::Applied);
         assert_eq!(decided.transition, None);
-        assert_eq!(
-            tags(&decided),
-            ["PT:TERM(PipelineFailure/RuntimeFailure)"],
-            "{origin:?}"
-        );
+        assert!(decided.effects.is_empty(), "{origin:?}: no terminal claim");
+        assert_eq!(tags(&decided), Vec::<String>::new(), "{origin:?}");
         assert_eq!(decided.continuation, None);
         assert_eq!(decided.reply, Some(Reply::Err(ErrText::Shell)));
     }

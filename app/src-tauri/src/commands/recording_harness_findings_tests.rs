@@ -687,28 +687,36 @@ fn a_replacement_owner_is_installed_starting_and_the_refused_stop_preserves_it()
     ));
 }
 
-// ------------------------------------------------------------------ PD-21
+// ------------------------------------------------------------------ PD-21 (fixed)
 //
-// The pinned signature is the pair of rows PD-21 splits, harness seed 289,110 (R206.2 /
-// R203.4; 48,827 after #1160 and #1162, 273,164 before, 244,103 before #1159 changed the draws): a cancel's receive timeout makes
-// R206.2 claim the terminal as `PipelineFailure` (`CANCEL_RECEIVE_TIMEOUT`,
-// `audio_lifecycle.rs:3353-3363`), and a stop's R203.4 later completes performance as
-// `NoSpeech` over an empty capture at `Processing`, its terminal having lost the claim.
+// A failed or timed-out capture cancel (R206.2) used to claim the terminal as
+// `PipelineFailure/RuntimeFailure` for a recording that goes on, so the telemetry terminal
+// disagreed with the performance record of whatever then ended the recording. R206.2 claims
+// nothing now: the path that really ends the recording owns both ledgers. The two fixtures
+// keep the driving sequences of the old witnesses (harness seeds 289,110 and 3 pin the same
+// two shapes in `FAILED_CANCEL_SEEDS`).
 //
-// This fixture does not replay that seed's order, and the seed does not replay the
-// fixture's. Seed 273,164 (the pin before the re-pin) reached R206.2 (step 83) *before* the stop's R201.8 (step 96).
-// The fixture's causal sequence is the one that makes the stop's reply empty: the cancel of
-// a `Recording` dictation (R205.4) releases T for its capture cancel; before its `Cancel`
-// reaches the supervisor's queue a stop lands (R201.8), takes T, and its `Stop` is enqueued
-// first. The supervisor is busy, so the cancel's 2 s receive expires with the request still
-// queued and R206.2 claims the terminal. The worker then fails at runtime, the capture is
-// stored and the owner clears, and the auto-stop is refused at `Processing` (R201.2). Only
-// then does the parked `Stop` reach the supervisor: it has no attempt and no owner, so the
-// reply is an empty vector, not sealed, with no `CleanupFinished` (`1235-1238`); the late
-// `Cancel` answers `Ok(false)` with no notification (`1301-1330`, `should_abandon` is
-// false). That empty reply is what R203.4 completes as `NoSpeech`.
+// A cancel's receive timeout (`CANCEL_RECEIVE_TIMEOUT`, `audio_lifecycle.rs:3353-3363`)
+// answers the error with the request still queued; then either a stop that won the capture
+// completes (R203.4, below) or the supervisor handles the late `Cancel{User}` (R209.4).
+//
+// The first fixture does not replay seed 289,110's order, and the seed does not replay the
+// fixture's. The fixture's causal sequence is the one that makes the stop's reply empty: the
+// cancel of a `Recording` dictation (R205.4) releases T for its capture cancel; before its
+// `Cancel` reaches the supervisor's queue a stop lands (R201.8), takes T, and its `Stop` is
+// enqueued first. The supervisor is busy, so the cancel's 2 s receive expires with the request
+// still queued and R206.2 answers the error and claims nothing. The worker then fails at
+// runtime, the capture is stored and the owner clears, and the auto-stop is refused at
+// `Processing` (R201.2). Only then does the parked `Stop` reach the supervisor: it has no
+// attempt and no owner, so the reply is an empty vector, not sealed, with no `CleanupFinished`
+// (`1235-1238`); the late `Cancel` answers `Ok(false)` with no notification (`1301-1330`,
+// `should_abandon` is false). That empty reply is what R203.4 completes as `NoSpeech`. The
+// worker's runtime failure comes first, and the supervisor's `Recovering{RuntimeFailure}` at
+// `Processing` (R209.2, PD-5) claims the terminal as `Superseded/StaleOwner` ahead of the
+// stop's `NoSpeech/EmptyAudio`: that split is PD-5's, preserved, and is what seed 289,110 takes
+// now. The fix is that the failed cancel no longer claims first.
 
-fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
+fn a_timed_out_cancel_then_a_short_stop_that_won_the_capture(world: &Arc<World>) {
     recording(world);
     {
         let mut knobs = world.knobs();
@@ -731,10 +739,8 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
     assert_eq!(status(world), DictationStatus::Processing);
     assert_eq!(
         terminal(world, 1),
-        Some((
-            DictationTerminalOutcome::PipelineFailure,
-            DictationErrorCode::RuntimeFailure
-        ))
+        None,
+        "the failed cancel claimed no terminal: the recording goes on"
     );
     let stop = parked
         .lock()
@@ -752,6 +758,18 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
     // answers an empty vector at once (`1235-1238`), not sealed, so no `CleanupFinished`
     // follows (R203.4).
     world.runtime_failure(1);
+    // The supervisor's `Recovering{RuntimeFailure}` for the current recording at `Processing`
+    // is R209.2: it claims `Superseded/StaleOwner` (PD-5, a separate preserved defect, which
+    // seed 289,110 now takes). Before the PD-21 fix the failed cancel had claimed
+    // `PipelineFailure` first and this claim lost.
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner
+        )),
+        "the runtime failure's R209.2 claims the terminal (PD-5): the failed cancel claimed nothing"
+    );
     world.finish_interrupted(1, 12_000);
     assert_eq!(
         world.auto_stop_requests(),
@@ -773,10 +791,10 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
     assert_eq!(
         terminal(world, 1),
         Some((
-            DictationTerminalOutcome::PipelineFailure,
-            DictationErrorCode::RuntimeFailure
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner
         )),
-        "the stop's terminal lost the claim"
+        "the stop's own `NoSpeech/EmptyAudio` claim lost to R209.2's (PD-5), not to the cancel's"
     );
     assert_eq!(perf_claim(1), Some(RunOutcomeV1::NoSpeech));
     let trace = world.trace();
@@ -790,20 +808,21 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
 }
 
 #[test]
-pub(super) fn pd21_timed_out_cancel_then_a_short_stop_disagree() {
+pub(super) fn a_timed_out_cancel_claims_nothing_before_a_short_stop() {
     repeat(&sub(
-        "PD-21: a capture cancel times out while a stop that won the capture is parked (R206.2, R203.4)",
-        pd21_timed_out_cancel_then_a_stop_that_wins_capture,
+        "PD-21 fixed: a capture cancel times out while a stop that won the capture is parked (R206.2, R203.4)",
+        a_timed_out_cancel_then_a_short_stop_that_won_the_capture,
     ));
 }
 
 // Harness seed 3 (R206.2 / R209.4; 207 before the #1160 and #1162 re-pin). The queued `Cancel{User}` is handled after the
 // client's 2 s receive expired: the attempt is still `Recording`, so `begin_recovery`
 // publishes `Recovering{User}` (`audio_lifecycle.rs:1301-1330`) and the reply goes to a
-// dropped receiver. R206.2 had already claimed the terminal as `PipelineFailure`; the
-// late `Recovering{User}` arm (R209.4) completes performance as `Cancelled`.
+// dropped receiver. R206.2 claims nothing, so the late `Recovering{User}` arm (R209.4) wins
+// the terminal as `UserCancelledRecording` and completes performance as `Cancelled`: the two
+// records agree.
 
-fn pd21_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
+fn a_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
     recording(world);
     world.knobs().cancel_result = Err(CANCEL_RECEIVE_TIMEOUT);
     let mut cancel = world.cancel(None);
@@ -812,10 +831,8 @@ fn pd21_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
     assert_eq!(reply, Err(CANCEL_RECEIVE_TIMEOUT.to_string()));
     assert_eq!(
         terminal(world, 1),
-        Some((
-            DictationTerminalOutcome::PipelineFailure,
-            DictationErrorCode::RuntimeFailure
-        ))
+        None,
+        "the failed cancel claimed no terminal"
     );
     assert_eq!(perf_claim(1), None, "no performance outcome yet");
     // `begin_recovery(User)` publishes `Recovering{User}` (`1313-1329`, `2630-2700`).
@@ -828,10 +845,10 @@ fn pd21_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
     assert_eq!(
         terminal(world, 1),
         Some((
-            DictationTerminalOutcome::PipelineFailure,
-            DictationErrorCode::RuntimeFailure
+            DictationTerminalOutcome::UserCancelledRecording,
+            DictationErrorCode::CancelledRecording
         )),
-        "the supervisor's terminal lost the claim"
+        "the supervisor's terminal wins"
     );
     assert!(
         matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
@@ -841,10 +858,10 @@ fn pd21_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
 }
 
 #[test]
-pub(super) fn pd21_timed_out_cancel_and_the_late_recovery_disagree() {
+pub(super) fn a_timed_out_cancel_claims_nothing_before_the_late_recovery() {
     repeat(&sub(
-        "PD-21: a capture cancel times out, then the supervisor recovers (R206.2, R209.4)",
-        pd21_timed_out_cancel_then_the_supervisor_recovers,
+        "PD-21 fixed: a capture cancel times out, then the supervisor recovers (R206.2, R209.4)",
+        a_timed_out_cancel_then_the_supervisor_recovers,
     ));
 }
 

@@ -874,7 +874,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-23 each name at least one: renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-23 each (PD-21 and PD-25 are fixed) name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -893,7 +893,8 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    for pd in 19..=23 {
+    // PD-21 is fixed (see the map's "Fixed" section): no entry in this section.
+    for pd in (19..=23).filter(|pd| *pd != 21) {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -959,9 +960,13 @@ fn every_finding_seed_names_a_real_shell_test() {
             "FINDING_SEEDS names `{name}`, which the map's property-harness section does not"
         );
     }
-    assert!(
-        named >= 10,
-        "only {named} shell tests were read from FINDING_SEEDS"
+    // The floor is the table's own count of witnesses that name a shell test, so a fix PR
+    // that removes a witness lowers it with the list, and a parser that skips an entry fails.
+    let expected = table.matches("shell_test: Some(").count();
+    assert!(expected > 0, "FINDING_SEEDS names no shell test at all");
+    assert_eq!(
+        named, expected,
+        "read {named} shell tests from FINDING_SEEDS, which lists {expected}"
     );
 }
 
@@ -1313,10 +1318,13 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 }
 
 /// The PDs a fix PR has fixed and removed (C7.0): no E8 row, no allowlist entry, no
-/// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-24:
-/// `recording_harness_findings_tests.rs`; PD-25 (#1157): `recording_pd25_tests.rs`.
+/// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-21:
+/// `a_timed_out_cancel_claims_nothing_before_a_short_stop` and
+/// `a_timed_out_cancel_claims_nothing_before_the_late_recovery`
+/// (`recording_harness_findings_tests.rs`); PD-24: the `pd24_start_timeout_leaves_…` pair in the
+/// same file; PD-25 (#1157): `recording_pd25_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[24, 25];
+const FIXED_PDS: &[u8] = &[21, 24, 25];
 
 /// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
 /// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
@@ -1446,14 +1454,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
             vec![fx!(
                 f::pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree
             )],
-        ),
-        (
-            21,
-            CrossLedger,
-            vec![
-                fx!(f::pd21_timed_out_cancel_then_a_short_stop_disagree),
-                fx!(f::pd21_timed_out_cancel_and_the_late_recovery_disagree),
-            ],
         ),
         (
             22,

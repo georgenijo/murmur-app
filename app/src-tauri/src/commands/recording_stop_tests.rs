@@ -318,8 +318,9 @@ fn stop_starting_cancel_not_accepted() {
     );
 }
 
-/// R201.4 + R206.2: the capture cancel fails: `PipelineFailure` terminal and the
-/// failed call's text as the stop's error.
+/// R201.4 + R206.2: the capture cancel fails: the failed call's text is the stop's error
+/// and no terminal is claimed, because the recording goes on (PD-21 fixed: it used to
+/// claim `PipelineFailure/RuntimeFailure`).
 #[test]
 fn stop_starting_cancel_error() {
     assert_trace(
@@ -338,7 +339,6 @@ fn stop_starting_cancel_error() {
             "keyboard.stop_gesture_take_for 1",
             "supervisor.cancel 1 user",
             "# T free inside CC: true",
-            "~ terminal 1 PipelineFailure/RuntimeFailure",
             "reply stop Err boom",
             "supervisor.release_ready 1",
             "supervisor.set_phase Recording",
@@ -351,8 +351,8 @@ fn stop_starting_cancel_error() {
     );
 }
 
-/// R206.2 when the supervisor claimed `UserCancelledStarting` first: the stop's
-/// own claim loses, nothing is emitted twice, the error is unchanged.
+/// R206.2 when the supervisor claimed `UserCancelledStarting` first: the stop claims
+/// nothing, nothing is emitted twice, the error is unchanged.
 #[test]
 fn stop_starting_cancel_error_after_the_supervisor_claimed_first() {
     assert_trace(
@@ -387,17 +387,17 @@ fn stop_starting_cancel_error_after_the_supervisor_claimed_first() {
     );
 }
 
-/// The stop command's site 206 records the real claim result, as the cancel
-/// command's does.
+/// The stop command's site 206 has no claim to record after a failed capture cancel, as
+/// the cancel command's has none: R206.2 has no effect, so its witness is empty.
 #[test]
-fn stop_records_the_real_206_claim_result() {
+fn a_failed_capture_cancel_in_a_stop_has_no_206_claim_to_record() {
     let witnessed = |body: fn(&Arc<World>)| {
         from_stop(trace(Setup::idle(), body))
             .into_iter()
             .find(|line| line.starts_with("# 206 witness"))
             .expect("the scenario notes the witness")
     };
-    let lost = witnessed(|w| {
+    let after_the_supervisor_claimed = witnessed(|w| {
         w.knobs().cold_start = ColdStart::ReadyAfterContext;
         started(w);
         w.knobs().cancel_result = Err("boom");
@@ -410,8 +410,8 @@ fn stop_records_the_real_206_claim_result() {
         cancel_tests::note_206_witness(w);
         w.release_ready();
     });
-    assert_eq!(lost, "# 206 witness: TERM Failed");
-    let won = witnessed(|w| {
+    assert_eq!(after_the_supervisor_claimed, "# 206 witness: none");
+    let alone = witnessed(|w| {
         w.knobs().cold_start = ColdStart::ReadyAfterContext;
         started(w);
         w.knobs().cancel_result = Err("boom");
@@ -420,8 +420,8 @@ fn stop_records_the_real_206_claim_result() {
         cancel_tests::note_206_witness(w);
         w.release_ready();
     });
-    assert_eq!(won, "# 206 witness: TERM Ran");
-    let none = witnessed(|w| {
+    assert_eq!(alone, "# 206 witness: none");
+    let accepted_nothing = witnessed(|w| {
         w.knobs().cold_start = ColdStart::ReadyAfterContext;
         started(w);
         w.knobs().cancel_result = Ok(false);
@@ -430,7 +430,7 @@ fn stop_records_the_real_206_claim_result() {
         cancel_tests::note_206_witness(w);
         w.release_ready();
     });
-    assert_eq!(none, "# 206 witness: none");
+    assert_eq!(accepted_nothing, "# 206 witness: none");
 }
 
 /// R202 missing context

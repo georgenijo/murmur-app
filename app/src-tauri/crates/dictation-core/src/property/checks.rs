@@ -82,9 +82,6 @@ pub enum Pre {
     /// PD-20 (b): another path claimed the terminal first, the cancel's own claim was
     /// lost, and the cancel's tail still completed performance `Cancelled`.
     CancelPerfAfterLostClaim,
-    /// PD-21: the cancel port's failure claimed `PipelineFailure` for the current
-    /// recording, which then ended through a path with its own outcome.
-    FailedCancelPort,
     /// PD-22: the supervisor's `Idle` claimed `Superseded` for a finished current id,
     /// a later claim of the real path was lost, and a cancel's tail was open when
     /// performance completed.
@@ -147,7 +144,7 @@ pub struct Signature {
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 8] = [
+pub const SIGNATURES: [Signature; 7] = [
     // PD-4 (C7.1): R207.3 on a live `Recording` claims `Superseded/StaleOwner`, the
     // wrapper's `SD` spawns a **second ticker** for the same id, and performance later
     // completes `Success` (`Completed`): exactly the definition, with no narrower or
@@ -266,22 +263,6 @@ pub const SIGNATURES: [Signature; 8] = [
         claim_status: ALL_STATUSES,
         perf: PerfSet::Only(&[("R205.5", PerfOutcome::Cancelled)]),
         pre: Pre::CancelPerfAfterLostClaim,
-    },
-    // PD-21: R206.2, the failed capture cancel's `TERM(PipelineFailure)`.
-    Signature {
-        pd: 21,
-        terminal: &[(
-            "R206.2",
-            TerminalOutcome::PipelineFailure,
-            ErrCode::RuntimeFailure,
-        )],
-        claim_status: ALL_STATUSES,
-        perf: PerfSet::Any(&[
-            PerfOutcome::Cancelled,
-            PerfOutcome::NoSpeech,
-            PerfOutcome::Completed,
-        ]),
-        pre: Pre::FailedCancelPort,
     },
     // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
     Signature {
@@ -838,7 +819,6 @@ impl Checker {
                         .iter()
                         .any(|t| t.row == completion.row && !t.won && t.step > claim.step)
             }
-            Pre::FailedCancelPort => claim_current,
             Pre::SupervisorIdleWon => {
                 // One window: the winning `Idle` claim, the named losing claim (the
                 // cancel's own `TERM`, R205.5) and the performance completion all fall
