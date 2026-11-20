@@ -748,7 +748,9 @@ impl<'a> Executor<'a> {
                         // point between the two claims (they are one step).
                         #[cfg(test)]
                         crate::barrier_hook::at(perf.code());
-                        let (terminal, performance) = ports.terminal_then_perf(effect, &perf);
+                        // Through the executor's own ports, not an observing flight's wrapper:
+                        // the wrapper only forwards `TERM` and `PC` and notes nothing for them.
+                        let (terminal, performance) = self.ports.terminal_then_perf(effect, &perf);
                         self.record_port(index, effect, terminal);
                         self.record_port(index + 1, &perf, performance);
                         self.cursor += 1;
@@ -874,9 +876,6 @@ impl Ports for ObservingPorts<'_> {
     }
     fn perf(&self, effect: &Effect) -> PortResult {
         self.inner.perf(effect)
-    }
-    fn terminal_then_perf(&self, terminal: &Effect, perf: &Effect) -> (PortResult, PortResult) {
-        self.inner.terminal_then_perf(terminal, perf)
     }
     fn keyboard(&self, effect: &Effect) -> PortResult {
         self.inner.keyboard(effect)
