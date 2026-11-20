@@ -40,6 +40,9 @@ interface PresentErrorOptions {
   producerEpoch?: number;
 }
 
+/** How long the "cleanup is still in progress" notice for a refused start stays. */
+const REFUSAL_NOTICE_MS = 5000;
+
 export function useRecordingState({ addEntry, microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
@@ -68,6 +71,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   const errorProducerEpochRef = useRef(0);
   const dismissedErrorRef = useRef<{ message: string; recordingId?: number } | null>(null);
   const pendingAutoPasteErrorIdRef = useRef<number | null>(null);
+  const refusalNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (refusalNoticeTimerRef.current) clearTimeout(refusalNoticeTimerRef.current);
+  }, []);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   useEffect(() => { smartAutoRef.current = smartAuto; }, [smartAuto]);
@@ -308,8 +315,15 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       if (cancelled) return;
       const recordingId = recordingIdFromPayload(event.payload);
       const current = currentErrorRef.current;
-      if (recordingId !== null && current?.kind === 'cleanup'
-        && current.recordingId === recordingId) clearError(current.id);
+      if (recordingId === null || current?.kind !== 'cleanup') return;
+      // A stall notice names its recording. The "cleanup is still in progress"
+      // notice for a refused start or stop names none: that refusal leaves the
+      // app Idle, so no status event follows it, and the retiring capture's
+      // own cleanup-finished is what ends it. Core publishes that event only
+      // for the current recording, so any one that arrives is the right one.
+      if (current.recordingId === undefined || current.recordingId === recordingId) {
+        clearError(current.id);
+      }
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
@@ -497,10 +511,20 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           else if (res.type === 'busy_transforming') presentError('Wait for the transform to finish.', { producerEpoch });
           else if (res.type === 'busy_recording_corpus') presentError('Finish the corpus recording before starting dictation.', { producerEpoch });
           else if (res.type === 'audio_recovering') {
-            presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
+            const noticeId = presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
               kind: 'cleanup',
               producerEpoch,
             });
+            // The refusal leaves the app Idle, so no status event follows it, and
+            // the supervisor clearing its owner (the end of that cleanup) notifies
+            // nothing after an interruption. `recording-cleanup-finished` ends the
+            // notice when it does arrive; this expiry covers the paths where it
+            // does not, so an idle app never keeps a stale "in progress" notice.
+            if (refusalNoticeTimerRef.current) clearTimeout(refusalNoticeTimerRef.current);
+            refusalNoticeTimerRef.current = null;
+            if (noticeId !== null) {
+              refusalNoticeTimerRef.current = setTimeout(() => clearError(noticeId), REFUSAL_NOTICE_MS);
+            }
           }
         }
         if (stopRequested && res.type === 'recording_starting' && !generationEnded) {
@@ -531,7 +555,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         startOperationRef.current = null;
       }
     }
-  }, [beginErrorProducer, presentError, canStart]);
+  }, [beginErrorProducer, presentError, clearError, canStart]);
 
   // Admission checks must see dispatched starts before native confirmation or
   // a lifecycle event updates status. Read the synchronous refs, not a render.
