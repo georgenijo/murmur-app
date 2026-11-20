@@ -191,10 +191,12 @@ pub(crate) fn nothing(verdict: Verdict, row: &'static str) -> Decision {
 
 /// Site 207, `Ready` (C3.6 R207.1-.5; `handle_audio_lifecycle_with` `Ready` arm).
 ///
-/// * R207.1 `rid != current`, R207.2 current but Idle / Recovering / Processing,
-///   R207.3 current and `Recording` (**PD-4**: a repeat `Ready` supersedes a live
-///   recording and the `SD` attempt starts a second ticker loop):
+/// * R207.1 `rid != current`, R207.2 current but Idle / Recovering / Processing:
 ///   `In:TERM(Superseded/StaleOwner)`.
+/// * R207.3 current and `Recording`: a repeat `Ready` for the live recording claims no
+///   terminal (it used to claim `Superseded`, which split from the outcome of the
+///   recording's own end: PD-23, and PD-4's terminal half). The `SD` attempt still runs
+///   and still starts a second ticker loop (PD-4's remaining half).
 /// * R207.4 current, `Starting`, no context: trace only.
 /// * R207.5 current, `Starting`, context installed: `Starting→Recording`,
 ///   `In:ST, TL, EM(recording)`.
@@ -215,12 +217,10 @@ pub fn decide_sup_ready(core: &DictationCore, input: SupReadyInput, _now: Now) -
             vec![superseded(Placement::In), side_tasks],
             "R207.2",
         ),
-        Status::Recording => decision(
-            Verdict::Applied,
-            None,
-            vec![superseded(Placement::In), side_tasks],
-            "R207.3",
-        ),
+        // A repeat `Ready` for the live recording claims no terminal: the stop, cancel or
+        // pipeline that really ends the recording owns it, so the terminal and the
+        // performance outcome name the same end (PD-23). The side-tasks attempt stays.
+        Status::Recording => decision(Verdict::Applied, None, vec![side_tasks], "R207.3"),
         Status::Starting => match input.context_present {
             None => nothing(
                 Verdict::NeedObservation(ObsKind::ContextPresence { id: input.rid }),

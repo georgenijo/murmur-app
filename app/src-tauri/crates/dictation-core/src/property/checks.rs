@@ -81,20 +81,13 @@ pub struct RunHits {
 /// variant reads the ledger context the winners recorded (`Won`), never the row names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pre {
-    /// PD-4, PD-5: the claim was for the current recording, in the status the row's
+    /// PD-5: the claim was for the current recording, in the status the row's
     /// C3 line lists, and the recording's own path completed performance later.
     LiveClaimThenPerf,
     /// PD-22: the supervisor's `Idle` claimed `Superseded` for a finished current id,
     /// a later claim of the real path was lost, and a cancel's tail was open when
     /// performance completed.
     SupervisorIdleWon,
-    /// PD-23 (Completed): the claim was for the current recording, R207.3's `SD` ran and
-    /// the ticker's gate **refused** a second ticker (none spawned), and the recording's
-    /// own path completed performance later.
-    SecondTickerGatedOff,
-    /// PD-4: the claim was for the current recording and a **second ticker** spawned
-    /// for it after the claim; the recording's own path completed performance later.
-    SecondTickerThenPerf,
 }
 
 /// The performance completions a signature admits.
@@ -138,66 +131,7 @@ pub struct Signature {
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 5] = [
-    // PD-4 (C7.1): R207.3 on a live `Recording` claims `Superseded/StaleOwner`, the
-    // wrapper's `SD` spawns a **second ticker** for the same id, and performance later
-    // completes `Success` (`Completed`): exactly the definition, with no narrower or
-    // wider piece (D-S2b-11 (a)). A split of R207.3 without the second ticker, or with
-    // another outcome, is not PD-4: it is a failure to report.
-    Signature {
-        pd: 4,
-        terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
-        claim_status: &[Status::Recording],
-        perf: PerfSet::Only(&[("R204b.6", PerfOutcome::Completed)]),
-        pre: Pre::SecondTickerThenPerf,
-    },
-    // PD-23 (F-5, D-S2b-11 (a), D-S2b-13 (e)): the claim of PD-4 (R207.3, `Superseded` for
-    // a live `Recording`) split from the outcome of the recording's *own* end, other than
-    // PD-4's `Success` with a second ticker. Each outcome is bound to the stop, cancel,
-    // pipeline or supervisor row that completes it (the paths C3 lists), never to a class:
-    // an outcome from a row outside the table is an SP4(b) failure.
-    Signature {
-        pd: 23,
-        terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
-        claim_status: &[Status::Recording],
-        perf: PerfSet::Only(&[
-            // The stop's capture failed (a stop failure, the supervisor's recovery
-            // refusal, an expired receiver): `Failed`.
-            ("R202.3", PerfOutcome::Failed),
-            ("R203.1", PerfOutcome::Failed),
-            ("R203.2", PerfOutcome::Failed),
-            ("R211.3", PerfOutcome::Failed),
-            ("R211.6", PerfOutcome::Failed),
-            ("R213.2", PerfOutcome::Failed),
-            ("R216.pre", PerfOutcome::Failed),
-            // The stop's capture was empty or short: `NoSpeech`.
-            ("R203.4", PerfOutcome::NoSpeech),
-            ("R203.5", PerfOutcome::NoSpeech),
-            ("R203.6", PerfOutcome::NoSpeech),
-            ("R203.7", PerfOutcome::NoSpeech),
-            ("R203.7r", PerfOutcome::NoSpeech),
-            ("R203.8b", PerfOutcome::NoSpeech),
-            // The user cancelled (the cancel's own `PC`, or the supervisor's recovery arm).
-            ("R205.5", PerfOutcome::Cancelled),
-            ("R209.4", PerfOutcome::Cancelled),
-            // The pipeline's own end, as the stop's guard reports it.
-            ("R204b.6", PerfOutcome::NoSpeech),
-            ("R204b.6", PerfOutcome::Cancelled),
-        ]),
-        pre: Pre::LiveClaimThenPerf,
-    },
-    // PD-23, the `Success` variant: the same claim, the ticker's gate refused the second
-    // ticker, and the pipeline completes `Completed`. Without the refused second ticker it
-    // is PD-4, and from any row but the pipeline's R204b.6 it is not a C3 outcome. The
-    // shell fixture of this variant is PENDING (source-only): no fake-host schedule makes
-    // the gate refuse after R207.3's claim.
-    Signature {
-        pd: 23,
-        terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
-        claim_status: &[Status::Recording],
-        perf: PerfSet::Only(&[("R204b.6", PerfOutcome::Completed)]),
-        pre: Pre::SecondTickerGatedOff,
-    },
+pub const SIGNATURES: [Signature; 2] = [
     // PD-5: R207.2 / R209.2 on the current id in `Idle`, `Recovering` or `Processing`
     // (the statuses C3 lists for those rows).
     Signature {
@@ -263,12 +197,6 @@ pub struct Checker {
     /// Recordings whose pipeline or stop task panicked (PD-13).
     panicked_ids: BTreeSet<Rid>,
     pub steps_checked: u32,
-    /// Recordings for which a second ticker spawned after R207.3's claim (PD-4).
-    pub(super) second_ticker: BTreeSet<Rid>,
-    /// Recordings whose R207.3 `SD` ran (the second ticker, if any, exists by then).
-    pub(super) r207_3_side_tasks: BTreeSet<Rid>,
-    /// Recordings whose SP4(b) split waits for R207.3's `SD` to run.
-    sp4b_deferred: BTreeSet<Rid>,
     /// Recordings whose PD-22 split (the supervisor `Idle`'s claim, `R211.2`, inside
     /// another cancel's tail) is judged when that tail closes: the window's other
     /// events (the cancel's lost claim, the performance completions) may land in
@@ -373,13 +301,14 @@ impl Checker {
             self.detect_note(note, &mut hits);
         }
         for e in &out.effects {
-            // PD-4's defining behaviour: after R207.3 claimed `Superseded` for the live
-            // recording, its side tasks spawned a second ticker for the same id.
-            if e.row == "R207.3" && matches!(e.effect, Effect::StartSideTasks) {
-                self.r207_3_side_tasks.insert(e.input_rid);
-                if w.tickers.get(&e.input_rid).copied().unwrap_or(0) >= 2 {
-                    self.second_ticker.insert(e.input_rid);
-                }
+            // PD-4's remaining behaviour: a repeat `Ready` for the live recording (R207.3,
+            // which claims no terminal) still attempts the side tasks, and they spawn a
+            // second ticker for the same id.
+            if e.row == "R207.3"
+                && matches!(e.effect, Effect::StartSideTasks)
+                && w.tickers.get(&e.input_rid).copied().unwrap_or(0) >= 2
+            {
+                self.hit(&mut hits, 4, e.row, e.input_rid);
             }
             self.check_effect(e, &hits);
         }
@@ -395,7 +324,7 @@ impl Checker {
                         | Effect::PerfComplete(_)
                         | Effect::PerfBegin
                         | Effect::PipelineGuardFinish(_)
-                ) || (e.row == "R207.3" && matches!(e.effect, Effect::StartSideTasks))
+                )
             })
             .map(|e| e.input_rid)
             .collect();
@@ -648,14 +577,6 @@ impl Checker {
         if perf_class_allowed(*outcome, *perf) || self.sp4b_done.contains(&rid) {
             return;
         }
-        // PD-4 needs its second ticker: R207.3's `SD` is the claim's own `PostDT` step,
-        // so while it is still to run the split is not judged yet (it is, at that step,
-        // or fails at the end of the run).
-        if *terminal_row == "R207.3" && !self.r207_3_side_tasks.contains(&rid) {
-            self.sp4b_deferred.insert(rid);
-            return;
-        }
-        self.sp4b_deferred.remove(&rid);
         let claim = w.ledger.ctx[&rid];
         // PD-22 defers judgment to the end of its window: the winning `Idle` claim, the
         // named losing claim and the performance completion all fall in one cancel's tail,
@@ -747,7 +668,6 @@ impl Checker {
     }
 
     fn precondition(&self, pre: Pre, w: &World, rid: Rid) -> bool {
-        let second_ticker = self.second_ticker.contains(&rid);
         let claim = w.ledger.ctx[&rid];
         let completion = w.perf.ctx[&rid];
         let tries = &w.ledger.tries[&rid];
@@ -770,15 +690,6 @@ impl Checker {
                                     && t.tail == Some(tail)
                             })
                     })
-            }
-            Pre::SecondTickerThenPerf => {
-                claim_current && claim.step < completion.step && second_ticker
-            }
-            Pre::SecondTickerGatedOff => {
-                claim_current
-                    && claim.step < completion.step
-                    && self.r207_3_side_tasks.contains(&rid)
-                    && !second_ticker
             }
         }
     }
@@ -808,11 +719,6 @@ impl Checker {
         // A window still open at the end of the run is judged as it stands.
         for rid in std::mem::take(&mut self.sp4b_tail_deferred) {
             self.sp4b_at(w, rid, true);
-        }
-        for rid in std::mem::take(&mut self.sp4b_deferred) {
-            self.fail(format!(
-                "SP4(b): id {rid}: R207.3's claim split from performance and its side tasks never ran"
-            ));
         }
         if w.partial_lease.is_some() {
             self.fail(format!(
