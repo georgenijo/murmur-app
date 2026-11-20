@@ -393,11 +393,6 @@ impl Task for StartFlight {
                         queue_phase(&mut self.q, bound, &decision, Placement::PostDT);
                         self.st = Ss::WaitAck;
                     }
-                    "R101.12" => {
-                        let ctx = fx(cx, cx.w.current_id, "R101.12", SiteId::StartRequest);
-                        apply_in(cx, &ctx, &decision);
-                        self.leave(cx, &decision, SiteId::StartRequest);
-                    }
                     _ => self.leave(cx, &decision, SiteId::StartRequest),
                 }
             }
@@ -1106,8 +1101,6 @@ pub struct StopFlight {
     q: VecDeque<QItem>,
     expected: Option<Rid>,
     auto: Option<Continuation>,
-    /// This is the stop the `Interrupted` arm spawned (its `AutoStop` token was held).
-    is_auto: bool,
     cfg: StopCfg,
     rid: Rid,
     input: Option<StopInput>,
@@ -1137,7 +1130,6 @@ impl StopFlight {
             st: Ts::AcquireT,
             q: VecDeque::new(),
             expected,
-            is_auto: auto.is_some(),
             auto,
             cfg,
             rid: 0,
@@ -1329,11 +1321,6 @@ impl Task for StopFlight {
                     );
                 }
                 log_decision(cx, SiteId::StopRequest, &decision, self.rid, None);
-                if self.is_auto && self.interrupted.is_none() {
-                    cx.out.notes.push(Note::AutoStopTookNothing {
-                        rid: self.expected.unwrap_or(self.rid),
-                    });
-                }
                 match decision.verdict {
                     Verdict::Applied => {}
                     _ => {

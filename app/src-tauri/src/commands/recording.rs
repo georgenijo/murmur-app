@@ -7749,9 +7749,11 @@ async fn start_native_recording_inner(
             }
         }
         if decision.row == RowId("R101.12") {
-            // The result has finished, but its capture owner still needs cleanup.
-            // Keep that generation for failure guidance and let confirmed exit
-            // restore Idle independently: `In:ST→Recovering`, `In:EM(recovering)`.
+            // Unreachable since the PD-18 / PD-19 fix: R101.12 is a pure refusal
+            // (`Verdict::Refused`), answered by the refusal arm above, so no
+            // `Applied` decision names this row. The branch stays only because
+            // deleting it removes shadow-gated lines (`check_shadow_diff.py` holds
+            // such a change to insertion only); the shadow's retirement deletes it.
             let ports = StartPorts::new(host, state, &slots, Some(current));
             let mut exec = executor(&ports, decision.clone(), false);
             #[cfg(feature = "dictation-shadow")]

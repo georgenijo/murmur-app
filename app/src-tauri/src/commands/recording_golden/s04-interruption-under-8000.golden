@@ -1,6 +1,6 @@
 # golden: s04-interruption-under-8000
 # scenario: 4 interruption under 8,000 samples
-# witnesses: PD-1 (4b), PD-15, PD-18 (a) (4d is the golden witness for the family)
+# witnesses: PD-1 (4b), PD-15; 4d is the golden of the fixed PD-18 (a)
 # lines: `~` is shared state seen to change since the previous line; `#` is a
 # scenario step; everything else is a port call, an emit or a reply, in order.
 
@@ -168,7 +168,7 @@ supervisor.clear_owner 1
 supervisor.set_phase Idle
 = final status=Idle processing=false context=none cancelled_through=0
 
-=== 4d start takes R101.12 before the owner is cleared (PD-18 a) ===
+=== 4d a start before the owner is cleared is refused (the fixed PD-18 a) ===
 mic_transition
 keyboard.is_app_disabled
 supervisor.is_dictation_cleanup_pending 0 -> false
@@ -213,8 +213,6 @@ emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliver
 mic_transition
 keyboard.is_app_disabled
 supervisor.is_dictation_cleanup_pending 1 -> true
-emit recording-status-changed "recovering"
-~ status Idle -> Recovering
 reply start Ok {"state":"recovering","type":"audio_recovering"}
 emit recording-status-changed "idle"
 supervisor.hold_before_owner_clear 1
@@ -224,5 +222,31 @@ supervisor.set_phase Idle
 # owner cleared; the supervisor has nothing more to notify
 mic_transition
 keyboard.is_app_disabled
-reply start again Ok {"state":"recovering","type":"audio_recovering"}
-= final status=Recovering processing=false context=none cancelled_through=0
+supervisor.is_dictation_cleanup_pending 1 -> false
+~ recording_id 1 -> 2
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":2}
+emit recording-status-changed "starting"
+performance.register_production 2 SystemDefault
+performance.begin_register 2
+supervisor.start 2 toggle
+supervisor.set_phase Starting
+supervisor.notify 2 Accepted
+supervisor.set_phase Recording
+supervisor.notify 2 Ready
+supervisor.start_ack 2 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 2
+~ context 2 installed
+publish_recording_ready 2
+supervisor.is_dictation_recording 2 -> true
+emit recording-status-changed "recording"
+SD ticker 2 registered=true
+~ status Starting -> Recording
+publish_recording_ready 2 -> true
+spawn_model_preparation 2
+performance.spawn_begin 2
+reply start again Ok {"recordingId":2,"state":"starting","type":"recording_starting"}
+= final status=Recording processing=false context=2 cancelled_through=0
