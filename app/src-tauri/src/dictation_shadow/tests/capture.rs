@@ -333,6 +333,7 @@ fn every_input_family() -> Vec<Input> {
             observed_current_id: rid,
             interrupted: Some(None),
             entered: NOW,
+            taken_earlier: false,
         }),
         Input::CancelRequest(CancelInput { expected: None }),
         Input::GuardFinish(GuardFinishInput {

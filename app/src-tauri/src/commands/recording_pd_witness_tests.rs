@@ -874,7 +874,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs` or `recording_pd25_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-25 (less the fixed PD-24) each name at least one: renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-23 each name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -883,13 +883,9 @@ fn the_property_harness_section_names_real_shell_tests() {
     let section = harness_section(&map);
     let names = finding_witness_names(section);
     let mut running = std::collections::BTreeSet::new();
-    for file in [
-        "recording_harness_findings_tests.rs",
-        "recording_pd25_tests.rs",
-    ] {
-        let source = std::fs::read_to_string(root.join(file)).expect("a findings test file");
-        running.extend(running_tests(&source));
-    }
+    let source = std::fs::read_to_string(root.join("recording_harness_findings_tests.rs"))
+        .expect("a findings test file");
+    running.extend(running_tests(&source));
     assert!(!names.is_empty(), "the section names no shell witness");
     for name in &names {
         assert!(
@@ -897,7 +893,7 @@ fn the_property_harness_section_names_real_shell_tests() {
             "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
-    for pd in (19..=25).filter(|pd| *pd != 24) {
+    for pd in 19..=23 {
         let line = section
             .lines()
             .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
@@ -1150,7 +1146,7 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
 /// (properties of an effect's implementation, or latent) and are not counted. D-S2c-15 C4:
 /// E8 enumerates every preserved defect, PD-1 to PD-25 less the fixed ones ([`FIXED_PDS`])
 /// (`e8_pds`): each is driven by a
-/// named shell fixture, the PD-19 to PD-25 fixtures are replayed through the shadow too
+/// named shell fixture, the PD-19 to PD-23 fixtures are replayed through the shadow too
 /// (each must close clean), and `assert_every_preserved_signature_is_accounted` fails on a
 /// PD with no row, a row-signature PD the shadow never credited, or a fixture Cargo does
 /// not run.
@@ -1271,7 +1267,7 @@ enum PdKind {
     /// fixture is its own `#[test]`, which E8 does not replay.
     Property,
     /// Not a row signature either: a split between a recording's terminal and its
-    /// performance outcome that the property harness found (PD-19 to PD-25). E8 replays
+    /// performance outcome that the property harness found (PD-19 to PD-23). E8 replays
     /// the named fixtures through the shadow in this process, where each must close
     /// clean (E7), and the shadow credits nothing for them.
     CrossLedger,
@@ -1318,19 +1314,18 @@ fn pd09c_abandoned_at_the_awaited_capture_start() {
 
 /// The PDs a fix PR has fixed and removed (C7.0): no E8 row, no allowlist entry, no
 /// signature. Their shell fixtures assert the fixed behaviour as ordinary tests. PD-24:
-/// `recording_harness_findings_tests.rs`.
+/// `recording_harness_findings_tests.rs`; PD-25 (#1157): `recording_pd25_tests.rs`.
 #[cfg(feature = "dictation-shadow")]
-const FIXED_PDS: &[u8] = &[24];
+const FIXED_PDS: &[u8] = &[24, 25];
 
-/// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that assert it. Seed
-/// 92,332 of #1157 is not a defect (the generator draws an uncaused `Cancelled`) and is
-/// not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
+/// Every preserved defect, PD-1 to PD-25 less [`FIXED_PDS`], with the shell fixtures that
+/// assert it. Seed 92,332 of #1157 is not a defect (the generator draws an uncaused
+/// `Cancelled`) and is not here. A new PD, or a PD added to the shadow's allowlist, needs its row here:
 /// [`assert_every_preserved_signature_is_accounted`] fails otherwise.
 #[cfg(feature = "dictation-shadow")]
 fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
     use super::golden_tests as g;
     use super::harness_findings_tests as f;
-    use super::pd25_tests as p;
     use PdKind::{CrossLedger, Latent, Property, Row};
     vec![
         (
@@ -1475,14 +1470,6 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
                 fx!(f::pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree),
                 fx!(f::pd23_superseded_terminal_and_a_refused_stop_failed_disagree),
                 fx!(f::pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree),
-            ],
-        ),
-        (
-            25,
-            CrossLedger,
-            vec![
-                fx!(p::pd25_import_allocates_while_a_scoped_stop_for_the_old_generation_is_queued),
-                fx!(p::pd25_start_allocates_while_a_scoped_stop_for_the_old_generation_is_queued),
             ],
         ),
     ]

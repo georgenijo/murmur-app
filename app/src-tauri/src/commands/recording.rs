@@ -8715,6 +8715,7 @@ async fn stop_native_recording_admitted(
         observed_current_id: RecordingId(current_recording_id),
         interrupted: None,
         entered: now,
+        taken_earlier: false,
     };
     let interrupted_meta = |capture: &audio_lifecycle::InterruptedCapture| InterruptedMeta {
         samples: capture.samples.len(),
@@ -8759,9 +8760,17 @@ async fn stop_native_recording_admitted(
             }
             return reply_of(&first, None, "");
         }
+        // Read before this stop's own take: whether an earlier take consumed the capture
+        // (that taker owns the terminal, PD-25).
+        input.taken_earlier = state
+            .app_state
+            .interrupted_taken_earlier(stale_recording_id);
         let taken = host
             .supervisor()
             .take_interrupted_dictation(stale_recording_id);
+        if taken.is_some() {
+            state.app_state.note_interrupted_taken(stale_recording_id);
+        }
         input.interrupted = Some(taken.as_ref().map(interrupted_meta));
         drop(taken);
         let decision = stop_ports::decide(|| {
@@ -8813,6 +8822,9 @@ async fn stop_native_recording_admitted(
             // R201.5: only a `Recovering` stop reads the preserved capture, exactly
             // where today's arm does (D-S1-2).
             interrupted_capture = host.supervisor().take_interrupted_dictation(id.0);
+            if interrupted_capture.is_some() {
+                state.app_state.note_interrupted_taken(id.0);
+            }
             input.interrupted = Some(interrupted_capture.as_ref().map(interrupted_meta));
             decision = stop_ports::decide(|| core_stop::decide_stop_request(&view, input, now));
         }
