@@ -84,7 +84,11 @@ changes animate on the island's 360ms curve, appearing and hiding fade in place
 (160ms under Reduce Motion), and Reduce Motion snaps the shape. Live Words
 reports its laid-out card size (`set_live_words_material`); Rust places and
 lifts it. Separate native lift and card layers let a wrapping partial resize
-the card without snapping an in-flight hover lift. Each command accepts only
+the card without snapping an in-flight hover lift. Rust remembers the lift the
+layer actually holds, not the one last requested: a hover change while the card
+has no words leaves a hidden layer where it is, so the next words move it to
+the lift the webview card already wears instead of stranding the material above
+or below its words. Each command accepts only
 its owning window. Destroyed windows release their cached material, and reuse
 checks attachment to the current content view before acknowledging success.
 Notch placement removes both materials. Once Rust acknowledges, the
