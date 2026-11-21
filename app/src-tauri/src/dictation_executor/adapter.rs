@@ -40,7 +40,7 @@ static CORE_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
 /// The divergences counted so far (in a test build, less the ones a test planted on purpose:
 /// [`forgive_planted_divergences`]).
-#[cfg_attr(not(feature = "dictation-shadow"), allow(dead_code))] // Read by the shadow and tests only; removed with the shadow in #1154.
+#[cfg_attr(not(test), allow(dead_code))] // Read by tests and by the shadow (removed in #1154).
 pub(crate) fn core_divergences() -> u64 {
     let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
     #[cfg(test)]
@@ -237,7 +237,8 @@ impl FieldAdapter {
     /// D-S1-2), so the leaf-mutex read stays where today's code does it. The crate
     /// test `no_lifecycle_decision_reads_m3_or_m4` pins that.
     #[cfg_attr(test, track_caller)]
-    // No caller in any build, on purpose: the cutover tests assert no family entry reaches it.
+    // No caller in any build, on purpose: the cutover tests assert no family entry reaches it,
+    // and the per-family cutover rollback patches call it again. Kept until #1154.
     #[allow(dead_code)]
     pub(crate) fn project_lifecycle_view(
         app: &AppState,

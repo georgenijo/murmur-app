@@ -10,9 +10,6 @@ pub(crate) mod executor;
 #[cfg(test)]
 pub(crate) mod probe;
 #[cfg(feature = "dictation-shadow")]
-// Shadow layer, removed in #1154: `Flight::none`, `observed` and `is_submitted` have no
-// caller in some builds. The allow sits here so `shadow.rs` stays untouched until then.
-#[allow(dead_code)]
 pub(crate) mod shadow;
 
 pub(crate) use adapter::FieldAdapter;
