@@ -24,9 +24,6 @@ mod cleanup;
 mod cli_command;
 mod code_signing;
 mod commands;
-// Stage 2a PR 0 infrastructure: the decide functions that register and consume
-// operations arrive with the family PRs, so nothing outside tests calls it yet.
-#[allow(dead_code)]
 mod core_history;
 pub mod coreml_installer;
 mod correction;
@@ -39,10 +36,8 @@ mod dictation_context;
 #[cfg(test)]
 mod dictation_context_equivalence_tests;
 mod dictation_diagnostics;
-// Stage 2a PR 0: the adapter is live; the executor has no production caller yet.
 #[cfg(test)]
 mod dictation_diagnostics_contract;
-#[allow(dead_code)]
 mod dictation_executor;
 // Stage 2c shadow mode (appendix C8): only in builds with the `dictation-shadow`
 // feature, and active only with MURMUR_SHADOW=1. Removal: #1154.

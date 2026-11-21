@@ -29,9 +29,6 @@
 //! * **Nothing is evicted.** An outstanding op leaves only by consumption or its
 //!   owner's `Drop` ([`ContinuationGuard`]); a recording-id advance retires
 //!   nothing. The 8 / 64 / 16 caps are diagnostic high-water values (rule 5).
-//!
-//! Not yet called from a production path (Stage 2a PR 0): the decide functions
-//! that register and consume continuations arrive with the family PRs.
 
 use crate::MutexExt;
 use murmur_dictation_core::decision::{ContKind, Continuation, ContinuationSpec, OpStatus};
@@ -73,6 +70,7 @@ pub(crate) fn assert_not_held() {
 }
 
 /// `true` while the current thread is inside a `core_history` critical section.
+#[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
 pub(crate) fn is_held_on_this_thread() -> bool {
     HELD.with(Cell::get)
 }
@@ -126,6 +124,7 @@ pub(crate) enum Retired {
 
 /// Pipeline facts for `Occupancy`, read outside D (C3.9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Built only by `snapshot_for_occupancy`, which tests alone call.
 pub(crate) struct OccupancySnapshot {
     /// A pipeline is registered for the current, uncancelled recording.
     pub(crate) pipeline_running: bool,
@@ -320,6 +319,7 @@ impl CoreHistoryLock {
     /// **whatever the status** with no history lock held, then
     /// `ret_if_matches` (lock, released). A site never skips its stale rule
     /// because the status is `Unknown`.
+    #[cfg_attr(feature = "dictation-shadow", allow(dead_code))] // The guard calls `consume_observed` instead when the shadow is compiled in; #1154.
     pub(crate) fn consume<R>(&self, token: Continuation, decide: impl FnOnce(OpStatus) -> R) -> R {
         let status = self.validate(token);
         let outcome = decide(status);
@@ -361,6 +361,7 @@ impl CoreHistoryLock {
 
     /// Pipeline facts for `Occupancy`. The ids are copied under the lock; the
     /// draining predicate runs after it is released.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn snapshot_for_occupancy(&self, core: &DictationCore) -> OccupancySnapshot {
         let ids: Vec<RecordingId> =
             self.critical(|history| history.pipelines.keys().copied().collect());
@@ -376,12 +377,14 @@ impl CoreHistoryLock {
     }
 
     /// Outstanding operation count.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn outstanding_ops(&self) -> usize {
         self.critical(|history| history.pending_ops.len())
     }
 
     /// Whether `token`'s op is outstanding with the same recording id and kind.
     /// Unlike [`validate`](Self::validate) it does not count.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn is_outstanding(&self, token: Continuation) -> bool {
         self.critical(|history| {
             history.pending_ops.get(&token.op).is_some_and(|pending| {
@@ -404,16 +407,19 @@ impl CoreHistoryLock {
     }
 
     /// Registered pipeline count.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn pipeline_count(&self) -> usize {
         self.critical(|history| history.pipelines.len())
     }
 
     /// Diagnostic high-water values.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn high_water(&self) -> HighWater {
         self.critical(|history| history.high_water)
     }
 
     /// Diagnostic counters.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn counters(&self) -> HistCounters {
         self.critical(|history| history.counters)
     }

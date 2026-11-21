@@ -13,8 +13,9 @@ use murmur_dictation_core::status::{
 };
 
 macro_rules! mirror {
-    ($app:ident <-> $core:ident, $to_core:ident, $from_core:ident, $all:ident: $($variant:ident),+ $(,)?) => {
+    ($app:ident <-> $core:ident, $(#[$to_core_attr:meta])* $to_core:ident, $from_core:ident, $all:ident: $($variant:ident),+ $(,)?) => {
         /// The core vocabulary's name for an app value.
+        $(#[$to_core_attr])*
         pub(crate) fn $to_core(value: $app) -> $core {
             match value {
                 $($app::$variant => $core::$variant,)+
@@ -42,7 +43,8 @@ mirror!(DictationErrorCode <-> ErrCode, error_code_to_core, error_code_from_core
     FirstBufferTimeout, InitializationTimeout, PermissionPromptTimeout, TerminationUnconfirmed,
     WorkerPanicked, SignatureInvalid);
 
-mirror!(DictationTerminalOutcome <-> TerminalOutcome, terminal_outcome_to_core, terminal_outcome_from_core, ALL_TERMINAL_OUTCOMES:
+// `terminal_outcome_to_core` is read only by tests; production maps core to app only.
+mirror!(DictationTerminalOutcome <-> TerminalOutcome, #[cfg_attr(not(test), allow(dead_code))] terminal_outcome_to_core, terminal_outcome_from_core, ALL_TERMINAL_OUTCOMES:
     Success, NoSpeech, TooShort, UserCancelledStarting, UserCancelledRecording,
     UserCancelledProcessing, CaptureInitFailure, RuntimeInterruption, StopFailure,
     PipelineFailure, Superseded);

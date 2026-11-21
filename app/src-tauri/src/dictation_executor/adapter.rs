@@ -40,6 +40,7 @@ static CORE_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
 /// The divergences counted so far (in a test build, less the ones a test planted on purpose:
 /// [`forgive_planted_divergences`]).
+#[cfg_attr(not(feature = "dictation-shadow"), allow(dead_code))] // Read by the shadow and tests only; removed with the shadow in #1154.
 pub(crate) fn core_divergences() -> u64 {
     let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
     #[cfg(test)]
@@ -217,6 +218,7 @@ impl FieldAdapter {
     /// The M3/M4 observations of the live slots (C1.2): `cancelled_id` is one
     /// atomic load and the context id is one leaf-mutex read, the same reads
     /// `DictationCore::project` performs and a cut-over entry will perform.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn observe_live(app: &AppState) -> LiveObs {
         #[cfg(test)]
         super::probe::view();
@@ -235,6 +237,8 @@ impl FieldAdapter {
     /// D-S1-2), so the leaf-mutex read stays where today's code does it. The crate
     /// test `no_lifecycle_decision_reads_m3_or_m4` pins that.
     #[cfg_attr(test, track_caller)]
+    // No caller in any build, on purpose: the cutover tests assert no family entry reaches it.
+    #[allow(dead_code)]
     pub(crate) fn project_lifecycle_view(
         app: &AppState,
         dictation: &DictationState,
