@@ -421,7 +421,6 @@ pub struct AppState {
     /// `pipelines`): the one lock the refactor adds. A **leaf** `std` mutex,
     /// taken only after `dictation` when that is held and never held across
     /// another lock, an await or an effect (appendix C1.4.1).
-    #[allow(dead_code)] // Stage 2a PR 0: first readers arrive with the family PRs.
     pub(crate) core_history: crate::core_history::CoreHistoryLock,
     /// The most recent recording ids whose preserved capture a stop or disposal took
     /// (`take_interrupted_dictation` found it). The supervisor's take is destructive, so a
@@ -538,6 +537,7 @@ impl AppState {
 
     /// The recording id the installed context belongs to, if one is installed
     /// (the M4 observation, appendix C1.2). One leaf-mutex read.
+    #[cfg_attr(not(test), allow(dead_code))] // Only `FieldAdapter::observe_live` reads it, and tests alone call that.
     pub(crate) fn active_context_id(&self) -> Option<u64> {
         self.active_context
             .lock_or_recover()

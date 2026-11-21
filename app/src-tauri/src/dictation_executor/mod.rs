@@ -1,5 +1,6 @@
 //! The shell side of the dictation core (appendix C1.4.2, C4): the common field
-//! adapter, and (from the executor PR of Stage 2a PR 0) the effect executor.
+//! adapter, the conversions between shell and core types, and the effect
+//! executor.
 //!
 //! The shell owns every lock scope. Nothing here takes D or T.
 

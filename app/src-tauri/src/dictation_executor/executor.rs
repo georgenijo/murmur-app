@@ -549,6 +549,7 @@ impl<'a> Executor<'a> {
     }
 
     /// What the executor did so far, in order.
+    #[cfg_attr(not(test), allow(dead_code))] // Read only by tests.
     pub(crate) fn witness(&self) -> &[Witness] {
         &self.witness
     }
@@ -556,12 +557,6 @@ impl<'a> Executor<'a> {
     /// The recording id an `ID+` allocated (a shell local, X4).
     pub(crate) fn bound_recording_id(&self) -> Option<u64> {
         self.bound_recording_id
-    }
-
-    /// Times an `ID+` allocated an id other than the one the decision predicted
-    /// (`core.next_id()`); counted, never ignored (C0.2, C8.6).
-    pub(crate) fn id_mismatches(&self) -> u32 {
-        self.id_mismatches
     }
 
     /// `true` when every effect has run.

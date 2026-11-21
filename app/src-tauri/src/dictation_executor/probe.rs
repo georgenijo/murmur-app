@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static CORE_NOW: AtomicU64 = AtomicU64::new(0);
 static VIEWS: AtomicU64 = AtomicU64::new(0);
+// The shadow's read counters: read only in shadow builds; removed with the shadow in #1154.
+#[allow(dead_code)]
 static SHADOW_READS: AtomicU64 = AtomicU64::new(0);
+#[allow(dead_code)]
 static FLAG_LOADS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn core_now() {
@@ -20,6 +23,7 @@ pub(crate) fn view() {
 /// One `FieldAdapter::project_lifecycle_view` call (the `DictationCore::project` entry),
 /// with its caller. Counted always; the caller is remembered only while a test records
 /// (`record_projections`). The lifecycle cutover's not-called test reads these.
+#[allow(dead_code)] // Its one caller, `project_lifecycle_view`, is kept for the cutover rollback patches (#1154).
 pub(crate) fn projected(caller: &'static std::panic::Location<'static>) {
     PROJECTED.fetch_add(1, Ordering::Relaxed);
     if PROJECTION_SITES_ON.load(Ordering::Relaxed) {
@@ -327,15 +331,18 @@ pub(crate) fn take_flag_sites() -> Vec<(&'static str, u32)> {
     SITES.with(|sites| std::mem::take(&mut *sites.borrow_mut()))
 }
 
+#[allow(dead_code)] // Read only in shadow builds; removed with the shadow in #1154.
 pub(crate) fn flag_loads() -> u64 {
     FLAG_LOADS.load(Ordering::Relaxed)
 }
 
+#[allow(dead_code)] // Read only in shadow builds; removed with the shadow in #1154.
 pub(crate) fn shadow_reads() -> u64 {
     SHADOW_READS.load(Ordering::Relaxed)
 }
 
 /// `(core_now calls, view projections)` so far.
+#[allow(dead_code)] // Read only in shadow builds; removed with the shadow in #1154.
 pub(crate) fn counts() -> (u64, u64) {
     (
         CORE_NOW.load(Ordering::Relaxed),

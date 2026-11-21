@@ -6,23 +6,24 @@ happens while one of them is held. This note records what the code does at
 `main` @ `466bdb37`. It does not propose behaviour changes. Where a wait is
 unbounded or a hold is long, the note says so and leaves the behaviour alone.
 
-Line numbers are for that revision. `recording.rs` means `commands/recording.rs`;
+Line numbers in the body are for that revision. The citations in the lock
+inventory table below were refreshed at `main` @ `ce5041ad`. `recording.rs` means `commands/recording.rs`;
 `mp` means `commands/microphone_preview.rs`; `al` means `audio_lifecycle.rs`.
 
 ## Lock inventory
 
 | Name | Kind | Defined | Role |
 |---|---|---|---|
-| **T** | `tokio::sync::Mutex<()>` (`AppState.recording_transition`) | `state.rs:368` | Serializes start, stop, cancel, preview start, meeting start, benchmarks and file transcription against each other. Held across `.await` points. |
-| **D** | `std::sync::Mutex<DictationState>` (`AppState.dictation`) | `state.rs:364` | Dictation status and recording id. It is also the delivery owner: there is no separate delivery lock, so delivery jobs take D (`with_current_delivery_owner*`, `recording.rs:1616-1651`). |
-| `active_context` | std mutex | `state.rs:405` | Per-recording context snapshot. `clear_active_context` (`state.rs:481`) takes it and, inside it, `vad_stream` (`state.rs:380`) and `stream_reuse` (`state.rs:378`). |
-| `last_transcription_at`, `model_idle_policy` | std mutexes | `state.rs:370-371` | Idle-unload bookkeeping. |
+| **T** | `tokio::sync::Mutex<()>` (`AppState.recording_transition`) | `state.rs:379` | Serializes start, stop, cancel, preview start, meeting start, benchmarks and file transcription against each other. Held across `.await` points. |
+| **D** | `std::sync::Mutex<DictationState>` (`AppState.dictation`) | `state.rs:371` | Dictation status and recording id. It is also the delivery owner: there is no separate delivery lock, so delivery jobs take D (`with_current_delivery_owner*`, `recording.rs:3026-3055`). |
+| `active_context` | std mutex | `state.rs:416` | Per-recording context snapshot. `clear_active_context` (`state.rs:561`) takes it and, inside it, `vad_stream` (`state.rs:391`) and `stream_reuse` (`state.rs:389`). |
+| `last_transcription_at`, `model_idle_policy` | std mutexes | `state.rs:381-382` | Idle-unload bookkeeping. |
 | backend mutex | `ModelRuntimeManager.inner` | `model_runtime.rs:860` (in `unload`) | Held by any decode, model load or unload. |
 | `dictation_telemetry`, diagnostics store, performance `entries` | std mutexes | `dictation_telemetry.rs`, `recording.rs` | Terminal-claim and performance bookkeeping. Leaves. |
 | supervisor `PublicState.owner`, `hal_boundary`, `INTERRUPTED_CAPTURES` | std mutexes | `al:675` (`hal_boundary`), `al:2706` (`INTERRUPTED_CAPTURES`) | Supervisor-side state. Leaves, except that `hal_boundary` is held across `sink.notify` on the supervisor thread (`al:1455`). |
-| keyboard detectors, `HOLD_PROMOTION` | std mutexes | `keyboard.rs:1574`, `:1781-1782` | Taken after D when both are needed (see below). |
+| keyboard detectors, `HOLD_PROMOTION` | std mutexes | `keyboard.rs:1574`, `:1784-1786` | Taken after D when both are needed (see below). |
 | `PREPARATION` | std mutex | `audio_prepare.rs:261` | Capture-preparation slot. Leaf. |
-| **`core_history`** (planned) | std mutex | not yet in the code | See [the planned leaf lock](#planned-leaf-lock-core_history). |
+| **`core_history`** | std mutex (`AppState.core_history`) | `state.rs:424` | Operation history for the dictation core. See [the leaf lock](#leaf-lock-core_history). |
 
 Preview hide ownership is atomics, not a lock (`commands/dictation_preview.rs`).
 
@@ -67,9 +68,9 @@ keep each site's order: `IdleGuard::finish` calls `clear_active_context` and
 then takes D (`recording.rs:1063`, `:1067`); the bridge's Idle arm calls
 `clear_active_context` while holding D (`:5272`).
 
-## The comment at `state.rs:365-367` was wrong
+## The old comment on `recording_transition` was wrong
 
-The comment on `recording_transition` said the lock "is never held while waiting
+The comment on `recording_transition` (now `state.rs:372-378`) said the lock "is never held while waiting
 for Core Audio or a channel". That is false for start. The start command holds T
 across a synchronous wait on a supervisor channel:
 
@@ -215,13 +216,13 @@ Examples verified in this checkout:
 
 Moving an effect to another class is a behaviour change.
 
-## Planned leaf lock: `core_history`
+## Leaf lock: `core_history`
 
-The refactor adds exactly one lock, `AppState.core_history`, a `std::sync::Mutex`
-holding the operation history: pending operations (H1) and running pipelines
-(H2). Operation ids come from a process-global `NEXT_OP` atomic that lives
-outside the lock. It does not exist yet; this section is the rule it must
-follow when it lands in the first Stage 2a PR.
+The refactor added exactly one lock, `AppState.core_history` (`state.rs:424`), a
+`std::sync::Mutex` holding the operation history: pending operations (H1) and
+running pipelines (H2). Operation ids come from a process-global `NEXT_OP`
+atomic that lives outside the lock. It is live: `commands/recording.rs` reads
+it through `core_history::CoreHistoryLock`. This section is the rule it follows.
 
 1. **Leaf.** It is taken only after D if D is held (D → `core_history`, never
    the reverse). It is never held while taking another lock, while awaiting, or
