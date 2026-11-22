@@ -840,6 +840,24 @@ mod tests {
     }
 
     #[test]
+    fn real_t3_rejection_is_exit_one_with_empty_stdout() {
+        // Observed from the real CLI for an unknown provider or model: exit 1, nothing on
+        // stdout, the reason on stderr (which this module discards).
+        let (runner, notifier) = run(
+            vec![Ok(RunOutput {
+                exit_code: 1,
+                stdout: String::new(),
+            })],
+            "fix the fade",
+        );
+        assert_eq!(runner.calls().len(), 1);
+        assert_eq!(
+            notifier.bodies(),
+            ["Agent command failed: T3 reported an error."]
+        );
+    }
+
+    #[test]
     fn parser_reads_real_shape_and_tolerates_leading_noise() {
         let real = r#"{"threadId":"mcp:006ba3e9","runId":"run:thread:1","status":"completed","reply":"Started.\nFOLLOW_UP: WAIT","error":null}"#;
         assert_eq!(
@@ -911,6 +929,86 @@ mod tests {
         assert_eq!(
             dirs.iter().filter(|d| **d == Path::new("/usr/bin")).count(),
             1
+        );
+    }
+
+    /// Live check against the real `t3` CLI and the running T3 server. Not part of CI.
+    ///
+    /// Env: `MURMUR_E2E_TRANSCRIPT` (default "what's running?"), `MURMUR_E2E_PROJECT`
+    /// (default the dispatch project), `MURMUR_E2E_WAIT_SECS` (default 900).
+    /// Run: `cargo test --lib real_t3_round_trip -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore = "needs a running T3 server and the real t3 CLI"]
+    fn real_t3_round_trip() {
+        let transcript =
+            std::env::var("MURMUR_E2E_TRANSCRIPT").unwrap_or_else(|_| "what's running?".to_owned());
+        let project = std::env::var("MURMUR_E2E_PROJECT")
+            .unwrap_or_else(|_| "/Users/george-mac-mini/Documents/code/agent-dispatch".to_owned());
+        let wait = Duration::from_secs(
+            std::env::var("MURMUR_E2E_WAIT_SECS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(900),
+        );
+        let config = AgentCommandConfig {
+            t3_bin: None,
+            dispatch_project: project,
+            provider: "claude_cpa".into(),
+            model: "claude-sonnet-5-5".into(),
+        };
+
+        struct PrintingNotifier {
+            seen: Arc<Mutex<Vec<(String, String)>>>,
+            started: Instant,
+        }
+        impl AgentNotifier for PrintingNotifier {
+            fn notify(&self, title: &str, body: &str) {
+                println!(
+                    "[{:>6.1}s] NOTIFY title={title:?} body={body:?}",
+                    self.started.elapsed().as_secs_f32()
+                );
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((title.to_owned(), body.to_owned()));
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let started = Instant::now();
+        println!(
+            "HOME={:?} PATH={:?} transcript={transcript:?}",
+            std::env::var("HOME").ok(),
+            std::env::var("PATH").ok()
+        );
+        spawn_dispatch(
+            transcript,
+            config,
+            Arc::new(PrintingNotifier {
+                seen: Arc::clone(&seen),
+                started,
+            }),
+        );
+
+        // The dispatcher thread is detached, so wait on the recorded notifications:
+        // until the expected count arrives, then a short grace period for extras.
+        let expected = std::env::var("MURMUR_E2E_EXPECT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
+        let deadline = Instant::now() + wait;
+        while seen.lock().unwrap().len() < expected && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        std::thread::sleep(Duration::from_secs(5));
+        assert!(
+            seen.lock().unwrap().len() >= expected,
+            "expected {expected} notification(s) within {wait:?}"
+        );
+        println!(
+            "TOTAL {:.1}s, {} notification(s)",
+            started.elapsed().as_secs_f32(),
+            seen.lock().unwrap().len()
         );
     }
 
