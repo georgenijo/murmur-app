@@ -1010,7 +1010,13 @@ decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`, `window_ca
 `tail_decode_error`), `piece_count`, `decoded_ms` (audio decoded at Stop: the tail
 when reused, nothing when the pieces covered everything, and on a fallback the
 whole clip plus any tail decode that was discarded first; a tail that was the
-whole clip counts once) and `overlap_words`.
+whole clip counts once), `overlap_words` and `stitch_diff`. `stitch_diff` says
+where a tail decode that failed the stitch differs from the committed overlap
+text, as a label and never a word of either: `empty`, `no_new_words` (the overlap
+reads the same and nothing follows it), `words` (a word differs or is missing),
+`first_word`, `last_word`, `first_and_last_word` or `interior` (the same words;
+only case or punctuation differs, at that position of the overlap), `whitespace`,
+and `none` when no tail was decoded or it stitched.
 
 **Evidence and limits.** The Core ML Parakeet cache on the development Mac lacks
 `Encoder.mlmodelc`, so decode reuse could not be run under Core ML there. The

@@ -165,7 +165,10 @@ clip was decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`,
 `window_cap`, `buffer_reset`, `superseded`, `long_recording`,
 `vad_not_incremental`, `bounds_mismatch`, `audio_mismatch`, `tail_too_long`,
 `busy`, `stitch_mismatch`, `tail_decode_error`), and numeric `piece_count`,
-`decoded_ms` (audio decoded at Stop; on a fallback the whole clip plus any discarded tail decode) and `overlap_words`. Exact-schema
+`decoded_ms` (audio decoded at Stop; on a fallback the whole clip plus any discarded tail decode) and `overlap_words`,
+and the label `stitch_diff` (where a tail decode that failed the stitch differs
+from the committed overlap: `none`, `empty`, `no_new_words`, `words`,
+`first_word`, `last_word`, `first_and_last_word`, `interior`, `whitespace`). Exact-schema
 sanitized in every build; no audio, text or paths. The preview tick outcome
 `stop_pending` marks a tick skipped because the stop gesture had begun (for every dictation, whatever the setting).
 

@@ -4310,7 +4310,8 @@ fn decode_final_transcript(
                     reason: Reason,
                     pieces: u32,
                     overlap_words: u64,
-                    tail_samples: usize| {
+                    tail_samples: usize,
+                    stitch_diff: &'static str| {
         whole_clip(backend).map(|attempt| FinalDecode {
             attempt,
             reuse: Some(Outcome {
@@ -4320,6 +4321,7 @@ fn decode_final_transcript(
                 // plus the whole-clip decode that replaced it.
                 decoded_ms: samples_to_ms(tail_samples + filtered.len()),
                 overlap_words,
+                stitch_diff,
             }),
         })
     };
@@ -4330,21 +4332,22 @@ fn decode_final_transcript(
                 reuse: None,
             })
         }
-        Err(reason) => return fallback(backend, reason, 0, 0, 0),
+        Err(reason) => return fallback(backend, reason, 0, 0, 0, "none"),
         Ok(Some(plan)) => plan,
     };
-    let outcome = |code: &'static str, decoded_samples: usize| Outcome {
+    let outcome = |code: &'static str, decoded_samples: usize, stitch_diff: &'static str| Outcome {
         code,
         pieces: plan.pieces,
         decoded_ms: samples_to_ms(decoded_samples),
         overlap_words: plan.overlap_words as u64,
+        stitch_diff,
     };
     let reused = |text: String, decoded_samples: usize| FinalDecode {
         attempt: BackendTranscriptionAttempt {
             text,
             empty_error: None,
         },
-        reuse: Some(outcome("reused", decoded_samples)),
+        reuse: Some(outcome("reused", decoded_samples, "none")),
     };
     if let Some(text) = plan.complete_text() {
         // The committed pieces already cover every kept sample.
@@ -4365,12 +4368,14 @@ fn decode_final_transcript(
                 plan.pieces,
                 plan.overlap_words as u64,
                 tail.len(),
+                "none",
             )
         }
     };
     if let Some(text) = plan.stitch(&decoded) {
         return Ok(reused(text, tail.len()));
     }
+    let stitch_diff = plan.stitch_diff(&decoded);
     if plan.tail_is_whole_clip() {
         // `tail` is all of `filtered`, so `decoded` is what the whole-clip
         // decode's first call returns. Finish it as that decode, once.
@@ -4387,7 +4392,11 @@ fn decode_final_transcript(
         )
         .map(|attempt| FinalDecode {
             attempt,
-            reuse: Some(outcome(Reason::StitchMismatch.as_str(), tail.len())),
+            reuse: Some(outcome(
+                Reason::StitchMismatch.as_str(),
+                tail.len(),
+                stitch_diff,
+            )),
         });
     }
     fallback(
@@ -4396,6 +4405,7 @@ fn decode_final_transcript(
         plan.pieces,
         plan.overlap_words as u64,
         tail.len(),
+        stitch_diff,
     )
 }
 
@@ -11801,14 +11811,14 @@ pub(crate) mod tests {
                 assert!(tail_len < filtered.len());
                 assert_eq!(result.attempt.text, "Whole clip authoritative result.");
                 assert_eq!(backend.sample_counts, [tail_len, filtered.len()]);
-                assert_eq!(
-                    outcome.code,
-                    if tail == "__test_decode_failure__" {
-                        "tail_decode_error"
-                    } else {
-                        "stitch_mismatch"
-                    }
-                );
+                let (code, stitch_diff) = match tail {
+                    "__test_decode_failure__" => ("tail_decode_error", "none"),
+                    "" => ("stitch_mismatch", "empty"),
+                    "Next stable segment." => ("stitch_mismatch", "no_new_words"),
+                    _ => ("stitch_mismatch", "last_word"),
+                };
+                assert_eq!(outcome.code, code);
+                assert_eq!(outcome.stitch_diff, stitch_diff);
                 assert_eq!(
                     outcome.decoded_ms,
                     ((tail_len + filtered.len()) / 16) as u64
@@ -11865,13 +11875,21 @@ pub(crate) mod tests {
             smart_punctuation: true,
             streaming_pipeline_enabled: true,
         };
-        for (decoded, code) in [
-            ("First stable segment. Tail words.", "reused"),
-            ("First stable segment, tail words.", "stitch_mismatch"),
-            ("first stable segment. Tail words.", "stitch_mismatch"),
-            ("First stable segment.", "stitch_mismatch"),
-            ("Another reading of it all.", "stitch_mismatch"),
-            ("  Padded reading of it all. ", "stitch_mismatch"),
+        for (decoded, code, stitch_diff) in [
+            ("First stable segment. Tail words.", "reused", "none"),
+            (
+                "First stable segment, tail words.",
+                "stitch_mismatch",
+                "last_word",
+            ),
+            (
+                "first stable segment. Tail words.",
+                "stitch_mismatch",
+                "first_word",
+            ),
+            ("First stable segment.", "stitch_mismatch", "no_new_words"),
+            ("Another reading of it all.", "stitch_mismatch", "words"),
+            ("  Padded reading of it all. ", "stitch_mismatch", "words"),
         ] {
             let (plan, filtered) = one_piece_reuse();
             assert!(plan.tail_is_whole_clip());
@@ -11911,6 +11929,7 @@ pub(crate) mod tests {
             assert_eq!(result.attempt.empty_error, reference.empty_error);
             let outcome = result.reuse.expect("a decision was taken");
             assert_eq!(outcome.code, code);
+            assert_eq!(outcome.stitch_diff, stitch_diff);
             assert_eq!(outcome.pieces, 1);
             assert_eq!(outcome.decoded_ms, (filtered.len() / 16) as u64);
         }
@@ -11965,6 +11984,7 @@ pub(crate) mod tests {
             assert_eq!(result.attempt.empty_error, reference.empty_error);
             let outcome = result.reuse.unwrap();
             assert_eq!(outcome.code, "stitch_mismatch");
+            assert_eq!(outcome.stitch_diff, "empty");
         }
     }
 
