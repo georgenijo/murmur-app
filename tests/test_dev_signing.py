@@ -134,7 +134,7 @@ class BundleSettingsTests(unittest.TestCase):
         config = tauri / "tauri.speed-test.conf.json"
         self.assertEqual(
             dev.bundle_settings(config),
-            ("com.localdictation.speedtest", "Murmur Speed Test"),
+            ("com.localdictation.refactor-test", "Murmur Speed Test"),
         )
         overlay = json.loads(config.read_text(encoding="utf-8"))
         base = json.loads((tauri / "tauri.conf.json").read_text(encoding="utf-8"))

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "identifier": "com.localdictation.speedtest",
+  "identifier": "com.localdictation.refactor-test",
   "productName": "Murmur Speed Test",
   "bundle": {
     "icon": [

@@ -9,8 +9,9 @@ export const INTERNAL_BENCHMARK_BUILD =
 
 /**
  * Compile-time marker for the "Murmur Speed Test" experiment variant
- * (`tauri.speed-test.conf.json`). It is a separate app with its own identifier,
- * data and logs. It never self-updates, so an over-the-air release cannot
+ * (`tauri.speed-test.conf.json`). It is a separate app with its own name and
+ * icon that uses the internal `com.localdictation.refactor-test` identifier, so
+ * its data and logs are not production's. It never self-updates, so an over-the-air release cannot
  * replace it, and it never registers its own login item.
  */
 export const SPEED_TEST_BUILD = import.meta.env.VITE_MURMUR_SPEED_TEST === '1';

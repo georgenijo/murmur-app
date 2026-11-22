@@ -6,11 +6,11 @@ branch, never released, and never replaces `/Applications/Murmur.app`.
 
 | | Production | Speed Test |
 |---|---|---|
-| Bundle identifier | `com.localdictation` | `com.localdictation.speedtest` |
+| Bundle identifier | `com.localdictation` | `com.localdictation.refactor-test` (the existing internal test identifier) |
 | Product name | Murmur | Murmur Speed Test |
 | Icon | green rings | orange rings with a **SPEED** banner |
-| Data directory | `~/Library/Application Support/com.localdictation` | `~/Library/Application Support/com.localdictation.speedtest` |
-| Logs | `~/Library/Application Support/local-dictation/logs/` | `~/Library/Application Support/local-dictation-speed-test/logs/` |
+| Data directory | `~/Library/Application Support/com.localdictation` | `~/Library/Application Support/com.localdictation.refactor-test` |
+| Logs | `~/Library/Application Support/local-dictation/logs/` | `~/Library/Application Support/local-dictation-refactor-test/logs/` |
 | Log shipper | on | off (internal bundle) |
 | Updates | OTA | none (see below) |
 | Login item | user setting | hidden; never registered |
@@ -19,7 +19,20 @@ branch, never released, and never replaces `/Applications/Murmur.app`.
 The log files (`app.log`, `events.jsonl`) have the same names and event codes as
 production, so `pipeline.dictation_completed` and
 `pipeline.dictation_stage_gaps` compare directly. The diagnostics database is
-`~/Library/Application Support/com.localdictation.speedtest/diagnostics/performance.sqlite3`.
+`~/Library/Application Support/com.localdictation.refactor-test/diagnostics/performance.sqlite3`.
+
+## Why the refactor-test identifier
+
+The log directory is chosen by bundle identifier in `telemetry.rs`, and only the
+production, `com.localdictation.refactor-test` and `com.localdictation.bench`
+identifiers are mapped to their own directories. Any other identifier logs into
+production's directory and ships its logs. The variant therefore reuses the
+refactor-test identifier, which also turns the log shipper off. Do not run the
+Speed Test variant and a Refactor Test bundle on one Mac at the same time: they
+share data, logs and macOS permission grants. (A distinct identifier needs a
+`telemetry.rs` change, which `scripts/check_shadow_diff.py` currently rejects for
+any PR because of two `dictation-shadow` twins in that file that its table does
+not list.)
 
 ## What is shared with production
 
@@ -60,7 +73,8 @@ The script prints `DEV_APP=…`. Install it by copying the bundle with
 ## Permissions
 
 macOS stores grants per bundle identifier and signing identity, so the variant
-asks for its own Microphone, Accessibility and Input Monitoring grants once.
+asks for the `com.localdictation.refactor-test` Microphone, Accessibility and
+Input Monitoring grants once.
 Signed with the same Apple Development certificate, a rebuild keeps them.
 
 Quit production Murmur before launching the variant. Both listen for the same
