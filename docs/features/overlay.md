@@ -330,7 +330,7 @@ recording stop whose teardown remains blocked surfaces persistent guidance in
 the main recording-error area.
 
 ### Processing
-A 76pt field runs the selected Sweep, Flow or Pulse style. Processing→idle holds Done for 400ms: dots clear from the center outward, then fade. A new recording cancels the hold. Priority refusal/failure/delivery cues hide the field immediately. No provisional words remain while processing.
+A 76pt field runs the selected Sweep, Flow or Pulse style. Processing→idle holds Done for 250ms: dots clear from the center outward, then fade. A new recording cancels the hold. Priority refusal/failure/delivery cues hide the field immediately. No provisional words remain while processing.
 
 ### Clipboard Only (transient)
 
