@@ -3413,7 +3413,9 @@ fn run_backend(
                 if step == CaptureSetupStep::AudioUnitAdopted
                     && transition == SetupTransition::Completed
                 {
-                    // Content-free, file-log only (like `audio.helper_prepare_*`).
+                    // Content-free info event (like `audio.helper_prepare_*`): it is
+                    // unregistered, so it reaches the event ring, events.jsonl and log
+                    // shipping unsanitized. Add fields only after registering a code.
                     // Absent on a start that created its own instance; read it
                     // next to the run record's `audioUnitNewMs`.
                     tracing::info!(
