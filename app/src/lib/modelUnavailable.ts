@@ -56,5 +56,20 @@ export function modelUnavailableLabel(reason: ModelUnavailableReason): string {
         : 'The selected speech model is not ready. Click to open Speech-to-text settings and repair it.';
 }
 
+/**
+ * Whether a runtime snapshot of the cue's own model shows the problem fixed.
+ * For the on-disk problems that is "installed". A `loadFailed` cue is raised
+ * precisely while the model IS installed but fails to load, so installed proves
+ * nothing there: only a successful load (`ready`) does.
+ */
+export function modelCueRepaired(
+  cue: { reason: ModelUnavailableReason },
+  snapshot: { installState: string; lifecycleState?: string },
+): boolean {
+  return cue.reason === 'loadFailed'
+    ? snapshot.lifecycleState === 'ready'
+    : snapshot.installState === 'installed';
+}
+
 /** The settings destination every model cue opens. */
 export const MODEL_SETTINGS_TARGET = { page: 'ai-transcription', target: 'transcription-model' } as const;

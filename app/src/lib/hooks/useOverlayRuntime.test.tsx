@@ -669,9 +669,11 @@ describe('useOverlayRuntime transient cues', () => {
 
   const CUE_MODEL = 'parakeet-tdt-0.6b-v3-coreml';
 
-  async function emitSnapshot(modelName: string, installState: string) {
+  async function emitSnapshot(modelName: string, installState: string, lifecycleState = 'unloaded') {
     await act(async () => {
-      mocks.handlers.get('model-runtime-status-changed')?.({ payload: { modelName, installState, generation: 1 } });
+      mocks.handlers.get('model-runtime-status-changed')?.({
+        payload: { modelName, installState, lifecycleState, generation: 1 },
+      });
     });
   }
 
@@ -720,6 +722,44 @@ describe('useOverlayRuntime transient cues', () => {
     await emitModelUnavailable({ reason: 'incomplete', phase: 'start', model: CUE_MODEL });
     mocks.getModelRuntimeStatus.mockResolvedValue({ installState: 'notInstalled' });
     mocks.selectedModel = 'tiny.en';
+    await act(async () => { blocked = await current?.confirmModelUnavailable(); });
+    expect(blocked).toBe(false);
+    expect(current?.modelUnavailable).toBeNull();
+  });
+
+  it('keeps a loadFailed cue through installed snapshots: the model is installed when it fails to load', async () => {
+    await emitModelUnavailable({ reason: 'loadFailed', phase: 'transcribe', model: CUE_MODEL });
+    await emitSnapshot(CUE_MODEL, 'installed', 'loading');
+    await emitSnapshot(CUE_MODEL, 'installed', 'failed');
+    await emitSnapshot(CUE_MODEL, 'installed', 'unloaded');
+    expect(current?.modelUnavailable).toBe('loadFailed');
+    // A successful load is the repair.
+    await emitSnapshot(CUE_MODEL, 'installed', 'ready');
+    expect(current?.modelUnavailable).toBeNull();
+  });
+
+  it('a loadFailed cue still ends on a model switch and on the timeout', async () => {
+    await emitModelUnavailable({ reason: 'loadFailed', phase: 'transcribe', model: CUE_MODEL });
+    mocks.selectedModel = 'tiny.en';
+    await act(async () => { mocks.handlers.get('settings-changed')?.({ payload: null }); });
+    expect(current?.modelUnavailable).toBeNull();
+
+    mocks.selectedModel = CUE_MODEL;
+    await emitModelUnavailable({ reason: 'loadFailed', phase: 'transcribe', model: CUE_MODEL });
+    await act(async () => vi.advanceTimersByTime(MODEL_UNAVAILABLE_FLASH_MS));
+    expect(current?.modelUnavailable).toBeNull();
+  });
+
+  it('a click on a loadFailed cue re-checks the runtime but stays blocked while the model is installed', async () => {
+    await emitModelUnavailable({ reason: 'loadFailed', phase: 'transcribe', model: CUE_MODEL });
+    mocks.getModelRuntimeStatus.mockResolvedValue({ installState: 'installed', lifecycleState: 'failed' });
+    let blocked: boolean | undefined;
+    await act(async () => { blocked = await current?.confirmModelUnavailable(); });
+    // true: the widget opens Settings instead of falling through to the recording click.
+    expect(blocked).toBe(true);
+    expect(current?.modelUnavailable).toBe('loadFailed');
+
+    mocks.getModelRuntimeStatus.mockResolvedValue({ installState: 'installed', lifecycleState: 'ready' });
     await act(async () => { blocked = await current?.confirmModelUnavailable(); });
     expect(blocked).toBe(false);
     expect(current?.modelUnavailable).toBeNull();

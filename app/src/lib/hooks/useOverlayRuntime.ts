@@ -27,6 +27,7 @@ import {
 import {
   MODEL_UNAVAILABLE_EVENT,
   MODEL_UNAVAILABLE_FLASH_MS,
+  modelCueRepaired,
   modelUnavailableFromPayload,
   type ModelUnavailableCue,
   type ModelUnavailableReason,
@@ -543,7 +544,7 @@ export function useOverlayRuntime({
       const snapshot = event.payload;
       if (cancelled || !cue || !snapshot || typeof snapshot.modelName !== 'string') return;
       if (cue.model === null || snapshot.modelName === cue.model) {
-        if (snapshot.installState === 'installed') clearModelCue();
+        if (modelCueRepaired(cue, snapshot)) clearModelCue();
         return;
       }
       // A snapshot for another model: it matters only if that model is now the
@@ -574,7 +575,7 @@ export function useOverlayRuntime({
     try {
       const live = await getModelRuntimeStatus(cue.model);
       if (modelCueRef.current !== cue) return false;
-      if (live.installState === 'installed') {
+      if (modelCueRepaired(cue, live)) {
         clearModelCue();
         return false;
       }
