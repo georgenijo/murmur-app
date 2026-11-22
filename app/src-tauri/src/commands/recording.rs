@@ -4587,6 +4587,7 @@ async fn run_transcription_pipeline(
     let t_backend = std::time::Instant::now();
     gaps.pre_backend_us = micros_between(t_after_vad, t_backend);
     let mut decode_ended_at = None;
+    let mut decode_errored = false;
     let (transcription_attempt, load_report) = app_state
         .model_runtime
         .with_ready_backend(
@@ -4623,15 +4624,21 @@ async fn run_transcription_pipeline(
                 let decode_ended = std::time::Instant::now();
                 gaps.backend_decode_us = micros_between(decode_started, decode_ended);
                 decode_ended_at = Some(decode_ended);
+                // An error from here is a decode error, not a preparation error.
+                decode_errored = result.is_err();
                 result
             },
         )
         .inspect_err(|error| {
-            if let Some(reason) = app_state
-                .model_runtime
-                .failure_reason_for(&transcription.model_name, error)
-            {
-                emit_model_unavailable(app_handle, reason, "transcribe");
+            if let Some(reason) = app_state.model_runtime.failure_reason_for(
+                &transcription.model_name,
+                error,
+                decode_errored,
+            ) {
+                let _ = app_handle.emit(
+                    crate::events::MODEL_UNAVAILABLE_EVENT,
+                    model_unavailable_payload(reason, "transcribe", &transcription.model_name),
+                );
             }
         })?;
     let t_after_backend = std::time::Instant::now();
@@ -7549,11 +7556,6 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    if let Some(refusal) =
-        refuse_unusable_model(&app_handle, state.inner(), gesture_token.as_deref())
-    {
-        return Ok(refusal);
-    }
     let host = TauriHost::new(app_handle, state.performance.clone());
     start_native_recording_inner(
         &host,
@@ -7566,13 +7568,15 @@ pub async fn start_native_recording(
     .await
 }
 
-/// Tell the overlay the selected model cannot serve a dictation. Content-free:
-/// a fixed reason label and the phase, never a path or transcript.
-fn emit_model_unavailable(
-    app: &tauri::AppHandle,
+/// The content-free `dictation-model-unavailable` payload: a fixed reason label
+/// the phase and the selected model's catalogue id (a setting, never a path or
+/// transcript). The overlay uses the id to clear the cue once that model is
+/// repaired or another is selected.
+fn model_unavailable_payload(
     reason: model_runtime::ModelUnavailable,
     phase: &'static str,
-) {
+    model_name: &str,
+) -> serde_json::Value {
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.model_unavailable",
@@ -7580,42 +7584,18 @@ fn emit_model_unavailable(
         phase,
         "selected transcription model unavailable"
     );
-    let _ = app.emit(
-        crate::events::MODEL_UNAVAILABLE_EVENT,
-        serde_json::json!({ "reason": reason.as_str(), "phase": phase }),
-    );
+    serde_json::json!({ "reason": reason.as_str(), "phase": phase, "model": model_name })
 }
 
-/// Refuse a start whose selected model is missing, incomplete or still
-/// downloading, before any microphone ownership or recording generation
-/// exists: nothing is captured, so there is no audio to lose, and pressing the
-/// hotkey again after the repair is the retry. The gesture and speculative
-/// claims of this request are dropped so a key-down capture is discarded.
-fn refuse_unusable_model(
-    app: &tauri::AppHandle,
-    state: &State,
-    gesture_token: Option<&str>,
-) -> Option<serde_json::Value> {
-    let model_name = state
-        .app_state
-        .dictation
-        .lock_or_recover()
-        .model_name
-        .clone();
-    let reason = state
-        .app_state
-        .model_runtime
-        .start_blocker_for(&model_name)?;
-    // Claiming consumes this request's gesture stamp; dropping the speculative
-    // claim discards any capture the key-down opened.
-    let _ = audio_lifecycle::gesture::claim(gesture_token);
-    drop(audio_lifecycle::speculative::claim(gesture_token));
-    emit_model_unavailable(app, reason, "start");
-    Some(serde_json::json!({
+/// The reply of a start refused because the selected model cannot run. The
+/// start was admitted from Idle (no generation, no microphone owner), so the
+/// reply reports `idle` truthfully.
+fn model_unavailable_reply(reason: model_runtime::ModelUnavailable) -> serde_json::Value {
+    serde_json::json!({
         "type": "model_unavailable",
         "reason": reason.as_str(),
         "state": "idle",
-    }))
+    })
 }
 
 /// The first statement of the start entry (C4.2, decisions D-S2-2 / D-S2-3): a
@@ -7950,6 +7930,27 @@ async fn start_native_recording_inner(
             return start_ports::reply_of(&decision, None);
         }
         debug_assert_eq!(decision.row, RowId("R101.15"));
+        // The model gate: only a start that has passed every other refusal (app
+        // disabled, busy, already recording or starting, Smart Auto) and would
+        // now create a generation. The decision is pure and no effect has run:
+        // no id, status write, claim hand-off or microphone owner exists yet, so
+        // this refuses with nothing to undo. Dropping `slots` discards the
+        // key-down capture; the gesture stamp was consumed at entry.
+        let selected_model = dictation.model_name.clone();
+        if let Some(reason) = state.app_state.model_runtime.start_gate(&selected_model) {
+            #[cfg(feature = "dictation-shadow")]
+            after_d.hold(flight_101.seal_d(&state.app_state, &dictation));
+            drop(dictation);
+            #[cfg(feature = "dictation-shadow")]
+            after_d.submit();
+            drop(_transition);
+            // Emitted after D and T are released, never inside a core span.
+            let _ = host.emit_json(
+                crate::events::MODEL_UNAVAILABLE_EVENT,
+                model_unavailable_payload(reason, "start", &selected_model),
+            );
+            return Ok(model_unavailable_reply(reason));
+        }
         let (selected_device_name, device_selection, smart_auto_reason) = match smart_auto.as_ref()
         {
             Some(_) => match resolved {

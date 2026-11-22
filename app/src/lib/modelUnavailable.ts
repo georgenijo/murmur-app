@@ -18,12 +18,17 @@ export const MODEL_UNAVAILABLE_FLASH_MS = 8000;
 
 const REASONS: readonly string[] = ['notInstalled', 'incomplete', 'downloading', 'unsupported', 'loadFailed'];
 
-export function modelUnavailableFromPayload(value: unknown): ModelUnavailableReason | null {
+export interface ModelUnavailableCue {
+  reason: ModelUnavailableReason;
+  /** The selected model's catalogue id (a setting); null when the payload has none. */
+  model: string | null;
+}
+
+export function modelUnavailableFromPayload(value: unknown): ModelUnavailableCue | null {
   if (!value || typeof value !== 'object') return null;
-  const reason = (value as Record<string, unknown>).reason;
-  return typeof reason === 'string' && REASONS.includes(reason)
-    ? reason as ModelUnavailableReason
-    : null;
+  const { reason, model } = value as Record<string, unknown>;
+  if (typeof reason !== 'string' || !REASONS.includes(reason)) return null;
+  return { reason: reason as ModelUnavailableReason, model: typeof model === 'string' ? model : null };
 }
 
 /** The floating pill is 120pt wide: about 78px of text beside its glyph at

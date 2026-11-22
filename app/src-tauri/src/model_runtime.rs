@@ -267,12 +267,19 @@ pub(crate) fn start_blocker(
 
 /// What to tell the user when preparation failed at transcription time: the
 /// on-disk state when it explains the failure, else a plain load failure.
+/// `decode_errored` is true when the error came from the decode closure of
+/// `with_ready_backend` (the model was prepared and ran): such an error is not a
+/// model problem whatever its text says, so it never produces a cue.
 pub(crate) fn failure_reason(
     supported: bool,
     install_state: InstallState,
     cache_incomplete: bool,
     error: &str,
+    decode_errored: bool,
 ) -> Option<ModelUnavailable> {
+    if decode_errored {
+        return None;
+    }
     start_blocker(supported, install_state, cache_incomplete).or(
         match prepare_failure_kind(error) {
             "load_failed" => Some(ModelUnavailable::LoadFailed),
@@ -282,8 +289,49 @@ pub(crate) fn failure_reason(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    static FORCED_START_BLOCKER: std::cell::Cell<Option<ModelUnavailable>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test seam: on this thread, `start_gate` answers `blocker` instead of probing
+/// the disk, until the guard drops. Without it the gate reads the live runtime,
+/// and a test machine has no installed model.
+#[cfg(test)]
+pub(crate) struct ForcedStartBlocker;
+
+#[cfg(test)]
+pub(crate) fn force_start_blocker(blocker: Option<ModelUnavailable>) -> ForcedStartBlocker {
+    FORCED_START_BLOCKER.with(|slot| slot.set(blocker));
+    ForcedStartBlocker
+}
+
+#[cfg(test)]
+impl Drop for ForcedStartBlocker {
+    fn drop(&mut self) {
+        FORCED_START_BLOCKER.with(|slot| slot.set(None));
+    }
+}
+
 impl ModelRuntimeManager {
+    /// The start gate `start_native_recording_inner` consults once a start would
+    /// create a generation. Production reads the live runtime; unit tests never
+    /// probe the disk (see [`force_start_blocker`]).
+    pub(crate) fn start_gate(&self, model_name: &str) -> Option<ModelUnavailable> {
+        #[cfg(test)]
+        {
+            let _ = model_name;
+            FORCED_START_BLOCKER.with(|slot| slot.get())
+        }
+        #[cfg(not(test))]
+        {
+            self.start_blocker_for(model_name)
+        }
+    }
+
     /// The reason the model cannot be used, from the live runtime snapshot.
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn start_blocker_for(&self, model_name: &str) -> Option<ModelUnavailable> {
         let snapshot = self.snapshot(model_name).ok()?;
         start_blocker(
@@ -297,6 +345,7 @@ impl ModelRuntimeManager {
         &self,
         model_name: &str,
         error: &str,
+        decode_errored: bool,
     ) -> Option<ModelUnavailable> {
         let snapshot = self.snapshot(model_name).ok()?;
         failure_reason(
@@ -304,6 +353,7 @@ impl ModelRuntimeManager {
             snapshot.install_state,
             snapshot.cache_incomplete,
             error,
+            decode_errored,
         )
     }
 }
@@ -1731,22 +1781,34 @@ mod tests {
     fn failure_reason_prefers_disk_state_then_the_error_kind() {
         use InstallState::*;
         assert_eq!(
-            failure_reason(true, NotInstalled, true, "anything"),
+            failure_reason(true, NotInstalled, true, "anything", false),
             Some(ModelUnavailable::Incomplete)
         );
         assert_eq!(
-            failure_reason(true, Installed, false, "Failed to load Core ML model: boom"),
+            failure_reason(
+                true,
+                Installed,
+                false,
+                "Failed to load Core ML model: boom",
+                false
+            ),
             Some(ModelUnavailable::LoadFailed)
         );
         assert_eq!(
-            failure_reason(true, Installed, false, "model file not found"),
+            failure_reason(true, Installed, false, "model file not found", false),
             Some(ModelUnavailable::NotInstalled)
         );
-        // A decode error on a healthy model is not a model problem.
+        // An error of some other kind on a healthy model is not a model problem.
         assert_eq!(
-            failure_reason(true, Installed, false, "decode exploded"),
+            failure_reason(true, Installed, false, "decode exploded", false),
             None
         );
+        // An error out of the decode closure never is, whatever its text says,
+        // even when the disk state also looks wrong.
+        for error in ["audio file not found", "Failed to load samples"] {
+            assert_eq!(failure_reason(true, Installed, false, error, true), None);
+            assert_eq!(failure_reason(true, NotInstalled, true, error, true), None);
+        }
     }
 
     #[test]

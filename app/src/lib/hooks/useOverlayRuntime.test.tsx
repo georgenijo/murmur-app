@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   deferredListeners: new Set<string>(),
   deferredResolves: new Map<string, () => void>(),
   retryLastDelivery: vi.fn(),
+  selectedModel: 'parakeet-tdt-0.6b-v3-coreml',
+  getModelRuntimeStatus: vi.fn(),
   listen: vi.fn((event: string, handler: EventListener) => {
     if (mocks.listenFailures.has(event)) {
       return Promise.reject(new Error(`${event} unavailable`));
@@ -30,8 +32,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 vi.mock('../settings', () => ({
-  loadSettings: () => ({ hotkeyMissFeedback: false }),
+  loadSettings: () => ({ hotkeyMissFeedback: false, model: mocks.selectedModel }),
 }));
+vi.mock('../modelRuntime', () => ({ getModelRuntimeStatus: mocks.getModelRuntimeStatus }));
 vi.mock('../deliveryRecovery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../deliveryRecovery')>()),
   retryLastDelivery: mocks.retryLastDelivery,
@@ -76,6 +79,9 @@ describe('useOverlayRuntime transient cues', () => {
     mocks.deferredListeners.clear();
     mocks.deferredResolves.clear();
     mocks.retryLastDelivery.mockReset();
+    mocks.selectedModel = 'parakeet-tdt-0.6b-v3-coreml';
+    mocks.getModelRuntimeStatus.mockReset();
+    mocks.getModelRuntimeStatus.mockResolvedValue({ installState: 'notInstalled' });
     mocks.retryLastDelivery.mockResolvedValue({
       kind: 'auto_pasted',
       message: 'Last delivery pasted securely.',
@@ -641,7 +647,7 @@ describe('useOverlayRuntime transient cues', () => {
     await emitModelUnavailable(null);
     expect(current?.modelUnavailable).toBeNull();
 
-    await emitModelUnavailable({ reason: 'incomplete', phase: 'start' });
+    await emitModelUnavailable({ reason: 'incomplete', phase: 'start', model: 'parakeet-tdt-0.6b-v3-coreml' });
     expect(current?.modelUnavailable).toBe('incomplete');
     await act(async () => vi.advanceTimersByTime(MODEL_UNAVAILABLE_FLASH_MS - 1));
     expect(current?.modelUnavailable).toBe('incomplete');
@@ -659,5 +665,63 @@ describe('useOverlayRuntime transient cues', () => {
     expect(current?.modelUnavailable).toBe('loadFailed');
     await act(async () => root.render(<Harness status="idle" />));
     expect(current?.modelUnavailable).toBe('loadFailed');
+  });
+
+  const CUE_MODEL = 'parakeet-tdt-0.6b-v3-coreml';
+
+  async function emitSnapshot(modelName: string, installState: string) {
+    await act(async () => {
+      mocks.handlers.get('model-runtime-status-changed')?.({ payload: { modelName, installState, generation: 1 } });
+    });
+  }
+
+  it('clears the cue when its model is repaired, not when another model changes', async () => {
+    await emitModelUnavailable({ reason: 'incomplete', phase: 'start', model: CUE_MODEL });
+    await emitSnapshot(CUE_MODEL, 'installing');
+    expect(current?.modelUnavailable).toBe('incomplete');
+    await emitSnapshot('tiny.en', 'installed');
+    expect(current?.modelUnavailable).toBe('incomplete');
+    await emitSnapshot(CUE_MODEL, 'installed');
+    expect(current?.modelUnavailable).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears the cue when another model is selected', async () => {
+    await emitModelUnavailable({ reason: 'notInstalled', phase: 'start', model: CUE_MODEL });
+    await act(async () => { mocks.handlers.get('settings-changed')?.({ payload: null }); });
+    expect(current?.modelUnavailable).toBe('notInstalled');
+
+    mocks.selectedModel = 'tiny.en';
+    await act(async () => { mocks.handlers.get('settings-changed')?.({ payload: null }); });
+    expect(current?.modelUnavailable).toBeNull();
+
+    // The newly selected model reporting its own state also ends it.
+    mocks.selectedModel = CUE_MODEL;
+    await emitModelUnavailable({ reason: 'notInstalled', phase: 'start', model: CUE_MODEL });
+    mocks.selectedModel = 'base.en';
+    await emitSnapshot('base.en', 'installed');
+    expect(current?.modelUnavailable).toBeNull();
+  });
+
+  it('re-checks the live runtime on click: still broken opens Settings, repaired falls through', async () => {
+    await emitModelUnavailable({ reason: 'incomplete', phase: 'start', model: CUE_MODEL });
+    let blocked: boolean | undefined;
+    await act(async () => { blocked = await current?.confirmModelUnavailable(); });
+    expect(blocked).toBe(true);
+    expect(mocks.getModelRuntimeStatus).toHaveBeenCalledWith(CUE_MODEL);
+    expect(current?.modelUnavailable).toBe('incomplete');
+
+    mocks.getModelRuntimeStatus.mockResolvedValue({ installState: 'installed' });
+    await act(async () => { blocked = await current?.confirmModelUnavailable(); });
+    expect(blocked).toBe(false);
+    expect(current?.modelUnavailable).toBeNull();
+
+    // A model switched without any event: the settings read is the backstop.
+    await emitModelUnavailable({ reason: 'incomplete', phase: 'start', model: CUE_MODEL });
+    mocks.getModelRuntimeStatus.mockResolvedValue({ installState: 'notInstalled' });
+    mocks.selectedModel = 'tiny.en';
+    await act(async () => { blocked = await current?.confirmModelUnavailable(); });
+    expect(blocked).toBe(false);
+    expect(current?.modelUnavailable).toBeNull();
   });
 });

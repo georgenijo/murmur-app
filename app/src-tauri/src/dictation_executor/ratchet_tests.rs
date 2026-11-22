@@ -2346,6 +2346,7 @@ struct DynamicEmitter {
 const HOST_EVENTS: &[&str] = &[
     "dictation-delivery-outcome",
     "dictation-generation-started",
+    "dictation-model-unavailable",
     "recording-cancelled",
     "recording-status-changed",
     "transcription-complete",

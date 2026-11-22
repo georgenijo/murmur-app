@@ -39,9 +39,13 @@ App → General → **Recording overlay** chooses one of two renditions:
 ### Speech model problems
 
 A dictation never records into a dead end. When the selected model is not
-installed, incomplete, still downloading or unsupported, `start_native_recording`
-refuses the start before any microphone owner or recording generation exists
-and emits `dictation-model-unavailable` (`phase: "start"`). If preparation
+installed, incomplete, still downloading or unsupported, `start_native_recording_inner`
+refuses the start and emits `dictation-model-unavailable` (`phase: "start"`).
+The gate runs last: only a start that already passed every other refusal (app
+disabled, busy, already recording or starting, Smart Auto) and would now create
+a generation reaches it, so the other refusals keep their own replies and the
+`idle` it reports is true. It runs before any id, status write or microphone
+owner exists. If preparation
 fails while transcribing (a model removed or broken mid-recording), the same
 event fires with `phase: "transcribe"`. Nothing is captured on a refused start,
 so no audio is lost, and pressing the hotkey again after the repair is the
@@ -55,6 +59,9 @@ cancelled and microphone failures:
 - **Notch island.** An amber triangle in the left wing, the amber inset line,
   and the same word on the hover status line.
 
+The cue ends early when its model is repaired (a runtime snapshot reports it
+installed) or another model is selected, and a click re-checks the live runtime
+first, so a model fixed within the 8 seconds never sends the click to Settings.
 Clicking the pill or island while the cue shows opens Settings → AI & models →
 Speech-to-text (the model row, where Re-download lives) instead of starting or
 stopping a recording. The main window's error banner carries the same message

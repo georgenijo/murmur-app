@@ -137,7 +137,16 @@ export function OverlayWidget() {
   // While the model cue shows, a click on the pill opens the page that repairs
   // it instead of starting or stopping a recording.
   const { openSettingsPage } = settingsMirror;
-  const openModelSettings = useCallback(() => { void openSettingsPage(MODEL_SETTINGS_TARGET); }, [openSettingsPage]);
+  const { confirmModelUnavailable } = runtime;
+  const { handleClick: recordingClick } = recordingControls;
+  // Re-check the cue against the live runtime first: a model repaired or
+  // switched within the 8 s window must not send the click to Settings.
+  const onPillClick = useCallback(() => {
+    void confirmModelUnavailable().then((stillBlocked) => {
+      if (stillBlocked) void openSettingsPage(MODEL_SETTINGS_TARGET);
+      else recordingClick();
+    });
+  }, [confirmModelUnavailable, openSettingsPage, recordingClick]);
   const modelCueActive = runtime.modelUnavailable !== null;
 
   useEffect(() => {
@@ -227,7 +236,7 @@ export function OverlayWidget() {
         tapMissed={visual.showTapMissedLabel || modelCueActive}
         material={material}
         onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion || modelCueActive ? undefined : recordingControls.handleDoubleClick}
-        onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : modelCueActive ? openModelSettings : recordingControls.handleClick}
+        onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : modelCueActive ? onPillClick : recordingControls.handleClick}
         onMouseEnter={calibrating ? undefined : onHoverStart}
         onMouseMove={calibrating ? undefined : onHoverStart}
         onMouseLeave={calibrating ? undefined : onHoverEnd}
