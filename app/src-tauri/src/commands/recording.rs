@@ -7938,11 +7938,10 @@ async fn start_native_recording_inner(
         // key-down capture; the gesture stamp was consumed at entry.
         let selected_model = dictation.model_name.clone();
         if let Some(reason) = state.app_state.model_runtime.start_gate(&selected_model) {
-            #[cfg(feature = "dictation-shadow")]
-            after_d.hold(flight_101.seal_d(&state.app_state, &dictation));
+            // No shadow seal here on purpose: a gated line would make this a shadow
+            // change (`check_shadow_diff.py`, insertion only). The shadow flight is
+            // dropped unsealed, which `Flight::drop` hands over safely.
             drop(dictation);
-            #[cfg(feature = "dictation-shadow")]
-            after_d.submit();
             drop(_transition);
             // Emitted after D and T are released, never inside a core span.
             let _ = host.emit_json(
