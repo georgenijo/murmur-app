@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.67.1] - 2026-11-22
+
+<!-- Release notes generated using configuration in .github/release.yml at 2dfa74e934d1b0e813621d2e2ebce99a1b02371b -->
+
+## What's Changed
+### Other Changes
+* chore(dictation): clear refactor leftovers (stale comments, blanket dead-code allows) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1193
+* fix(overlay): Live Words material stranded above its words after a hover by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1194
+* fix(settings): clean up Speech-to-text model card and add repair action by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1199
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.67.0...v0.67.1
+
 ## [0.67.0] - 2026-11-20
 
 <!-- Release notes generated using configuration in .github/release.yml at 5e65770fee80912456ee07cb50aa79a7df404592 -->
