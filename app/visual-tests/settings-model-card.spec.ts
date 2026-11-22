@@ -17,6 +17,17 @@ for (const appearance of ['light', 'dark'] as const) {
     await expect(page.getByText('Model files are incomplete. Re-download to repair.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Re-download', exact: true })).toBeVisible();
 
+    // The repair copy must not break inside "Re-download", and the button stays on one line.
+    const message = page.getByTestId('model-repair-message');
+    const words = await message.evaluate((el) => {
+      const word = el.querySelector('span')!;
+      return { wordLines: word.getClientRects().length, wordHeight: word.getBoundingClientRect().height };
+    });
+    expect(words.wordLines).toBe(1);
+    const redownload = page.getByRole('button', { name: 'Re-download', exact: true });
+    const lineHeight = await redownload.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight) || 0);
+    expect((await redownload.boundingBox())!.height).toBeLessThan(lineHeight * 2 + 8);
+
     // The selected model name is never ellipsised next to its badge.
     const trigger = page.getByRole('combobox', { name: 'Transcription model' });
     const label = trigger.locator('span.truncate');

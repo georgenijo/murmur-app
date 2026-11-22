@@ -125,5 +125,3 @@ export function modelNeedsRepair(model: Pick<ModelRuntimeSnapshot, 'installState
   return model.installState === 'invalid'
     || (model.installState === 'notInstalled' && model.failurePresent);
 }
-
-export const MODEL_REPAIR_MESSAGE = 'Model files are incomplete. Re-download to repair.';

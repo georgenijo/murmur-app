@@ -35,7 +35,7 @@ import {
 import { setPasteLastShortcut } from '../../lib/deliveryRecovery';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
-import { MODEL_REPAIR_MESSAGE, modelNeedsRepair, modelStatusLabel, useModelRuntimeCatalog } from '../../lib/modelRuntime';
+import { modelNeedsRepair, modelStatusLabel, useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
   modelGuidanceSummary,
   modelMemoryWarning,
@@ -1271,7 +1271,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 {isRecording && <p className="text-[length:var(--ui-font-caption)] text-primary">Stop recording before changing model.</p>}
 {modelAvailable === false && modelDownload.phase === 'idle' && (
                 <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span>{needsRepair ? MODEL_REPAIR_MESSAGE : 'Not downloaded yet'}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">{needsRepair ? 'Re-download' : 'Download'}</Button>
+                  <span data-testid="model-repair-message">{needsRepair ? <>Model files are incomplete. <span className="whitespace-nowrap">Re-download</span> to repair.</> : 'Not downloaded yet'}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto shrink-0 whitespace-nowrap">{needsRepair ? 'Re-download' : 'Download'}</Button>
                 </div>
               )}
 {modelDownload.phase === 'downloading' && (
