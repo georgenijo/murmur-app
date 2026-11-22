@@ -621,6 +621,10 @@ fn function_key_bit(key: Key) -> Option<u32> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ShortcutModifierState(u16);
 
+/// Fn is tracked apart from the shortcut modifiers: Apple keyboards may need
+/// it to produce F1–F12, so it never makes a function-key press a chord.
+const FN_MODIFIER_BIT: u16 = 1 << 8;
+
 impl ShortcutModifierState {
     fn update(&mut self, event_type: &EventType) {
         match event_type {
@@ -638,11 +642,13 @@ impl ShortcutModifierState {
         }
     }
 
+    /// Whether a shortcut modifier is down. Fn does not count.
     fn any(self) -> bool {
-        self.0 != 0
+        self.0 & !FN_MODIFIER_BIT != 0
     }
 
-    /// Whether a modifier other than `key` is down.
+    /// Whether a modifier other than `key` is down, Fn included: a key pressed
+    /// into a held Fn is not held alone.
     fn any_except(self, key: Key) -> bool {
         self.0 & !shortcut_modifier_bit(key).unwrap_or(0) != 0
     }
@@ -658,6 +664,7 @@ fn shortcut_modifier_bit(key: Key) -> Option<u16> {
         Key::ControlRight => Some(1 << 5),
         Key::MetaLeft => Some(1 << 6),
         Key::MetaRight => Some(1 << 7),
+        Key::Function => Some(FN_MODIFIER_BIT),
         _ => None,
     }
 }
@@ -2025,8 +2032,8 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 // Track these even while every feature is idle. If a user
                 // holds Command before enabling a function-key trigger, the
                 // next F-key press must still be recognized as a chord. Fn is
-                // intentionally absent because Apple keyboards may require it
-                // to produce F1–F12 events.
+                // tracked too, but only the agent-command key reads it: Apple
+                // keyboards may require Fn to produce F1–F12 events.
                 shortcut_modifiers.update(&event.event_type);
                 let repeated_function_press = pressed_function_keys.update(&event.event_type);
 
@@ -3716,6 +3723,44 @@ mod tests {
         assert_eq!(
             hold.handle_event_with_shortcut_modifiers(&press(Key::F8), modifiers.any()),
             HoldDownEvent::Start
+        );
+    }
+
+    #[test]
+    fn fn_held_blocks_the_agent_command_key_and_stays_exempt_for_function_rows() {
+        let agent_key = Key::AltGr;
+        let mut detector = agent_command::Detector::default();
+        detector.set_target(Some(agent_key));
+        let now = Instant::now();
+
+        let mut modifiers = ShortcutModifierState::default();
+        modifiers.update(&press(Key::Function));
+        assert!(
+            !modifiers.any(),
+            "Fn must remain available for Apple function rows"
+        );
+        assert!(
+            modifiers.any_except(agent_key),
+            "Fn is another modifier for the agent command key"
+        );
+        // Fn already down, then Right Option: the key is not held alone.
+        assert_eq!(
+            detector.handle(&press(agent_key), modifiers.any_except(agent_key), now),
+            agent_command::Signal::None
+        );
+        assert!(!detector.is_held());
+        assert_eq!(
+            detector.handle(&release(agent_key), modifiers.any_except(agent_key), now),
+            agent_command::Signal::None
+        );
+
+        modifiers.update(&release(Key::Function));
+        assert!(!modifiers.any_except(agent_key));
+        // Right Option alone still starts.
+        modifiers.update(&press(agent_key));
+        assert_eq!(
+            detector.handle(&press(agent_key), modifiers.any_except(agent_key), now),
+            agent_command::Signal::Press
         );
     }
 

@@ -18,8 +18,11 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::MutexExt;
 
 const NOTIFICATION_TITLE: &str = "Agent";
 const FOLLOW_UP_MARKER: &str = "FOLLOW_UP: WAIT";
@@ -30,9 +33,13 @@ const TITLE_TRANSCRIPT_CHARS: usize = 60;
 const NOTIFICATION_BODY_CHARS: usize = 240;
 const START_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const FOLLOW_UP_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
-const STDOUT_LIMIT_BYTES: u64 = 1 << 20;
+const STDOUT_LIMIT_BYTES: usize = 1 << 20;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READER_GRACE: Duration = Duration::from_secs(5);
+/// How often the stdout reader checks whether it was stopped. Output wakes it at once.
+const READER_POLL: Duration = Duration::from_millis(100);
+/// How long a stopped reader gets to notice.
+const READER_STOP_WAIT: Duration = Duration::from_secs(1);
 
 /// Exit code `t3 thread … --wait` uses when the agent is waiting for an answer.
 const EXIT_AGENT_WAITING: i32 = 2;
@@ -114,82 +121,176 @@ impl ProcessRunner for SystemRunner {
         stdin: &str,
         timeout: Duration,
     ) -> Result<RunOutput, RunError> {
-        let home = home_dir();
-        let mut command = Command::new(bin);
-        command
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .env("PATH", launch_path(home.as_deref(), bin))
-            .current_dir(home.as_deref().unwrap_or_else(|| Path::new("/")));
-        if let Some(home) = &home {
-            command.env("HOME", home);
-        }
-        #[cfg(unix)]
-        {
-            // Own process group so a timeout kills the whole tree (t3 may be a node wrapper).
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-
-        let mut child = command.spawn().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                RunError::NotFound
-            } else {
-                RunError::Spawn
-            }
-        })?;
-        let pid = child.id();
-
-        if let Some(mut pipe) = child.stdin.take() {
-            let input = stdin.to_owned();
-            std::thread::spawn(move || {
-                // A broken pipe means the child exited early; its exit code tells the story.
-                let _ = pipe.write_all(input.as_bytes());
-            });
-        }
-
-        let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-        if let Some(mut pipe) = child.stdout.take() {
-            std::thread::spawn(move || {
-                let mut captured = Vec::new();
-                let _ = (&mut pipe)
-                    .take(STDOUT_LIMIT_BYTES)
-                    .read_to_end(&mut captured);
-                // Keep draining so a chatty child is never blocked on a full pipe.
-                let _ = std::io::copy(&mut pipe, &mut std::io::sink());
-                let _ = stdout_tx.send(captured);
-            });
-        }
-
-        let deadline = Instant::now() + timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() >= deadline => {
-                    kill_group(pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(RunError::Timeout);
-                }
-                Ok(None) => std::thread::sleep(POLL_INTERVAL),
-                Err(_) => {
-                    kill_group(pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(RunError::Spawn);
-                }
-            }
-        };
-
-        // A descendant that outlives t3 may hold the pipe open; do not wait on it forever.
-        let captured = stdout_rx.recv_timeout(READER_GRACE).unwrap_or_default();
-        Ok(RunOutput {
-            exit_code: status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&captured).into_owned(),
-        })
+        run_process(bin, args, stdin, timeout, READER_GRACE)
     }
+}
+
+/// Reads the child's stdout on its own thread, into a buffer the runner can
+/// take at any time. The read is cancellable: a descendant that outlives `t3`
+/// and keeps the pipe open can neither pin the thread nor hide what `t3`
+/// already wrote.
+struct StdoutReader {
+    captured: Arc<Mutex<Vec<u8>>>,
+    stop: Arc<AtomicBool>,
+    finished: std::sync::mpsc::Receiver<()>,
+}
+
+impl StdoutReader {
+    fn spawn(mut pipe: std::process::ChildStdout) -> Self {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (finished_tx, finished) = std::sync::mpsc::channel();
+        let (thread_captured, thread_stop) = (Arc::clone(&captured), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let mut chunk = [0_u8; 8192];
+            while !thread_stop.load(Ordering::SeqCst) {
+                if !wait_readable(&pipe, READER_POLL) {
+                    continue;
+                }
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        let mut captured = thread_captured.lock_or_recover();
+                        let room = STDOUT_LIMIT_BYTES.saturating_sub(captured.len());
+                        // Past the limit, keep draining so a chatty child is
+                        // never blocked on a full pipe.
+                        captured.extend_from_slice(&chunk[..read.min(room)]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+            // Close our end before reporting, so a finished reader holds nothing.
+            drop(pipe);
+            let _ = finished_tx.send(());
+        });
+        Self {
+            captured,
+            stop,
+            finished,
+        }
+    }
+
+    /// Waits up to `grace` for the pipe to close, then stops the reader.
+    /// Returns everything read, and whether the reader thread has ended.
+    fn finish(self, grace: Duration) -> (Vec<u8>, bool) {
+        let mut ended = self.finished.recv_timeout(grace).is_ok();
+        if !ended {
+            self.stop.store(true, Ordering::SeqCst);
+            ended = self.finished.recv_timeout(READER_STOP_WAIT).is_ok();
+        }
+        (std::mem::take(&mut *self.captured.lock_or_recover()), ended)
+    }
+}
+
+impl Drop for StdoutReader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether `pipe` has data or reached its end, waiting at most `timeout`.
+#[cfg(unix)]
+fn wait_readable(pipe: &std::process::ChildStdout, timeout: Duration) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let mut poll_fd = libc::pollfd {
+        fd: pipe.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: one valid `pollfd` that outlives the call; the descriptor is
+    // owned by `pipe`, which the caller keeps borrowed.
+    let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+    if ready < 0 {
+        // A signal is a retry; any other failure is the read's to report.
+        return std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted;
+    }
+    ready > 0
+}
+
+/// Without `poll` the read blocks, so a stop is seen only between reads.
+#[cfg(not(unix))]
+fn wait_readable(_pipe: &std::process::ChildStdout, _timeout: Duration) -> bool {
+    true
+}
+
+fn run_process(
+    bin: &Path,
+    args: &[String],
+    stdin: &str,
+    timeout: Duration,
+    reader_grace: Duration,
+) -> Result<RunOutput, RunError> {
+    let home = home_dir();
+    let mut command = Command::new(bin);
+    command
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env("PATH", launch_path(home.as_deref(), bin))
+        .current_dir(home.as_deref().unwrap_or_else(|| Path::new("/")));
+    if let Some(home) = &home {
+        command.env("HOME", home);
+    }
+    #[cfg(unix)]
+    {
+        // Own process group so a timeout kills the whole tree (t3 may be a node wrapper).
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            RunError::NotFound
+        } else {
+            RunError::Spawn
+        }
+    })?;
+    let pid = child.id();
+
+    if let Some(mut pipe) = child.stdin.take() {
+        let input = stdin.to_owned();
+        std::thread::spawn(move || {
+            // A broken pipe means the child exited early; its exit code tells the story.
+            let _ = pipe.write_all(input.as_bytes());
+        });
+    }
+
+    // Dropped on the early returns below, which stops the reader.
+    let reader = child.stdout.take().map(StdoutReader::spawn);
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                kill_group(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::Timeout);
+            }
+            Ok(None) => std::thread::sleep(POLL_INTERVAL),
+            Err(_) => {
+                kill_group(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::Spawn);
+            }
+        }
+    };
+
+    // A descendant that outlives t3 may hold the pipe open; do not wait on it
+    // forever. What t3 wrote before it exited is kept either way. The
+    // descendant is left alone: t3 exited normally and chose to leave it.
+    let (captured, _) = reader
+        .map(|reader| reader.finish(reader_grace))
+        .unwrap_or_default();
+    Ok(RunOutput {
+        exit_code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&captured).into_owned(),
+    })
 }
 
 fn kill_group(pid: u32) {
@@ -543,7 +644,6 @@ fn run_dispatch(
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::Mutex;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Call {
@@ -955,7 +1055,106 @@ mod tests {
         );
     }
 
+    /// The failure a notification body reports, if it is one.
+    fn failure_for_body(body: &str) -> Option<Failure> {
+        let all = [
+            Failure::NotInstalled,
+            Failure::CouldNotStart,
+            Failure::TimedOut,
+            Failure::Errored,
+            Failure::BadOutput,
+            Failure::ProjectMissing,
+        ];
+        for failure in &all {
+            // A new variant fails to compile here until it is listed above.
+            match failure {
+                Failure::NotInstalled
+                | Failure::CouldNotStart
+                | Failure::TimedOut
+                | Failure::Errored
+                | Failure::BadOutput
+                | Failure::ProjectMissing => {}
+            }
+        }
+        all.into_iter().find(|failure| failure.message() == body)
+    }
+
+    /// One line of live-test output for a notification. The agent's reply is
+    /// private, so only its length is shown; a failure message is fixed text.
+    fn live_report_line(elapsed: Duration, body: &str) -> String {
+        let outcome = failure_for_body(body).map_or("reply", |failure| failure.message());
+        format!(
+            "[{:>6.1}s] NOTIFY outcome={outcome:?} body_chars={}",
+            elapsed.as_secs_f32(),
+            body.chars().count()
+        )
+    }
+
+    /// Why the live round trip did not succeed, if it did not: a failure
+    /// notification is not a dispatch, however many notifications arrived.
+    fn live_round_trip_error(bodies: &[String], expected: usize) -> Option<String> {
+        if let Some(failure) = bodies.iter().find_map(|body| failure_for_body(body)) {
+            return Some(format!("the dispatch failed: {}", failure.message()));
+        }
+        (bodies.len() < expected)
+            .then(|| format!("expected {expected} notification(s), saw {}", bodies.len()))
+    }
+
+    #[test]
+    fn live_report_line_never_shows_the_reply() {
+        let line = live_report_line(Duration::from_secs(3), "Two threads are running on Volta.");
+        assert!(
+            !line.contains("Volta") && !line.contains("threads"),
+            "{line}"
+        );
+        assert!(
+            line.contains("outcome=\"reply\"") && line.contains("body_chars=33"),
+            "{line}"
+        );
+        let line = live_report_line(Duration::ZERO, Failure::ProjectMissing.message());
+        assert!(line.contains(Failure::ProjectMissing.message()), "{line}");
+    }
+
+    #[test]
+    fn live_round_trip_requires_a_successful_dispatch() {
+        let bodies = |bodies: &[&str]| {
+            bodies
+                .iter()
+                .map(|body| (*body).to_owned())
+                .collect::<Vec<_>>()
+        };
+        // A missing project, a missing t3, a timeout and bad output each
+        // produce exactly one notification; none of them is a round trip.
+        for failure in [
+            Failure::ProjectMissing,
+            Failure::NotInstalled,
+            Failure::CouldNotStart,
+            Failure::TimedOut,
+            Failure::Errored,
+            Failure::BadOutput,
+        ] {
+            assert!(
+                live_round_trip_error(&bodies(&[failure.message()]), 1).is_some(),
+                "{failure:?}"
+            );
+        }
+        assert!(live_round_trip_error(&bodies(&["Started."]), 2).is_some());
+        assert!(
+            live_round_trip_error(&bodies(&["Started.", Failure::TimedOut.message()]), 2).is_some()
+        );
+        assert!(live_round_trip_error(&[], 1).is_some());
+        assert_eq!(
+            live_round_trip_error(&bodies(&["Two threads running."]), 1),
+            None
+        );
+        assert_eq!(
+            live_round_trip_error(&bodies(&["Started.", "Done."]), 2),
+            None
+        );
+    }
+
     /// Live check against the real `t3` CLI and the running T3 server. Not part of CI.
+    /// Its output carries no transcript and no reply text, only lengths and outcomes.
     ///
     /// Env: `MURMUR_E2E_TRANSCRIPT` (default "what's running?"), `MURMUR_E2E_PROJECT`
     /// (default the dispatch project), `MURMUR_E2E_WAIT_SECS` (default 900).
@@ -981,29 +1180,19 @@ mod tests {
         };
 
         struct PrintingNotifier {
-            seen: Arc<Mutex<Vec<(String, String)>>>,
+            seen: Arc<Mutex<Vec<String>>>,
             started: Instant,
         }
         impl AgentNotifier for PrintingNotifier {
-            fn notify(&self, title: &str, body: &str) {
-                println!(
-                    "[{:>6.1}s] NOTIFY title={title:?} body={body:?}",
-                    self.started.elapsed().as_secs_f32()
-                );
-                self.seen
-                    .lock()
-                    .unwrap()
-                    .push((title.to_owned(), body.to_owned()));
+            fn notify(&self, _title: &str, body: &str) {
+                println!("{}", live_report_line(self.started.elapsed(), body));
+                self.seen.lock().unwrap().push(body.to_owned());
             }
         }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let started = Instant::now();
-        println!(
-            "HOME={:?} PATH={:?} transcript={transcript:?}",
-            std::env::var("HOME").ok(),
-            std::env::var("PATH").ok()
-        );
+        println!("transcript_chars={}", transcript.chars().count());
         spawn_dispatch(
             transcript,
             config,
@@ -1014,25 +1203,29 @@ mod tests {
         );
 
         // The dispatcher thread is detached, so wait on the recorded notifications:
-        // until the expected count arrives, then a short grace period for extras.
+        // until the expected count or a failure arrives, then a short grace
+        // period for extras.
         let expected = std::env::var("MURMUR_E2E_EXPECT")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(1);
         let deadline = Instant::now() + wait;
-        while seen.lock().unwrap().len() < expected && Instant::now() < deadline {
+        let settled = |bodies: &[String]| {
+            bodies.len() >= expected || bodies.iter().any(|body| failure_for_body(body).is_some())
+        };
+        while !settled(&seen.lock().unwrap()) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(250));
         }
         std::thread::sleep(Duration::from_secs(5));
-        assert!(
-            seen.lock().unwrap().len() >= expected,
-            "expected {expected} notification(s) within {wait:?}"
-        );
+        let bodies = seen.lock().unwrap().clone();
         println!(
             "TOTAL {:.1}s, {} notification(s)",
             started.elapsed().as_secs_f32(),
-            seen.lock().unwrap().len()
+            bodies.len()
         );
+        if let Some(error) = live_round_trip_error(&bodies, expected) {
+            panic!("{error} (waited up to {wait:?})");
+        }
     }
 
     #[cfg(unix)]
@@ -1071,6 +1264,77 @@ mod tests {
             let result = SystemRunner.run(&bin, &[], "", Duration::from_millis(200));
             assert_eq!(result, Err(RunError::Timeout));
             assert!(started.elapsed() < Duration::from_secs(10));
+        }
+
+        /// The wrapper exits at once; its background child inherits stdout and
+        /// holds the pipe open. The wrapper's whole output is that child's pid.
+        const LEAVES_A_DESCENDANT: &str = "sleep 30 &\nprintf '%s' \"$!\"\nexit 0";
+
+        fn kill(pid: i32) {
+            // SAFETY: plain syscall on the pid this test's own script reported.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+
+        #[test]
+        fn output_survives_a_descendant_that_keeps_stdout_open() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = script(dir.path(), LEAVES_A_DESCENDANT);
+            let started = Instant::now();
+            let out = run_process(
+                &bin,
+                &[],
+                "",
+                Duration::from_secs(20),
+                Duration::from_millis(200),
+            )
+            .unwrap();
+            let descendant: i32 = out.stdout.parse().expect("the reply written before exit");
+            kill(descendant);
+            assert_eq!(out.exit_code, 0);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+
+        #[test]
+        fn reader_stops_when_the_grace_period_expires() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = script(dir.path(), LEAVES_A_DESCENDANT);
+            let mut child = Command::new(&bin)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let reader = StdoutReader::spawn(child.stdout.take().unwrap());
+            child.wait().unwrap();
+
+            let (captured, ended) = reader.finish(Duration::from_millis(200));
+            let descendant: i32 = String::from_utf8(captured)
+                .unwrap()
+                .parse()
+                .expect("the reply written before exit");
+            // The descendant is alive and still holds the pipe, so the reader
+            // ended because it was stopped, not because the pipe closed.
+            // SAFETY: signal 0 only checks that the pid exists.
+            let alive = unsafe { libc::kill(descendant, 0) } == 0;
+            kill(descendant);
+            assert!(alive);
+            assert!(ended, "the reader thread must end once it is stopped");
+        }
+
+        #[test]
+        fn output_past_the_limit_is_dropped_and_still_drained() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = script(
+                dir.path(),
+                "head -c 3000000 /dev/zero | tr '\\0' 'a'; exit 3",
+            );
+            let out = SystemRunner
+                .run(&bin, &[], "", Duration::from_secs(20))
+                .unwrap();
+            assert_eq!(out.exit_code, 3);
+            assert_eq!(out.stdout.len(), STDOUT_LIMIT_BYTES);
         }
 
         #[test]

@@ -300,6 +300,10 @@ describe('useRecordingState transition ordering', () => {
   describe('the agent command key', () => {
     const started = { type: 'recording_starting', state: 'starting', recordingId: 9 };
 
+    afterEach(() => {
+      mocks.cancelRecording.mockReset();
+    });
+
     async function holdAgentKey() {
       mocks.startRecording.mockResolvedValueOnce(started);
       await act(async () => current.handleAgentCommandStart());
@@ -408,6 +412,113 @@ describe('useRecordingState transition ordering', () => {
       });
       await act(async () => current.handleHoldStop());
       expect(mocks.stopRecording).toHaveBeenCalledOnce();
+    });
+
+    it('releases its ownership the moment the agent recording ends, before a dictation start', async () => {
+      await holdAgentKey();
+      // Escape ends the agent recording and the dictation key goes down before
+      // React has rendered the idle status.
+      const start = deferred<typeof started>();
+      mocks.startRecording.mockReturnValueOnce(start.promise);
+      mocks.stopRecording.mockResolvedValueOnce({ type: 'transcription', state: 'idle' });
+      let starting!: Promise<void>;
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+        starting = current.handleHoldStart();
+      });
+      await act(async () => {
+        start.resolve(started);
+        await starting;
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      });
+      expect(mocks.startRecording).toHaveBeenLastCalledWith('system_default', 'hold', null, undefined);
+
+      await act(async () => current.handleHoldStop());
+      expect(mocks.stopRecording).toHaveBeenCalledOnce();
+    });
+
+    it('keeps a newer agent hold when the previous recording reports idle late', async () => {
+      mocks.stopRecording.mockResolvedValueOnce({ type: 'transcription', state: 'idle', text: '' });
+      await holdAgentKey();
+      // The stop response moves the status to idle before the idle event.
+      await act(async () => current.handleAgentCommandStop());
+      expect(current.status).toBe('idle');
+
+      mocks.startRecording.mockResolvedValueOnce({ ...started, recordingId: 10 });
+      const start = deferred<void>();
+      await act(async () => {
+        void current.handleAgentCommandStart().then(start.resolve);
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+        await start.promise;
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      });
+
+      await act(async () => current.handleHoldStop());
+      expect(mocks.stopRecording).toHaveBeenCalledOnce();
+      expect(current.status).toBe('recording');
+    });
+
+    it('retries a discard the native side refused', async () => {
+      mocks.cancelRecording
+        .mockRejectedValueOnce(new Error('capture cancel timed out'))
+        .mockResolvedValueOnce(undefined);
+      await holdAgentKey();
+      await act(async () => current.handleAgentCommandCancel());
+
+      expect(mocks.cancelRecording.mock.calls).toEqual([[9], [9]]);
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+      expect(current.error).toBe('');
+    });
+
+    it('never sends a command whose discard failed, and says it is still recording', async () => {
+      mocks.cancelRecording.mockRejectedValue(new Error('capture cancel timed out'));
+      await holdAgentKey();
+      await act(async () => current.handleAgentCommandCancel());
+
+      // Capture is still running: the hold stays responsible and says so.
+      expect(mocks.cancelRecording).toHaveBeenCalledTimes(2);
+      expect(current.status).toBe('recording');
+      expect(current.error).toMatch(/still recording/);
+
+      // No release or stop may turn the cancelled command into a sent one.
+      await act(async () => current.handleHoldStop());
+      expect(mocks.cancelRecording).toHaveBeenCalledTimes(2);
+      await act(async () => current.handleAgentCommandStop());
+      await act(async () => current.toggleRecording());
+      await act(async () => current.handleStop());
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+
+      // Each of those retried the discard; one that works ends the ownership.
+      mocks.cancelRecording.mockReset();
+      mocks.cancelRecording.mockResolvedValueOnce(undefined);
+      await act(async () => current.handleAgentCommandStop());
+      expect(mocks.cancelRecording).toHaveBeenCalledExactlyOnceWith(9);
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+      });
+      await act(async () => current.handleAgentCommandStop());
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+      expect(mocks.cancelRecording).toHaveBeenCalledOnce();
+    });
+
+    it('discards a command cancelled before its start was accepted, even when the first try fails', async () => {
+      const start = deferred<typeof started>();
+      mocks.startRecording.mockReturnValueOnce(start.promise);
+      mocks.cancelRecording
+        .mockRejectedValueOnce(new Error('capture cancel timed out'))
+        .mockResolvedValueOnce(undefined);
+      let starting!: Promise<void>;
+      await act(async () => {
+        starting = current.handleAgentCommandStart();
+      });
+      await act(async () => current.handleAgentCommandCancel());
+      await act(async () => {
+        start.resolve(started);
+        await starting;
+      });
+
+      expect(mocks.cancelRecording.mock.calls).toEqual([[9], [9]]);
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
     });
   });
 

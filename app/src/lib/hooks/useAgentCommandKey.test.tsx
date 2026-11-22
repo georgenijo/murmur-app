@@ -20,20 +20,24 @@ vi.mock('../dictation', () => ({ setAgentCommandShortcut: mocks.setAgentCommandS
 
 import { useAgentCommandKey } from './useAgentCommandKey';
 
+const onStart = vi.fn();
+const onStop = vi.fn();
+const onCancel = vi.fn();
+
+// One component type for every render, so a setting change updates the mounted
+// hook instead of remounting it.
+function Harness({ enabled, shortcut }: { enabled: boolean; shortcut: AgentCommandKey }) {
+  useAgentCommandKey({ enabled, shortcut, onStart, onStop, onCancel });
+  return null;
+}
+
 describe('useAgentCommandKey', () => {
   let container: HTMLDivElement;
   let root: Root;
-  const onStart = vi.fn();
-  const onStop = vi.fn();
-  const onCancel = vi.fn();
 
   async function render(enabled: boolean, shortcut: AgentCommandKey = 'alt_r') {
-    function Harness() {
-      useAgentCommandKey({ enabled, shortcut, onStart, onStop, onCancel });
-      return null;
-    }
     await act(async () => {
-      root.render(<Harness />);
+      root.render(<Harness enabled={enabled} shortcut={shortcut} />);
       await Promise.resolve();
     });
   }

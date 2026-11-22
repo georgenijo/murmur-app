@@ -46,11 +46,14 @@ command palette, or Settings, so the binding cannot collide with another one;
 - Holding the key for 250 ms starts the recording. Releasing it ends the
   recording and sends the command.
 - A key that is part of a shortcut starts nothing: pressing it while another
-  modifier is down, or pressing any other key or mouse button inside the first
-  250 ms, is ignored.
+  modifier is down (Fn included), or pressing any other key or mouse button
+  inside the first 250 ms, is ignored.
 - Pressing a non-modifier key (other than Space) within one second of the start
   discards the recording, so a slow shortcut such as Option+E sends nothing.
 - Escape, disabling Murmur, or turning the setting off discards the recording.
+- If a discard fails and the microphone is still recording, Murmur tries once
+  more, then says the command is still recording. Until it is discarded, no key
+  release or stop sends it; each one retries the discard, and so does Escape.
 - The key never starts over a recording that is already running, and the
   dictation key's release never ends an agent command.
 - The key is bound only while the setting is on, Murmur is enabled, and
@@ -76,7 +79,9 @@ command palette, or Settings, so the binding cannot collide with another one;
    replies through the notification plugin. A failure shows a short notification
    without the spoken text. An absolute dispatch project path that is not a
    folder fails up front, because `t3` would otherwise fall back to the home
-   project.
+   project. If `t3` exits while a process it started still holds its output
+   open, the dispatcher waits five seconds, uses the reply `t3` already wrote,
+   and leaves that process running.
 
 `stop_native_recording` and the `transcription-complete` event carry an empty
 `text` for an agent command, and the event carries `purpose: "agent_command"`,

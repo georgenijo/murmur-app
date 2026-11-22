@@ -43,6 +43,17 @@ interface PresentErrorOptions {
 /** How long the "cleanup is still in progress" notice for a refused start stays. */
 const REFUSAL_NOTICE_MS = 5000;
 
+/** The recording the agent command key started and is still responsible for. */
+interface AgentCommandHold {
+  /** Known once the start is accepted; scopes a discard to this recording. */
+  recordingId?: number;
+  /** The user cancelled it: it may be discarded, never stopped and sent. */
+  discarding: boolean;
+}
+
+/** A native cancel can fail and leave capture running, so try more than once. */
+const AGENT_DISCARD_ATTEMPTS = 2;
+
 export function useRecordingState({ addEntry, microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
@@ -90,6 +101,11 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   // and no lifecycle event had claimed ownership yet. The start operation
   // consumes it and cancels exactly the generation it created.
   const stopRequestedDuringStartRef = useRef(false);
+  // The agent command key owns the recording it started, and only that one:
+  // it never starts over another capture, and the dictation key's release
+  // cannot stop it. Set from the key's start until its stop, a successful
+  // discard, or the recording ending some other way (Escape, a failure).
+  const agentCommandHoldRef = useRef<AgentCommandHold | null>(null);
 
   const presentError = useCallback((message: string, options: PresentErrorOptions = {}) => {
     if (!message) return null;
@@ -204,6 +220,11 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         // so the next recording cycle can stop normally.
         if (event.payload === 'idle') {
           isStoppingRef.current = false;
+          // The agent command key's recording is over. Released here, not in
+          // an effect after the render: a dictation start can run before that.
+          // An idle that follows idle ends nothing, and may belong to an older
+          // recording than a hold that is just starting.
+          if (previousStatus !== 'idle') agentCommandHoldRef.current = null;
           setSmartDestinationSelection(null);
           if (previousStatus === 'recovering') {
             // Recovery reaching Idle is authoritative. Invalidate any invoke
@@ -465,17 +486,22 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     return () => { cancelled = true; unlisten?.(); };
   }, [addEntry]);
 
+  /**
+   * Resolves to the start this call got accepted, or null when it started
+   * nothing (refused, failed, or it only waited for a start already running).
+   */
   const beginRecording = useCallback(async (
     origin: RecordingOrigin,
     gestureToken?: string,
-  ) => {
-    if (canStart && !canStart()) return;
+  ): Promise<{ recordingId?: number } | null> => {
+    if (canStart && !canStart()) return null;
     if (startOperationRef.current) {
       await startOperationRef.current;
-      return;
+      return null;
     }
     isStartingRef.current = true;
     stopRequestedDuringStartRef.current = false;
+    let accepted: { recordingId?: number } | null = null;
     const operation = (async () => {
       const producerEpoch = beginErrorProducer();
       try {
@@ -503,7 +529,9 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
             setStatus(res.state);
           }
         }
-        if (res.type !== 'recording_starting') {
+        if (res.type === 'recording_starting') {
+          accepted = { recordingId: res.recordingId };
+        } else {
           if (res.type === 'error') presentError(res.error || 'Unknown error', { producerEpoch });
           else if (res.type === 'busy_benchmarking') presentError('Wait for the benchmark to finish.', { producerEpoch });
           else if (res.type === 'busy_transcribing_file') presentError('Wait for the file transcription to finish.', { producerEpoch });
@@ -558,16 +586,52 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         startOperationRef.current = null;
       }
     }
+    return accepted;
   }, [beginErrorProducer, presentError, clearError, canStart]);
 
   // Admission checks must see dispatched starts before native confirmation or
   // a lifecycle event updates status. Read the synchronous refs, not a render.
   const isCaptureBusy = useCallback(() => isStartingRef.current || statusRef.current !== 'idle', []);
 
-  const handleStart = useCallback(() => beginRecording('toggle'), [beginRecording]);
-  const handleHoldStart = useCallback((gestureToken?: string) => beginRecording('hold', gestureToken), [beginRecording]);
+  const handleStart = useCallback(async () => { await beginRecording('toggle'); }, [beginRecording]);
+  const handleHoldStart = useCallback(async (gestureToken?: string) => {
+    await beginRecording('hold', gestureToken);
+  }, [beginRecording]);
+
+  /**
+   * Discard the agent command recording `hold` owns. A failed native cancel
+   * leaves capture running, so the hold keeps its ownership (no release or
+   * stop can then send the command), the cancel is retried, and a recording
+   * that still cannot be discarded is reported.
+   */
+  const discardAgentCommand = useCallback(async (hold: AgentCommandHold) => {
+    hold.discarding = true;
+    const stillRecording = () => agentCommandHoldRef.current === hold
+      && (statusRef.current === 'starting' || statusRef.current === 'recording');
+    for (let attempt = 0; attempt < AGENT_DISCARD_ATTEMPTS && stillRecording(); attempt += 1) {
+      try {
+        await cancelRecording(hold.recordingId);
+        if (agentCommandHoldRef.current === hold) agentCommandHoldRef.current = null;
+        return;
+      } catch {
+        // The cancel failed or was refused: capture may still be running.
+      }
+    }
+    if (stillRecording()) {
+      presentError(
+        'Murmur could not discard the agent command and is still recording. Press Escape to discard it.',
+        { recordingId: hold.recordingId },
+      );
+    }
+  }, [presentError]);
 
   const handleStop = useCallback(async (stopTrigger: DictationStopTrigger = 'other') => {
+    const cancelledAgentCommand = agentCommandHoldRef.current;
+    if (cancelledAgentCommand?.discarding) {
+      // The user cancelled this command; stopping it would send it.
+      await discardAgentCommand(cancelledAgentCommand);
+      return;
+    }
     if (isStoppingRef.current) return;
     if (startOperationRef.current && statusRef.current === 'idle') {
       // The start IPC has not claimed ownership yet, so there is nothing to
@@ -608,57 +672,66 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       // lag behind React rendering.
       const newStatus = isDictationStatus(res.state) ? res.state : 'idle';
       if (statusRef.current === 'processing') {
+        // The same terminal transition the idle status event makes.
+        if (newStatus === 'idle') agentCommandHoldRef.current = null;
         statusRef.current = newStatus;
         setStatus(newStatus);
       }
     } catch (err) {
       presentError(String(err), { producerEpoch });
+      if (statusRef.current !== 'idle') agentCommandHoldRef.current = null;
       statusRef.current = 'idle';
       setStatus('idle');
     } finally {
       isStoppingRef.current = false;
     }
-  }, [presentError]);
+  }, [presentError, discardAgentCommand]);
 
-  // The agent command key owns the recording it started, and only that one:
-  // it never starts over another capture, and the dictation key's release
-  // cannot stop it. The flag is true from the key's start until its stop,
-  // its cancel, or the recording ending some other way (Escape, a failure).
-  const agentCommandHoldRef = useRef(false);
+  // Backstop for an idle status that no transition above reported.
   useEffect(() => {
-    if (status === 'idle' && !startOperationRef.current) agentCommandHoldRef.current = false;
+    if (status === 'idle' && !startOperationRef.current) agentCommandHoldRef.current = null;
   }, [status]);
 
   const handleAgentCommandStart = useCallback(async () => {
     if (isStartingRef.current || statusRef.current !== 'idle') return;
-    agentCommandHoldRef.current = true;
-    await beginRecording('agent_command');
-    // A refused start records nothing, so the hold owns nothing.
-    if (statusRef.current === 'idle') agentCommandHoldRef.current = false;
-  }, [beginRecording]);
+    const hold: AgentCommandHold = { discarding: false };
+    agentCommandHoldRef.current = hold;
+    const accepted = await beginRecording('agent_command');
+    // The recording already ended, or a newer hold took over.
+    if (agentCommandHoldRef.current !== hold) return;
+    if (!accepted || statusRef.current === 'idle') {
+      // A refused start records nothing, so the hold owns nothing.
+      agentCommandHoldRef.current = null;
+      return;
+    }
+    hold.recordingId = accepted.recordingId;
+    // Cancelled while the start was pending: discard what it created.
+    if (hold.discarding) await discardAgentCommand(hold);
+  }, [beginRecording, discardAgentCommand]);
 
   const handleAgentCommandStop = useCallback(async () => {
-    if (!agentCommandHoldRef.current) return;
-    agentCommandHoldRef.current = false;
+    const hold = agentCommandHoldRef.current;
+    if (!hold) return;
+    if (hold.discarding) {
+      // A cancelled command is never sent; the release retries its discard.
+      await discardAgentCommand(hold);
+      return;
+    }
+    agentCommandHoldRef.current = null;
     await handleStop('hold_release');
-  }, [handleStop]);
+  }, [handleStop, discardAgentCommand]);
 
   /** The hold was a shortcut after all: discard the recording, send nothing. */
   const handleAgentCommandCancel = useCallback(async () => {
-    if (!agentCommandHoldRef.current) return;
-    agentCommandHoldRef.current = false;
+    const hold = agentCommandHoldRef.current;
+    if (!hold) return;
     if (startOperationRef.current && statusRef.current === 'idle') {
-      // Not accepted yet: the start cancels the generation it creates.
-      stopRequestedDuringStartRef.current = true;
+      // Not accepted yet: the start discards the recording it creates.
+      hold.discarding = true;
       return;
     }
-    if (statusRef.current !== 'starting' && statusRef.current !== 'recording') return;
-    try {
-      await cancelRecording();
-    } catch {
-      // The recording ended on its own; nothing is left to cancel.
-    }
-  }, []);
+    await discardAgentCommand(hold);
+  }, [discardAgentCommand]);
 
   /** The dictation key's release. It never ends an agent command's recording. */
   const handleHoldStop = useCallback(async () => {
