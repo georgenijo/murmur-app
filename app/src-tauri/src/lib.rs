@@ -1,5 +1,6 @@
 #[cfg(feature = "internal-benchmark")]
 mod accuracy_corpus;
+mod agent_command;
 #[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
