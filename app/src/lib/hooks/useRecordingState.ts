@@ -502,6 +502,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         }
         if (res.type !== 'recording_starting') {
           if (res.type === 'error') presentError(res.error || 'Unknown error', { producerEpoch });
+          else if (res.type === 'model_unavailable') presentError('The speech model is not ready. Open Settings → AI & models → Speech-to-text to repair it.', { producerEpoch });
           else if (res.type === 'busy_benchmarking') presentError('Wait for the benchmark to finish.', { producerEpoch });
           else if (res.type === 'busy_transcribing_file') presentError('Wait for the file transcription to finish.', { producerEpoch });
           else if (res.type === 'busy_meeting') presentError('Stop the meeting capture before starting dictation.', { producerEpoch });

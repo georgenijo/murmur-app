@@ -37,6 +37,7 @@ vi.mock('../deliveryRecovery', async (importOriginal) => ({
   retryLastDelivery: mocks.retryLastDelivery,
 }));
 
+import { MODEL_UNAVAILABLE_FLASH_MS } from '../modelUnavailable';
 import {
   CLIPBOARD_ONLY_FLASH_MS,
   MICROPHONE_FAILURE_FLASH_MS,
@@ -626,5 +627,37 @@ describe('useOverlayRuntime transient cues', () => {
     expect(mocks.unlistens.get('smart-destination-selected')).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
     root = createRoot(container);
+  });
+
+  async function emitModelUnavailable(payload: unknown) {
+    await act(async () => {
+      mocks.handlers.get('dictation-model-unavailable')?.({ payload });
+    });
+  }
+
+  it('shows a typed model cue for a bounded time and ignores malformed payloads', async () => {
+    expect(current?.modelUnavailable).toBeNull();
+    await emitModelUnavailable({ reason: 'bogus' });
+    await emitModelUnavailable(null);
+    expect(current?.modelUnavailable).toBeNull();
+
+    await emitModelUnavailable({ reason: 'incomplete', phase: 'start' });
+    expect(current?.modelUnavailable).toBe('incomplete');
+    await act(async () => vi.advanceTimersByTime(MODEL_UNAVAILABLE_FLASH_MS - 1));
+    expect(current?.modelUnavailable).toBe('incomplete');
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(current?.modelUnavailable).toBeNull();
+  });
+
+  it('a new active lifecycle supersedes the cue, but a transcribe-time cue survives processing', async () => {
+    await emitModelUnavailable({ reason: 'notInstalled', phase: 'start' });
+    await act(async () => root.render(<Harness status="starting" />));
+    expect(current?.modelUnavailable).toBeNull();
+
+    await act(async () => root.render(<Harness status="processing" />));
+    await emitModelUnavailable({ reason: 'loadFailed', phase: 'transcribe' });
+    expect(current?.modelUnavailable).toBe('loadFailed');
+    await act(async () => root.render(<Harness status="idle" />));
+    expect(current?.modelUnavailable).toBe('loadFailed');
   });
 });

@@ -1,6 +1,7 @@
 import type { DictationStatus } from '../../lib/types';
 import type { MeetingRuntimePhase } from '../../lib/meetings';
 import type { MicrophoneFailureCue } from '../../lib/hooks/useOverlayRuntime';
+import type { ModelUnavailableReason } from '../../lib/modelUnavailable';
 
 /**
  * Which indicator the top-bar left slot shows. Mirrors the priority chain that
@@ -11,6 +12,7 @@ import type { MicrophoneFailureCue } from '../../lib/hooks/useOverlayRuntime';
 export type OverlayIndicator =
   | { kind: 'cancelled' }
   | { kind: 'hotkeyMiss' }
+  | { kind: 'modelUnavailable'; reason: ModelUnavailableReason }
   | { kind: 'microphoneFailure'; failure: MicrophoneFailureCue }
   | { kind: 'starting'; slow: boolean }
   | { kind: 'recording' }
@@ -22,7 +24,7 @@ export type OverlayIndicator =
   | { kind: 'idle'; dimmed: boolean };
 
 const PRIORITY_CUES = new Set<OverlayIndicator['kind']>([
-  'calibrating', 'cancelled', 'microphoneFailure', 'hotkeyMiss',
+  'calibrating', 'cancelled', 'microphoneFailure', 'modelUnavailable', 'hotkeyMiss',
 ]);
 
 export interface OverlayVisual {
@@ -42,7 +44,7 @@ export interface OverlayVisual {
  * Pure derivation of the overlay's top-bar visual state from status, transient
  * flashes, and global-disable. No React or timers live here.
  *
- * Priority: calibration > cancelled > microphone failure > hotkey miss >
+ * Priority: calibration > cancelled > microphone failure > model unavailable > hotkey miss >
  * meeting > starting > recording > recovering > processing > clipboard-only > idle.
  */
 export function deriveVisual(
@@ -55,6 +57,7 @@ export function deriveVisual(
   calibrating: boolean = false,
   meetingPhase: MeetingRuntimePhase = 'idle',
   showClipboardOnly: boolean = false,
+  modelUnavailable: ModelUnavailableReason | null = null,
 ): OverlayVisual {
   let indicator: OverlayIndicator;
   if (calibrating) {
@@ -63,6 +66,8 @@ export function deriveVisual(
     indicator = { kind: 'cancelled' };
   } else if (showMicrophoneFailure) {
     indicator = { kind: 'microphoneFailure', failure: showMicrophoneFailure };
+  } else if (modelUnavailable) {
+    indicator = { kind: 'modelUnavailable', reason: modelUnavailable };
   } else if (showHotkeyMiss) {
     indicator = { kind: 'hotkeyMiss' };
   } else if (meetingPhase !== 'idle' && meetingPhase !== 'failed') {

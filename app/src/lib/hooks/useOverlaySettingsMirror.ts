@@ -26,6 +26,8 @@ export interface OverlaySettingsMirror {
   handleToggleAutoPaste: (e: React.MouseEvent) => Promise<void>;
   handleToggleDisabled: (e: React.MouseEvent) => Promise<void>;
   handleOpenSettings: (e: React.MouseEvent) => Promise<void>;
+  /** Opens the main window's Settings on a specific page (and row). */
+  openSettingsPage: (destination: { page: string; target?: string }) => Promise<void>;
 }
 
 /**
@@ -181,6 +183,15 @@ export function useOverlaySettingsMirror({
     }
   }, []);
 
+  const openSettingsPage = useCallback(async (destination: { page: string; target?: string }) => {
+    try {
+      await invoke('show_main_window');
+      await emit('open-settings', destination);
+    } catch {
+      // The main window is unavailable; there is nothing to open.
+    }
+  }, []);
+
   return {
     autoPaste,
     fileOutputEnabled,
@@ -191,5 +202,6 @@ export function useOverlaySettingsMirror({
     handleToggleAutoPaste,
     handleToggleDisabled,
     handleOpenSettings,
+    openSettingsPage,
   };
 }

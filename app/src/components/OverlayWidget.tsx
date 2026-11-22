@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useOverlayRecordingStatus } from '../lib/hooks/useOverlayRecordingStatus';
@@ -23,6 +23,7 @@ import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOff
 import { useWaveform } from '../lib/hooks/useWaveform';
 import { useLiveWordsLift } from '../lib/hooks/useLiveWordsLift';
 import { useOverlayMaterial } from '../lib/hooks/useOverlayMaterial';
+import { MODEL_SETTINGS_TARGET, modelUnavailableWord } from '../lib/modelUnavailable';
 
 export function OverlayWidget() {
   const [calibrating, setCalibrating] = useState(false);
@@ -99,7 +100,7 @@ export function OverlayWidget() {
   const showDone = useOverlayDone(status);
   const cueActive = calibrating || meetingBusy || runtime.deliveryCue !== null
     || runtime.showCancelled || runtime.showHotkeyMiss
-    || runtime.showMicrophoneFailure !== null;
+    || runtime.showMicrophoneFailure !== null || runtime.modelUnavailable !== null;
   const activity = status === 'recording' ? 'recording'
     : status !== 'idle' || showDone || cueActive ? 'processing' : 'idle';
   // The idle floating pill is invisible and click-through, so hover must not
@@ -130,7 +131,14 @@ export function OverlayWidget() {
     calibrating,
     meetingPhase,
     runtime.showClipboardOnly,
+    runtime.modelUnavailable,
   );
+
+  // While the model cue shows, a click on the pill opens the page that repairs
+  // it instead of starting or stopping a recording.
+  const { openSettingsPage } = settingsMirror;
+  const openModelSettings = useCallback(() => { void openSettingsPage(MODEL_SETTINGS_TARGET); }, [openSettingsPage]);
+  const modelCueActive = runtime.modelUnavailable !== null;
 
   useEffect(() => {
     void invoke<MeetingRuntimeStatus>('get_meeting_status')
@@ -216,10 +224,10 @@ export function OverlayWidget() {
         geometry={geometry}
         expanded={expanded}
         active={activity !== 'idle'}
-        tapMissed={visual.showTapMissedLabel}
+        tapMissed={visual.showTapMissedLabel || modelCueActive}
         material={material}
-        onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
-        onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
+        onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion || modelCueActive ? undefined : recordingControls.handleDoubleClick}
+        onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : modelCueActive ? openModelSettings : recordingControls.handleClick}
         onMouseEnter={calibrating ? undefined : onHoverStart}
         onMouseMove={calibrating ? undefined : onHoverStart}
         onMouseLeave={calibrating ? undefined : onHoverEnd}
@@ -253,6 +261,7 @@ export function OverlayWidget() {
             status={status}
             stillConnecting={stillConnecting}
             showTapMissed={visual.showTapMissedLabel}
+            modelLabel={runtime.modelUnavailable ? modelUnavailableWord(runtime.modelUnavailable) : null}
             smartDestinationStatus={runtime.smartDestinationStatus}
             smartDestinationAppName={runtime.smartDestinationAppName}
             disabled={runtime.disabled}

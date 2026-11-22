@@ -23,6 +23,13 @@ import {
   type SmartDestinationSelection,
 } from '../smartDestination';
 
+import {
+  MODEL_UNAVAILABLE_EVENT,
+  MODEL_UNAVAILABLE_FLASH_MS,
+  modelUnavailableFromPayload,
+  type ModelUnavailableReason,
+} from '../modelUnavailable';
+
 const CANCELLED_FLASH_MS = 800;
 /** How long the secure-field refusal flash shows (issue #312 PR-C2). */
 /** How long the transform-busy refusal flash shows (issue #329). */
@@ -120,6 +127,8 @@ export interface OverlayRuntime {
    */
   /** Bounded, content-free microphone-initialization failure cue. */
   showMicrophoneFailure: MicrophoneFailureCue | null;
+  /** The selected speech model cannot serve a dictation (content-free). */
+  modelUnavailable: ModelUnavailableReason | null;
   /** A bounded inline delivery cue is visible. */
   showClipboardOnly: boolean;
   /** Current inline delivery result, kept content-free. */
@@ -161,6 +170,8 @@ export function useOverlayRuntime({
   const [showCancelled, setShowCancelled] = useState(false);
   const [showMicrophoneFailure, setShowMicrophoneFailure] =
     useState<MicrophoneFailureCue | null>(null);
+  const [modelUnavailable, setModelUnavailable] = useState<ModelUnavailableReason | null>(null);
+  const modelUnavailableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [deliveryCue, setDeliveryCue] = useState<OverlayDeliveryCue | null>(null);
   const [smartDestinationSelection, setSmartDestinationSelection] =
     useState<SmartDestinationSelection | null>(null);
@@ -485,7 +496,41 @@ export function useOverlayRuntime({
     microphoneFailureTimerRef.current = null;
     microphoneFailureRecordingIdRef.current = 0;
     setShowMicrophoneFailure(null);
+    // A model refusal leaves the app idle; any new active lifecycle (a start
+    // that got past the model gate) supersedes it. A transcribe-time signal
+    // arrives after `processing` began, so it is set after this runs.
+    if (status !== 'processing') {
+      if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+      modelUnavailableTimerRef.current = null;
+      setModelUnavailable(null);
+    }
   }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>(MODEL_UNAVAILABLE_EVENT, (event) => {
+      if (cancelled) return;
+      const reason = modelUnavailableFromPayload(event.payload);
+      if (!reason) return;
+      if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+      setModelUnavailable(reason);
+      modelUnavailableTimerRef.current = setTimeout(() => {
+        if (!cancelled) setModelUnavailable(null);
+        modelUnavailableTimerRef.current = null;
+      }, MODEL_UNAVAILABLE_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    }).catch(() => {
+      // Non-Tauri previews do not expose the native event bridge.
+    });
+    return () => {
+      cancelled = true;
+      if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+      modelUnavailableTimerRef.current = null;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -553,6 +598,7 @@ export function useOverlayRuntime({
   return {
     showCancelled,
     showMicrophoneFailure,
+    modelUnavailable,
     showClipboardOnly: deliveryCue !== null,
     deliveryCue,
     smartDestinationStatus: smartDestinationSelection?.status ?? null,

@@ -389,8 +389,6 @@ function App() {
   }, [fileTranscription.enqueue]);
 
   // Overlay gear button asks the main window to open the Settings panel.
-  const openSettingsFromOverlay = useCallback(() => openSettings('programmatic'), [openSettings]);
-  useOpenSettingsListener(openSettingsFromOverlay);
 
   const captureBusyRef = useRef(false);
   captureBusyRef.current = status !== 'idle' || !['idle', 'failed'].includes(meetings.status.phase);
@@ -432,6 +430,16 @@ function App() {
     }));
     setIsSettingsOpen(true);
   }, [mainAppReady]);
+  // A model cue names its page; the gear sends no payload and opens General.
+  const openSettingsFromOverlay = useCallback((destination?: { page: string; target?: string }) => {
+    if (destination) {
+      openSettingsTarget(destination);
+      return;
+    }
+    openSettings('programmatic');
+  }, [openSettings, openSettingsTarget]);
+  useOpenSettingsListener(openSettingsFromOverlay);
+
   const openSettingsPage = useCallback((page: string) => {
     openSettingsTarget({ page });
   }, [openSettingsTarget]);

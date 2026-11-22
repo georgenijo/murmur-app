@@ -4587,43 +4587,53 @@ async fn run_transcription_pipeline(
     let t_backend = std::time::Instant::now();
     gaps.pre_backend_us = micros_between(t_after_vad, t_backend);
     let mut decode_ended_at = None;
-    let (transcription_attempt, load_report) = app_state.model_runtime.with_ready_backend(
-        Some(app_handle),
-        &transcription.model_name,
-        PreparationReason::Pipeline,
-        |backend| {
-            let decode_started = std::time::Instant::now();
-            gaps.backend_acquire_us = micros_between(t_backend, decode_started);
-            // Take only after acquiring the backend: a preview decode that was
-            // running holds it, so by now it has finished and committed or not.
-            let reuse_plan = take_stream_reuse_plan(
-                app_state,
-                transcription,
-                recording_id,
-                final_bounds.as_deref(),
-                &samples_for_transcription,
-            );
-            let result = decode_final_transcript(
-                backend,
-                transcription,
-                &samples_for_transcription,
-                samples,
-                vad_trimmed,
-                reuse_plan,
-            )
-            .map(|decoded| {
-                if let Some(outcome) = &decoded.reuse {
-                    crate::stream_reuse::emit_outcome(recording_id, outcome);
-                }
-                decoded.attempt
-            });
-            decode_ms = decode_started.elapsed().as_millis() as u64;
-            let decode_ended = std::time::Instant::now();
-            gaps.backend_decode_us = micros_between(decode_started, decode_ended);
-            decode_ended_at = Some(decode_ended);
-            result
-        },
-    )?;
+    let (transcription_attempt, load_report) = app_state
+        .model_runtime
+        .with_ready_backend(
+            Some(app_handle),
+            &transcription.model_name,
+            PreparationReason::Pipeline,
+            |backend| {
+                let decode_started = std::time::Instant::now();
+                gaps.backend_acquire_us = micros_between(t_backend, decode_started);
+                // Take only after acquiring the backend: a preview decode that was
+                // running holds it, so by now it has finished and committed or not.
+                let reuse_plan = take_stream_reuse_plan(
+                    app_state,
+                    transcription,
+                    recording_id,
+                    final_bounds.as_deref(),
+                    &samples_for_transcription,
+                );
+                let result = decode_final_transcript(
+                    backend,
+                    transcription,
+                    &samples_for_transcription,
+                    samples,
+                    vad_trimmed,
+                    reuse_plan,
+                )
+                .map(|decoded| {
+                    if let Some(outcome) = &decoded.reuse {
+                        crate::stream_reuse::emit_outcome(recording_id, outcome);
+                    }
+                    decoded.attempt
+                });
+                decode_ms = decode_started.elapsed().as_millis() as u64;
+                let decode_ended = std::time::Instant::now();
+                gaps.backend_decode_us = micros_between(decode_started, decode_ended);
+                decode_ended_at = Some(decode_ended);
+                result
+            },
+        )
+        .inspect_err(|error| {
+            if let Some(reason) = app_state
+                .model_runtime
+                .failure_reason_for(&transcription.model_name, error)
+            {
+                emit_model_unavailable(app_handle, reason, "transcribe");
+            }
+        })?;
     let t_after_backend = std::time::Instant::now();
     gaps.backend_release_us = decode_ended_at
         .map(|ended| micros_between(ended, t_after_backend))
@@ -7539,6 +7549,11 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    if let Some(refusal) =
+        refuse_unusable_model(&app_handle, state.inner(), gesture_token.as_deref())
+    {
+        return Ok(refusal);
+    }
     let host = TauriHost::new(app_handle, state.performance.clone());
     start_native_recording_inner(
         &host,
@@ -7549,6 +7564,58 @@ pub async fn start_native_recording(
         gesture_token,
     )
     .await
+}
+
+/// Tell the overlay the selected model cannot serve a dictation. Content-free:
+/// a fixed reason label and the phase, never a path or transcript.
+fn emit_model_unavailable(
+    app: &tauri::AppHandle,
+    reason: model_runtime::ModelUnavailable,
+    phase: &'static str,
+) {
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.model_unavailable",
+        reason = reason.as_str(),
+        phase,
+        "selected transcription model unavailable"
+    );
+    let _ = app.emit(
+        crate::events::MODEL_UNAVAILABLE_EVENT,
+        serde_json::json!({ "reason": reason.as_str(), "phase": phase }),
+    );
+}
+
+/// Refuse a start whose selected model is missing, incomplete or still
+/// downloading, before any microphone ownership or recording generation
+/// exists: nothing is captured, so there is no audio to lose, and pressing the
+/// hotkey again after the repair is the retry. The gesture and speculative
+/// claims of this request are dropped so a key-down capture is discarded.
+fn refuse_unusable_model(
+    app: &tauri::AppHandle,
+    state: &State,
+    gesture_token: Option<&str>,
+) -> Option<serde_json::Value> {
+    let model_name = state
+        .app_state
+        .dictation
+        .lock_or_recover()
+        .model_name
+        .clone();
+    let reason = state
+        .app_state
+        .model_runtime
+        .start_blocker_for(&model_name)?;
+    // Claiming consumes this request's gesture stamp; dropping the speculative
+    // claim discards any capture the key-down opened.
+    let _ = audio_lifecycle::gesture::claim(gesture_token);
+    drop(audio_lifecycle::speculative::claim(gesture_token));
+    emit_model_unavailable(app, reason, "start");
+    Some(serde_json::json!({
+        "type": "model_unavailable",
+        "reason": reason.as_str(),
+        "state": "idle",
+    }))
 }
 
 /// The first statement of the start entry (C4.2, decisions D-S2-2 / D-S2-3): a

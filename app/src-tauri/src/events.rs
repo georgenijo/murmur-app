@@ -22,3 +22,8 @@ pub const AUDIO_LEVEL_EVENT: &str = "audio-level";
 /// delivers an `emit_to` for one label to every webview that has such a
 /// listener: sharing `audio-level` would hand each window both streams.
 pub const OVERLAY_AUDIO_LEVEL_EVENT: &str = "overlay-audio-level";
+
+/// The selected transcription model cannot serve a dictation (not downloaded,
+/// incomplete, downloading, unsupported, or failed to load). Payload:
+/// `{ reason, phase }`; broadcast so the overlay can show it.
+pub const MODEL_UNAVAILABLE_EVENT: &str = "dictation-model-unavailable";

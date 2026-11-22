@@ -35,6 +35,11 @@ import { DashboardAction } from './components/ui/DashboardPrimitives';
 import { AnimatedDropdown, AnimatedDropdownTrigger, AnimatedDropdownContent, AnimatedDropdownItem, AnimatedDropdownSeparator } from './components/ui/animated-dropdown/animated-dropdown';
 import { FluidTooltip } from './components/ui/fluid-tooltip/fluid-tooltip';
 import { DiscoveryHintToast } from './components/DiscoveryHintToast';
+import { OverlayIsland } from './components/overlay/OverlayIsland';
+import { OverlayPill } from './components/overlay/OverlayPill';
+import overlayGeometryFixture from './components/overlay/overlay-geometry.fixture.json';
+import type { OverlayGeometry } from './lib/overlayGeometry';
+import type { ModelUnavailableReason } from './lib/modelUnavailable';
 import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
@@ -880,6 +885,24 @@ function DictationPreviewFixture() {
   );
 }
 
+/** The real floating pill (production geometry, CSS and components) for every
+ * model-problem word, so a browser can measure that each one fits the capsule. */
+function ModelPillFixture() {
+  const reasons: ModelUnavailableReason[] = ['notInstalled', 'incomplete', 'downloading', 'unsupported', 'loadFailed'];
+  const geometry = overlayGeometryFixture.pillProcessing as OverlayGeometry;
+  const barRefs = React.useRef<(HTMLDivElement | null)[]>([]);
+  return <main data-visual-ready="true" style={{ padding: 16, display: 'grid', gap: 12, justifyItems: 'start' }}>
+    {reasons.map((reason) => (
+      <div key={reason} data-model-pill={reason} style={{ display: 'flex', width: geometry.windowW, height: geometry.collapsedH }}>
+        <OverlayIsland geometry={geometry} expanded={false} active>
+          <OverlayPill geometry={geometry} barRefs={barRefs} status="idle"
+            visual={{ indicator: { kind: 'modelUnavailable', reason }, showTapMissedLabel: false, waveformVisible: false }} />
+        </OverlayIsland>
+      </div>
+    ))}
+  </main>;
+}
+
 function MeetingSuggestionOverlayFixture() {
   return <VoiceIslandFixture meetingOnly />;
 }
@@ -972,6 +995,8 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <VoiceIslandFixture />
     ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />
+    ) : requestedState === 'overlay-model-pill' ? (
+      <ModelPillFixture />
     ) : requestedState === 'overlay-meeting-suggestion' ? (
       <MeetingSuggestionOverlayFixture />
     ) : (requestedState === 'settings-appearance' || (requestedState === 'settings-folding' && query.get('page') === 'appearance') || (copyFixture && query.get('page') === 'appearance')) ? (

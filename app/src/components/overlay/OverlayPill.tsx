@@ -5,6 +5,7 @@ import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 import type { OverlayIndicator, OverlayVisual } from './deriveVisual';
 import { PILL_BORDER } from './OverlayIsland';
 import { bezelCue, type BezelGlyph } from './bezelCue';
+import { modelUnavailableLabel } from '../../lib/modelUnavailable';
 
 interface OverlayPillProps {
   geometry: OverlayGeometry;
@@ -133,6 +134,17 @@ function StatusIndicator({ visual, smartAutoSummary = null, deliveryCue = null }
           <line x1="6" y1="6" x2="18" y2="18" />
           <line x1="18" y1="6" x2="6" y2="18" />
         </svg>
+      ) : indicator.kind === 'modelUnavailable' ? (
+        <span
+          role="status"
+          aria-live="assertive"
+          aria-label={modelUnavailableLabel(indicator.reason)}
+          className="flex h-4 w-4 items-center justify-center text-warning"
+        >
+          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3.5L22 20.5H2z" /><path d="M12 10v4.5" /><path d="M12 17.6v.1" />
+          </svg>
+        </span>
       ) : indicator.kind === 'hotkeyMiss' ? (
         <span className="w-3 h-3 rounded-full border border-amber-400 text-amber-300 text-[8px] leading-none flex items-center justify-center font-bold">
           !
@@ -326,6 +338,8 @@ function indicatorA11y(indicator: OverlayIndicator, deliveryCue: OverlayDelivery
     case 'recording': return { role: 'img', 'aria-label': 'Recording' };
     case 'meeting': return { role: 'img', 'aria-label': indicator.processing ? 'finishing meeting transcript' : 'meeting capture active' };
     case 'recovering': return { role: 'img', 'aria-label': 'recovering microphone' };
+    case 'modelUnavailable':
+      return { role: 'status', 'aria-live': 'assertive', 'aria-label': modelUnavailableLabel(indicator.reason) };
     case 'microphoneFailure':
       return {
         role: 'status',
