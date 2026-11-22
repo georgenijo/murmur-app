@@ -26,7 +26,9 @@
 //!   (same case, punctuation and word boundary). The overlap is re-decoded
 //!   with the audio that follows it, so this shows the stitch point reads the
 //!   same with and without the right context, the second biggest accuracy risk.
-//!   Any difference means whole-clip decode.
+//!   Any difference means whole-clip decode. When only one piece was committed
+//!   the tail starts at the first kept sample, so the tail decode already is
+//!   the whole-clip decode and is used as such, never decoded a second time.
 //! - Recording generation, model and settings come from the recording-start
 //!   snapshot, and every method is keyed by recording id: a stopped, cancelled
 //!   or superseded recording never reads or writes another one's state.
@@ -249,6 +251,12 @@ impl FinalPlan {
         }
         Some(join(&self.prefix, decoded.trim()))
     }
+
+    /// The tail decode starts at the first kept sample, so it is the
+    /// whole-clip decode: there is no earlier piece to stitch it onto.
+    pub fn tail_is_whole_clip(&self) -> bool {
+        self.start == 0
+    }
 }
 
 impl StreamReuse {
@@ -470,7 +478,8 @@ pub(crate) struct Outcome {
     pub pieces: u32,
     /// Audio decoded at Stop, in milliseconds: the tail when reused, zero when
     /// the committed pieces covered everything, and on a fallback the whole
-    /// clip plus any tail decode that was discarded first.
+    /// clip plus any tail decode that was discarded first. A tail that was the
+    /// whole clip is never discarded, so it counts once.
     pub decoded_ms: u64,
     pub overlap_words: u64,
 }
