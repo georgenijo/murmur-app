@@ -207,15 +207,15 @@ pub fn model_definition(model_name: &str) -> Result<&'static ModelDefinition, St
 /// Content-free classification of a model preparation failure for logs. The
 /// error text itself is never logged; only one of these fixed labels is.
 pub(crate) fn prepare_failure_kind(error: &str) -> &'static str {
-    if error.contains("not downloaded")
+    if error.starts_with("Failed to load") || error.contains("FluidAudio initialized") {
+        "load_failed"
+    } else if error.contains("not downloaded")
         || error.contains("not installed")
         || error.contains("not found")
     {
         "not_installed"
     } else if error.starts_with("Unknown ") {
         "unknown_model"
-    } else if error.starts_with("Failed to load") || error.contains("FluidAudio initialized") {
-        "load_failed"
     } else {
         "other"
     }
@@ -604,6 +604,32 @@ impl ModelRuntimeManager {
         Ok(!already_installed)
     }
 
+    /// A download or repair finished. A warm-up failure recorded before it
+    /// described files that no longer exist, so drop it. Other Installed
+    /// transitions (files already present, a cancelled attempt) must not clear a
+    /// genuine load failure.
+    pub fn complete_install(
+        &self,
+        app: Option<&tauri::AppHandle>,
+        model_name: &str,
+    ) -> Result<(), String> {
+        self.definition(model_name)?;
+        let was_installing = matches!(
+            self.install_states.lock_or_recover().get(model_name),
+            Some(InstallState::Installing | InstallState::Validating)
+        );
+        if was_installing {
+            let mut statuses = self.statuses.lock_or_recover();
+            if statuses
+                .get(model_name)
+                .is_some_and(|status| status.failure_present)
+            {
+                statuses.remove(model_name);
+            }
+        }
+        self.set_install_state(app, model_name, InstallState::Installed)
+    }
+
     pub fn set_install_state(
         &self,
         app: Option<&tauri::AppHandle>,
@@ -614,17 +640,6 @@ impl ModelRuntimeManager {
         self.install_states
             .lock_or_recover()
             .insert(model_name.to_string(), state);
-        if state == InstallState::Installed {
-            // A failed warm-up from before the (re)install describes files that
-            // no longer exist; do not keep reporting it for the repaired model.
-            let mut statuses = self.statuses.lock_or_recover();
-            if statuses
-                .get(model_name)
-                .is_some_and(|status| status.failure_present)
-            {
-                statuses.remove(model_name);
-            }
-        }
         self.publish(app, model_name, "installStateChanged")
     }
 
@@ -1607,6 +1622,10 @@ mod tests {
             "not_installed"
         );
         assert_eq!(
+            prepare_failure_kind("Failed to load whisper model: file not found"),
+            "load_failed"
+        );
+        assert_eq!(
             prepare_failure_kind("Unknown Core ML model 'x'"),
             "unknown_model"
         );
@@ -1617,19 +1636,54 @@ mod tests {
         assert_eq!(prepare_failure_kind("something else"), "other");
     }
 
-    #[test]
-    fn successful_install_clears_a_failure_left_by_an_earlier_warm_up() {
-        let manager = ModelRuntimeManager::default();
+    fn fail_warm_up(manager: &ModelRuntimeManager) {
         manager
             .set_lifecycle(None, "base.en", LifecycleState::Failed, true, "startupWarm")
             .unwrap();
         assert!(manager.snapshot("base.en").unwrap().failure_present);
+    }
+
+    #[test]
+    fn completing_a_download_clears_a_failure_left_by_an_earlier_warm_up() {
+        let manager = ModelRuntimeManager::default();
+        fail_warm_up(&manager);
         manager
-            .set_install_state(None, "base.en", InstallState::Installed)
+            .set_install_state(None, "base.en", InstallState::Validating)
             .unwrap();
+        manager.complete_install(None, "base.en").unwrap();
         let snapshot = manager.snapshot("base.en").unwrap();
         assert!(!snapshot.failure_present);
         assert_eq!(snapshot.lifecycle_state, LifecycleState::Unloaded);
+        assert_eq!(snapshot.install_state, InstallState::Installed);
+    }
+
+    #[test]
+    fn already_installed_and_cancelled_transitions_keep_a_genuine_failure() {
+        let manager = ModelRuntimeManager::default();
+        fail_warm_up(&manager);
+        // download_model retriggered while the files are already present.
+        manager
+            .begin_install_with_presence(None, "base.en", true)
+            .unwrap();
+        assert!(manager.snapshot("base.en").unwrap().failure_present);
+        // The cancel path republishes Installed without completing a download.
+        manager
+            .set_install_state(None, "base.en", InstallState::Installed)
+            .unwrap();
+        assert!(manager.snapshot("base.en").unwrap().failure_present);
+        // Completing with no download in flight is not a repair either.
+        manager.complete_install(None, "base.en").unwrap();
+        assert!(manager.snapshot("base.en").unwrap().failure_present);
+    }
+
+    #[test]
+    fn installing_and_not_installed_do_not_clear_a_failure() {
+        let manager = ModelRuntimeManager::default();
+        fail_warm_up(&manager);
+        for state in [InstallState::Installing, InstallState::NotInstalled] {
+            manager.set_install_state(None, "base.en", state).unwrap();
+            assert!(manager.snapshot("base.en").unwrap().failure_present);
+        }
     }
 
     #[test]

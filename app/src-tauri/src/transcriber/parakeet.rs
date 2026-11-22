@@ -61,11 +61,6 @@ impl ParakeetVariant {
     }
 }
 
-/// Map a dropdown model value to its bundle + decoding method.
-/// Returns None for non-Parakeet (or unknown Parakeet) names.
-/// fp16 (non-quantized) + greedy was the accuracy/speed sweet spot in testing
-/// (int8 lost accuracy, beam was a no-op). Add rows here — plus matching
-/// `MODEL_OPTIONS` entries in settings.ts — to expose more variants.
 pub(crate) fn bundle_missing_error(dir: &str, path: &Path) -> String {
     format!(
         "Parakeet model bundle '{}' not found or incomplete at {}",
@@ -74,6 +69,11 @@ pub(crate) fn bundle_missing_error(dir: &str, path: &Path) -> String {
     )
 }
 
+/// Map a dropdown model value to its bundle + decoding method.
+/// Returns None for non-Parakeet (or unknown Parakeet) names.
+/// fp16 (non-quantized) + greedy was the accuracy/speed sweet spot in testing
+/// (int8 lost accuracy, beam was a no-op). Add rows here — plus matching
+/// `MODEL_OPTIONS` entries in settings.ts — to expose more variants.
 fn variant_for(model_name: &str) -> Option<ParakeetVariant> {
     match model_name {
         "parakeet-tdt-0.6b-v2-fp16" => Some(ParakeetVariant {
