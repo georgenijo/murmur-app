@@ -61,6 +61,14 @@ impl ParakeetVariant {
     }
 }
 
+pub(crate) fn bundle_missing_error(dir: &str, path: &Path) -> String {
+    format!(
+        "Parakeet model bundle '{}' not found or incomplete at {}",
+        dir,
+        path.display()
+    )
+}
+
 /// Map a dropdown model value to its bundle + decoding method.
 /// Returns None for non-Parakeet (or unknown Parakeet) names.
 /// fp16 (non-quantized) + greedy was the accuracy/speed sweet spot in testing
@@ -161,11 +169,7 @@ impl TranscriptionBackend for ParakeetBackend {
         let models_dir = self.models_dir()?;
         let model_dir = models_dir.join(variant.dir);
         if !variant.is_complete(&models_dir) {
-            return Err(format!(
-                "Parakeet model bundle '{}' not found or incomplete at {}",
-                variant.dir,
-                model_dir.display()
-            ));
+            return Err(bundle_missing_error(variant.dir, &model_dir));
         }
 
         let to_str = |p: PathBuf| -> Result<String, String> {

@@ -2589,12 +2589,13 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
                     "model_prepare_complete"
                 )
             }
-            Err(_error) => tracing::warn!(
+            Err(error) => tracing::warn!(
                 target: "pipeline",
                 recording_id,
                 model = model_name.as_str(),
                 total_ms,
                 failed = true,
+                failure_kind = model_runtime::prepare_failure_kind(&error),
                 "model_prepare_failed"
             ),
         }
@@ -2666,11 +2667,12 @@ fn spawn_idle_model_preparation(
                 reason = "startup_configuration",
                 "model_prepare_complete"
             ),
-            Err(_error) => tracing::info!(
+            Err(error) => tracing::info!(
                 target: "pipeline",
                 model = model_name.as_str(),
                 total_ms,
                 reason = "startup_configuration",
+                failure_kind = model_runtime::prepare_failure_kind(&error),
                 failed = true,
                 "model_prepare_skipped"
             ),

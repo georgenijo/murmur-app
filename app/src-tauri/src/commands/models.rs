@@ -624,11 +624,10 @@ pub async fn download_model(
     match install_result {
         Ok(()) => {
             terminal_evidence.outcome_code = "success";
-            let result = state.app_state.model_runtime.set_install_state(
-                Some(&app_handle),
-                &model_name,
-                InstallState::Installed,
-            );
+            let result = state
+                .app_state
+                .model_runtime
+                .complete_install(Some(&app_handle), &model_name);
             if result.is_err() {
                 terminal_evidence.outcome_code = "state_publish_failed";
             }

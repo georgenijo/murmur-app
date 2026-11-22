@@ -33,7 +33,7 @@ it('requires two clicks, protects selected/active models, and reflects removal w
   await act(async () => button('Confirm remove tiny.en…')!.click());
   expect(invoke).toHaveBeenCalledExactlyOnceWith('remove_model', { modelName: 'tiny.en' });
   await render([model('base.en'), model('tiny.en', { installState: 'notInstalled', generation: 2 })]);
-  expect(button('Remove tiny.en…')).toBeNull(); expect(container.textContent).toContain('Not installed');
+  expect(button('Remove tiny.en…')).toBeNull(); expect(container.textContent).toContain('Not downloaded');
   await act(async () => button('Download tiny.en')!.click());
   expect(invoke).toHaveBeenLastCalledWith('download_model', { modelName: 'tiny.en' });
 });
@@ -67,8 +67,25 @@ it('does not offer removal or download during installation', async () => {
   expect(container.querySelector('button')).toBeNull();
 });
 
-it('uses one concise storage description', async () => {
-  await render();
-  expect(container.textContent).toContain('Remove unused models after choosing another model');
-  expect(container.textContent).not.toContain('free storage');
+it('explains storage plainly and never renders raw runtime enum values', async () => {
+  await render([
+    model('base.en', { installState: 'notInstalled', lifecycleState: 'failed', failurePresent: true }),
+    model('tiny.en', { installState: 'invalid' }),
+    model('small.en', { installState: 'validating' }),
+    model('medium.en'),
+  ]);
+  expect(container.textContent).toContain('Remove the ones you no longer use');
+  for (const raw of ['notInstalled', 'validating', 'invalid', 'failed', 'unloaded']) {
+    expect(container.textContent).not.toContain(raw);
+  }
+  const rows = [...container.querySelectorAll('[data-testid="model-storage-row"]')];
+  const row = (name: string) => rows.find((candidate) => candidate.textContent?.includes(name))!;
+  // Order: selected, then downloaded, then the rest.
+  expect(rows.map((candidate) => candidate.querySelector('.font-medium')?.textContent))
+    .toEqual(['base.en', 'medium.en', 'tiny.en', 'small.en']);
+  expect(row('base.en').textContent).toContain('Selected');
+  expect(row('base.en').textContent).toContain('Not downloaded');
+  expect(row('tiny.en').textContent).toContain('Incomplete');
+  expect(row('small.en').textContent).toContain('Verifying…');
+  expect(row('medium.en').textContent).toContain('Downloaded');
 });
