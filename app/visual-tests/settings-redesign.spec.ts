@@ -22,9 +22,25 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(page.locator('[data-shortcut-id="paste-last"] .settings-shortcut-state')).toHaveText('Off');
       expect(Math.max(...rightEdges) - Math.min(...rightEdges)).toBeLessThan(1);
       await expect(page.locator('.settings-shortcut-hold')).toHaveText('Hold');
-      await page.getByRole('button', { name: 'Configure in Recording' }).click();
+      // Off until opted in: listed without a key, beside the dictation trigger.
+      await expect(page.locator('[data-shortcut-id="agent-command"] .settings-shortcut-state')).toHaveText('Off');
+      await expect(page.locator('[data-shortcut-id="agent-command"] kbd')).toHaveCount(0);
+      await page.locator('[data-shortcut-id="recording"]').getByRole('button', { name: 'Configure in Recording' }).click();
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('Recording');
       await expect(page.locator('[data-setting-target="trigger-key"]')).toBeVisible();
+      await expect(page.locator('.settings-group-heading')).toHaveText(['Input', 'Controls', 'Agent commands']);
+      const agentCommands = page.locator('[data-setting-target="agent-commands"]');
+      await agentCommands.scrollIntoViewIfNeeded();
+      await expect(agentCommands).toContainText('is sent to your local T3 Code server and the model it runs, instead of being typed');
+      const agentSwitch = agentCommands.getByRole('switch');
+      await expect(agentSwitch).toHaveAttribute('aria-checked', 'false');
+      // The consent sentence wraps beside the switch, never under it or out of the card.
+      const consent = await agentCommands.locator('.settings-row-description').boundingBox();
+      const control = await agentSwitch.boundingBox();
+      const agentCard = await agentCommands.evaluate((row) => row.closest('.settings-card')!.getBoundingClientRect().toJSON());
+      expect(consent!.x + consent!.width).toBeLessThanOrEqual(control!.x);
+      expect(consent!.x).toBeGreaterThanOrEqual(agentCard.left);
+      expect(control!.x + control!.width).toBeLessThanOrEqual(agentCard.right);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     });
 

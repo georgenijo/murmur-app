@@ -668,7 +668,7 @@ describe('SettingsPanel information architecture', () => {
     const recording = nav.find((button) => button.textContent === 'Recording')!;
     await act(async () => recording.click());
     expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
-      'Input', 'Controls',
+      'Input', 'Controls', 'Agent commands',
     ]);
 
     const delivery = nav.find((button) => button.textContent === 'Delivery')!;
@@ -1128,6 +1128,42 @@ describe('SettingsPanel information architecture', () => {
       />,
     ));
     expect(container.textContent).toContain('Press ⌘⌥V to paste your latest dictation again');
+  });
+
+  it('keeps agent commands off behind a toggle that says where the speech goes', async () => {
+    const recording = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
+      .find((button) => button.textContent === 'Recording')!;
+    await act(async () => recording.click());
+    const row = container.querySelector<HTMLElement>('[data-setting-target="agent-commands"]')!;
+    expect(row.textContent).toContain('Speak commands to your agents');
+    expect(row.textContent).toContain(
+      'When on, what you say while holding the agent command key is sent to your local T3 Code server and the model it runs, instead of being typed',
+    );
+    const toggle = row.querySelector<HTMLElement>('[role="switch"]')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    // The key picker belongs to the feature and is not offered while it is off.
+    const picker = () => container.querySelector<HTMLButtonElement>('button[aria-label="Agent command key"]');
+    const branch = container.querySelector<HTMLElement>('[data-setting-target="agent-command-key"]');
+    expect(branch === null || branch.closest('[inert], [hidden], [aria-hidden="true"]') !== null).toBe(true);
+
+    await act(async () => toggle.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ agentCommandEnabled: true });
+
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, agentCommandEnabled: true }));
+    const keyRow = container.querySelector<HTMLElement>('[data-setting-target="agent-command-key"]')!;
+    expect(keyRow.closest('[inert], [hidden], [aria-hidden="true"]')).toBeNull();
+    expect(keyRow.textContent).toContain('Hold ⌥ Right Option to speak a command, release to send it');
+    expect(picker()!.textContent).toContain('⌥ Right Option');
+    await act(async () => picker()!.click());
+    expect(Array.from(container.querySelectorAll('[role="option"]')).map((option) => option.textContent)).toEqual([
+      expect.stringContaining('⌥ Right Option'),
+      expect.stringContaining('⇧ Right Shift'),
+      expect.stringContaining('⌃ Left Control'),
+    ]);
+    const option = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((item) => item.textContent?.includes('⇧ Right Shift'))!;
+    await act(async () => option.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ agentCommandShortcut: 'shift_r' });
   });
 
   it('keeps the last working Paste last value when native registration fails', async () => {

@@ -28,6 +28,10 @@ import {
   GLOBE_DICTATION_KEY,
   pasteLastShortcutConflict,
   pasteLastShortcutLabel,
+  AGENT_COMMAND_KEY_OPTIONS,
+  agentCommandKeyConflict,
+  agentCommandKeyLabel,
+  isAgentCommandKey,
   type PasteLastShortcut,
   type RecordingMode,
   type Settings,
@@ -771,6 +775,21 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   };
 
+  const [agentCommandKeyError, setAgentCommandKeyError] = useState<string | null>(null);
+  const updateAgentCommandKey = (next: string) => {
+    setAgentCommandKeyError(null);
+    if (!isAgentCommandKey(next)) {
+      setAgentCommandKeyError('Unsupported agent command key. Choose one from the list.');
+      return;
+    }
+    const conflict = agentCommandKeyConflict(next, settings);
+    if (conflict) {
+      setAgentCommandKeyError(conflict);
+      return;
+    }
+    onUpdateSettings({ agentCommandShortcut: next });
+  };
+
   const isRecording = status !== 'idle';
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const isBoth = settings.recordingMode === 'both';
@@ -1142,6 +1161,34 @@ export const SettingsPanel = memo(function SettingsPanel({
                 End hands-free recordings after a pause
               </p>
             </SettingsRow>
+            </SettingsGroup>
+            <SettingsGroup title="Agent commands">
+              <SettingToggle
+                targetId="agent-commands" title="Speak commands to your agents"
+                description="When on, what you say while holding the agent command key is sent to your local T3 Code server and the model it runs, instead of being typed"
+                checked={settings.agentCommandEnabled} defaultChecked={DEFAULT_SETTINGS.agentCommandEnabled}
+                onChange={() => onUpdateSettings({ agentCommandEnabled: !settings.agentCommandEnabled })}
+              />
+              <SettingsBranch open={settings.agentCommandEnabled}>
+                <SettingsRow
+                  title={<>Agent command key</>}
+                  targetId="agent-command-key"
+                  disabled={isRecording}
+                  onReset={settings.agentCommandShortcut !== DEFAULT_SETTINGS.agentCommandShortcut ? () => updateAgentCommandKey(DEFAULT_SETTINGS.agentCommandShortcut) : undefined}
+                  control={<Select
+                    aria-label="Agent command key"
+                    value={settings.agentCommandShortcut}
+                    disabled={isRecording}
+                    onChange={(value) => updateAgentCommandKey(value)}
+                    items={AGENT_COMMAND_KEY_OPTIONS}
+                  />}
+                >
+                  <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">
+                    {`Hold ${agentCommandKeyLabel(settings.agentCommandShortcut)} to speak a command, release to send it`}
+                  </p>
+                  {agentCommandKeyError && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{agentCommandKeyError}</p>}
+                </SettingsRow>
+              </SettingsBranch>
             </SettingsGroup>
             <SettingsGroup>
             <SettingsDisclosure title="Advanced" layout="rows">

@@ -57,6 +57,12 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Mutes once the start cue has played out (500 ms cap) and unmutes when the stop is accepted.
 - Restores only the device it muted and leaves it alone if the user unmuted it. A local record (device UID, elements, mute time) restores the speakers at the next launch after a crash, only within 10 minutes; an older record is dropped and the Mac stays muted. Unfinished restores retry on a short backoff until then.
 
+### Agent commands — [features/agent-commands.md](features/agent-commands.md)
+
+- Opt-in (`agentCommandEnabled`, off by default): hold a second key (Right Option by default), speak a command for your coding agents, and release.
+- The speech is transcribed locally, then sent to the local T3 Code server and the model it runs instead of being typed. This is the one path where dictated text leaves Murmur, and only while the setting is on.
+- Nothing is pasted, copied, saved to the output folder, mirrored, or added to History. Replies arrive as macOS notifications.
+
 ### Stop on silence — [features/silence-auto-stop.md](features/silence-auto-stop.md)
 
 - Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
@@ -305,7 +311,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 161 registered commands |
+| Rust backend | `app/src-tauri/src/` — 162 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

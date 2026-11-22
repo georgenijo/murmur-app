@@ -1,5 +1,6 @@
 import { MAIN_WINDOW_SHORTCUTS } from '../../lib/keyboardShortcuts';
 import {
+  agentCommandKeyLabel,
   pasteLastShortcutLabel,
   recordingShortcutHint,
   type Settings,
@@ -9,11 +10,13 @@ import { SettingsSection } from './SettingsSection';
 export type GlobalShortcutId =
   | 'recording'
   | 'paste-last'
+  | 'agent-command'
   | 'correction';
 
 export type ShortcutOwnerDestination =
   | { shortcutId: 'recording'; page: 'recording'; target: 'trigger-key' }
   | { shortcutId: 'paste-last'; page: 'delivery'; target: 'paste-last-shortcut' }
+  | { shortcutId: 'agent-command'; page: 'recording'; target: 'agent-commands' }
 
 interface KeyboardShortcutsSettingsProps {
   settings: Settings;
@@ -55,6 +58,14 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
         ? { kind: 'off', label: null }
         : configuredBinding(pasteLast, false),
       ownerLabel: 'Delivery',
+    },
+    {
+      destination: { shortcutId: 'agent-command', page: 'recording', target: 'agent-commands' },
+      label: 'Agent command',
+      binding: settings.agentCommandEnabled
+        ? configuredBinding(`Hold ${agentCommandKeyLabel(settings.agentCommandShortcut)}`, settings.disabled)
+        : { kind: 'off', label: null },
+      ownerLabel: 'Recording',
     },
   ];
 }

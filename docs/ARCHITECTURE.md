@@ -221,7 +221,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 161 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 162 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -259,7 +259,8 @@ stay local and never reach logs or telemetry. See
 | `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
-| `keyboard.rs` | Dictation and Paste Last detectors on one shared rdev thread; `keyboard/fn_capture.rs` opens, binds, or discards Fn / Globe key-down capture from detector state |
+| `agent_command.rs` | Dispatches a spoken agent command to the local T3 Code server and reports its replies through an `AgentNotifier` |
+| `keyboard.rs` | Dictation, Paste Last and agent-command detectors on one shared rdev thread (`keyboard/agent_command.rs` owns the hold-to-talk agent key); `keyboard/fn_capture.rs` opens, binds, or discards Fn / Globe key-down capture from detector state |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
 | `meeting_artifact.rs` | Legacy stored artifact validation for database compatibility |
@@ -486,7 +487,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-161 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+162 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

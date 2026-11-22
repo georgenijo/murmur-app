@@ -19,10 +19,14 @@ import {
   saveSettings,
   AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
+  AGENT_COMMAND_ID_MAX,
+  AGENT_COMMAND_KEY_OPTIONS,
+  agentCommandKeyConflict,
   DEFAULT_SETTINGS,
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
   isFunctionDictationKey,
+  isAgentCommandKey,
   IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER,
   IDLE_TIMEOUT_OPTIONS,
   LEGACY_OVERLAY_OFFSET_KEY,
@@ -1420,5 +1424,94 @@ describe('Modes retirement migration', () => {
       expect(loadSettings().appProfiles).toEqual(DEFAULT_SETTINGS.appProfiles);
       expect(writes).not.toHaveBeenCalled();
     } finally { writes.mockRestore(); }
+  });
+});
+
+describe('agent command settings', () => {
+  beforeEach(() => localStorage.clear());
+
+  function stored(overrides: Record<string, unknown>) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      settingsVersion: 7,
+      ...overrides,
+    }));
+    return loadSettings();
+  }
+
+  it('is off by default, on a key no other binding can take', () => {
+    expect(DEFAULT_SETTINGS.agentCommandEnabled).toBe(false);
+    expect(DEFAULT_SETTINGS.agentCommandShortcut).toBe('alt_r');
+    expect(DEFAULT_SETTINGS.agentCommandDispatchProject).toBe('');
+    expect(DEFAULT_SETTINGS.agentCommandProvider).toBe('claude_cpa');
+    expect(DEFAULT_SETTINGS.agentCommandModel).toBe('claude-sonnet-5-5');
+    const dictationKeys = new Set<string>(DICTATION_KEY_OPTIONS.map((option) => option.value));
+    for (const option of AGENT_COMMAND_KEY_OPTIONS) {
+      expect(dictationKeys.has(option.value)).toBe(false);
+      expect(agentCommandKeyConflict(option.value, DEFAULT_SETTINGS)).toBeNull();
+    }
+    expect(loadSettings().agentCommandEnabled).toBe(false);
+  });
+
+  it('restores a valid configuration', () => {
+    const settings = stored({
+      agentCommandEnabled: true,
+      agentCommandShortcut: 'shift_r',
+      agentCommandDispatchProject: '  /Users/me/code/agent-dispatch ',
+      agentCommandProvider: 'codex',
+      agentCommandModel: 'gpt-6.2-sol',
+    });
+    expect(settings.agentCommandEnabled).toBe(true);
+    expect(settings.agentCommandShortcut).toBe('shift_r');
+    expect(settings.agentCommandDispatchProject).toBe('/Users/me/code/agent-dispatch');
+    expect(settings.agentCommandProvider).toBe('codex');
+    expect(settings.agentCommandModel).toBe('gpt-6.2-sol');
+  });
+
+  it('adds the defaults to settings saved before the feature existed', () => {
+    const persisted: Record<string, unknown> = { ...DEFAULT_SETTINGS, settingsVersion: 7 };
+    for (const key of Object.keys(persisted)) {
+      if (key.startsWith('agentCommand')) delete persisted[key];
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+    const settings = loadSettings();
+    expect(settings.agentCommandEnabled).toBe(false);
+    expect(settings.agentCommandShortcut).toBe('alt_r');
+    expect(settings.agentCommandProvider).toBe('claude_cpa');
+    expect(settings.agentCommandModel).toBe('claude-sonnet-5-5');
+  });
+
+  it('fails closed on a malformed toggle or key', () => {
+    expect(stored({ agentCommandEnabled: 'yes' }).agentCommandEnabled).toBe(false);
+    for (const agentCommandShortcut of ['shift_l', 'command_shift_v', 'space', 7, null]) {
+      const settings = stored({ agentCommandEnabled: true, agentCommandShortcut });
+      expect(settings.agentCommandEnabled).toBe(false);
+      expect(settings.agentCommandShortcut).toBe('alt_r');
+    }
+  });
+
+  it('cleans the dispatcher fields and falls back to the defaults', () => {
+    const settings = stored({
+      agentCommandDispatchProject: 42,
+      agentCommandProvider: ' \u0000\n ',
+      agentCommandModel: `claude\u001b-${'m'.repeat(400)}`,
+    });
+    expect(settings.agentCommandDispatchProject).toBe('');
+    expect(settings.agentCommandProvider).toBe('claude_cpa');
+    expect(settings.agentCommandModel.startsWith('claude-mmm')).toBe(true);
+    expect(settings.agentCommandModel).toHaveLength(AGENT_COMMAND_ID_MAX);
+  });
+
+  it('names what an agent command key would collide with', () => {
+    expect(isAgentCommandKey('alt_r')).toBe(true);
+    expect(isAgentCommandKey('alt_l')).toBe(false);
+    expect(agentCommandKeyConflict('shift_l', DEFAULT_SETTINGS)).toContain('Dictation');
+    expect(agentCommandKeyConflict('f5', DEFAULT_SETTINGS)).toContain('Dictation');
+    expect(agentCommandKeyConflict('command_shift_v', {
+      doubleTapKey: 'shift_l',
+      pasteLastShortcut: 'command_shift_v',
+    })).toContain('Paste Last');
+    expect(agentCommandKeyConflict('command_shift_p', DEFAULT_SETTINGS)).toContain('command palette');
+    expect(agentCommandKeyConflict('command_comma', DEFAULT_SETTINGS)).toContain('Settings');
   });
 });

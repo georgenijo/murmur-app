@@ -258,6 +258,29 @@ pub struct DictationState {
     pub correction_fuzzy: bool,
     /// Optional on-device homophone context tier. Off by default.
     pub homophone_context_enabled: bool,
+    /// Opt-in: a recording started with the agent-command key is sent to the
+    /// local T3 Code server instead of being typed. Off by default.
+    #[serde(default)]
+    pub agent_command_enabled: bool,
+    /// The T3 project the dispatcher thread is started in. Empty means the
+    /// default under the home folder (`dictation_context`).
+    #[serde(default)]
+    pub agent_command_dispatch_project: String,
+    #[serde(default = "default_agent_command_provider")]
+    pub agent_command_provider: String,
+    #[serde(default = "default_agent_command_model")]
+    pub agent_command_model: String,
+}
+
+pub const DEFAULT_AGENT_COMMAND_PROVIDER: &str = "claude_cpa";
+pub const DEFAULT_AGENT_COMMAND_MODEL: &str = "claude-sonnet-5-5";
+
+fn default_agent_command_provider() -> String {
+    DEFAULT_AGENT_COMMAND_PROVIDER.to_string()
+}
+
+fn default_agent_command_model() -> String {
+    DEFAULT_AGENT_COMMAND_MODEL.to_string()
 }
 
 impl DictationState {
@@ -307,6 +330,10 @@ impl Default for DictationState {
             correction_enabled: true,
             correction_fuzzy: true,
             homophone_context_enabled: false,
+            agent_command_enabled: false,
+            agent_command_dispatch_project: String::new(),
+            agent_command_provider: default_agent_command_provider(),
+            agent_command_model: default_agent_command_model(),
         }
     }
 }

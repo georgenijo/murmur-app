@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 161 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 162 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -16,7 +16,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_status` | — | `Result<JSON, String>` | Current status, model name, and language. |
 | `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, the spoken-formatting toggle, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects invalid vocabulary, such as cyclic aliases or an alias that overrides a built-in spoken formatting phrase, without mutating prior state. |
 | `report_start_cue_finished` | `recording_id: u64` | — | The main window finished this dictation's start cue, or played none. Releases a pending "Mute speakers while dictating" mute on the output-quieting worker; stale generations are ignored. Fire-and-forget. |
-| `start_native_recording` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>`, `origin: Option<String>`, `gesture_token: Option<String>` | `Result<JSON, String>` | Consumes the originating keyboard gesture token at entry (omitted for toolbar/overlay), then resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns `{"type":"recording_starting","state":"starting","recordingId":N}` without waiting for Core Audio. Readiness later emits `recording`. |
+| `start_native_recording` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>`, `origin: Option<String>`, `gesture_token: Option<String>` | `Result<JSON, String>` | `origin` is `"toggle"`, `"hold"`, or `"agent_command"`: the last is the agent command key's hold and makes the recording an [agent command](../features/agent-commands.md), whose purpose and dispatch settings are frozen at the start. Consumes the originating keyboard gesture token at entry (omitted for toolbar/overlay), then resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns `{"type":"recording_starting","state":"starting","recordingId":N}` without waiting for Core Audio. Readiness later emits `recording`. |
 | `stop_native_recording` | `stopTrigger?: "hold_release" \| "toggle" \| "overlay" \| "auto_stop" \| "other"` | `Result<JSON, String>` | Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
 | `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
@@ -175,6 +175,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
 | `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
+| `set_agent_command_shortcut` | `shortcut: Option<String>` | `Result<(), String>` | Binds the hold-to-talk [agent command](../features/agent-commands.md) key on the shared rdev listener (`alt_r`, `shift_r`, or `ctrl_l`), or unbinds it with `null`. Refuses a key that belongs to dictation, Paste Last, the command palette, or Settings, and any other identifier, keeping the working binding. Binding requires Accessibility permission. |
 
 ## Delivery recovery (`delivery_recovery.rs`)
 

@@ -29,8 +29,9 @@ Lab and Diagnostics remain in the Tools group. The search field routes matching
 rows to their owning page. Power-user controls are collapsed under **Advanced**
 disclosures.
 
-General links to a read-only **Keyboard Shortcuts** detail page. It derives two
-global shortcut rows from the current `Settings` object and four fixed
+General links to a read-only **Keyboard Shortcuts** detail page. It derives three
+global shortcut rows from the current `Settings` object (the recording trigger,
+Paste Last, and the agent command key, shown as Off until it is enabled) and four fixed
 main-window rows from `keyboardShortcuts.ts`. Each global row reports its live
 binding and availability, then links to the page that owns the setting. Returning
 from an owner restores focus to the source row. The same detail page is available
@@ -128,6 +129,13 @@ interface Settings {
   benchmarkOutputDir: string;
   benchmarkAutoSave: boolean;
 
+  // Agent commands
+  agentCommandEnabled: boolean;            // opt-in; off by default
+  agentCommandShortcut: AgentCommandKey;   // 'alt_r' | 'shift_r' | 'ctrl_l'
+  agentCommandDispatchProject: string;     // '' = ~/Documents/code/agent-dispatch
+  agentCommandProvider: string;
+  agentCommandModel: string;
+
   // System
   launchAtLogin: boolean;
   overlayVerticalOffset: number;           // integer points, -12 through +12
@@ -196,6 +204,11 @@ export const DEFAULT_SETTINGS: Settings = {
   correctionEnabled: true,
   correctionFuzzy: true,
   streamingPipelineEnabled: false,
+  agentCommandEnabled: false,
+  agentCommandShortcut: 'alt_r',
+  agentCommandDispatchProject: '',
+  agentCommandProvider: 'claude_cpa',
+  agentCommandModel: 'claude-sonnet-5-5',
 };
 ```
 
@@ -300,6 +313,22 @@ insertion is attempted and the finished text remains on the clipboard. In every
 other case where no field is verified, Murmur uses normal auto-paste, as it
 would with Smart destination off; only secure fields (also checked again at
 delivery) and media apps without a remembered field stay clipboard-only.
+
+## Agent Command Settings
+
+See [Agent commands](../features/agent-commands.md) for the behavior. Only the
+first two settings have a control (Settings → Recording → Agent commands); the
+dispatcher fields are stored settings without a control.
+
+| Setting | Type | Default | Valid Options/Range | Description |
+|---------|------|---------|-------------------|-------------|
+| `agentCommandEnabled` | `boolean` | `false` | `true` / `false` | Opt-in. While on, what is said with the agent command key held is sent to the local T3 Code server and the model it runs, instead of being typed. While off the key is not bound, and a recording that asks for the agent purpose delivers nothing. |
+| `agentCommandShortcut` | `AgentCommandKey` | `'alt_r'` | `'alt_r'` (Right Option), `'shift_r'` (Right Shift), `'ctrl_l'` (Left Control) | The hold-to-talk key. The allow-list shares no key with the dictation trigger, Paste Last, the command palette, or Settings, and the native command refuses any other identifier. A malformed stored value resets the key and turns the feature off. |
+| `agentCommandDispatchProject` | `string` | `''` | Path, at most 4,096 characters, no control characters | Project directory of the dispatcher thread. Empty means `~/Documents/code/agent-dispatch`, resolved in Rust from `$HOME` when a recording starts. |
+| `agentCommandProvider` | `string` | `'claude_cpa'` | At most 128 characters, no control characters | T3 Code provider the dispatcher runs on. An empty value keeps the default. |
+| `agentCommandModel` | `string` | `'claude-sonnet-5-5'` | At most 128 characters, no control characters | Model the dispatcher runs on. An empty value keeps the default. |
+
+---
 
 ## Vocabulary Settings
 
@@ -456,6 +485,11 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `saveAudio` | `saveAudio` | Yes |
 | `mirrorToNotchPill` | `mirrorToNotchPill` | Yes |
 | `outputDir` | `outputDir` | Yes |
+| `agentCommandEnabled` | `agentCommandEnabled` | Yes |
+| `agentCommandDispatchProject` | `agentCommandDispatchProject` | Yes |
+| `agentCommandProvider` | `agentCommandProvider` | Yes |
+| `agentCommandModel` | `agentCommandModel` | Yes |
+| `agentCommandShortcut` | _(sent via `set_agent_command_shortcut` while the feature is on)_ | Via `useAgentCommandKey` |
 | `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |

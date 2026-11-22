@@ -112,10 +112,107 @@ pub struct DeliverySettings {
     pub output_dir: String,
 }
 
+/// What a recording is for. Decided when the recording starts and never
+/// changed afterwards: the key that started it picks the purpose, not the
+/// settings or the focused app at the time it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordingPurpose {
+    /// The text is delivered to the user: clipboard, paste, file, mirror.
+    #[default]
+    Dictation,
+    /// The text is a spoken command for the user's coding agents. It is handed
+    /// to `agent_command::spawn_dispatch` and delivered nowhere else.
+    AgentCommand,
+}
+
+/// The `origin` of a start made by the agent-command key.
+pub const AGENT_COMMAND_ORIGIN: &str = "agent_command";
+
+impl RecordingPurpose {
+    /// The purpose a start's `origin` asks for. Only the agent-command key's
+    /// origin makes an agent command; every other origin, known or not, is a
+    /// dictation, so an older caller keeps today's behaviour.
+    pub fn from_origin(origin: Option<&str>) -> Self {
+        match origin {
+            Some(AGENT_COMMAND_ORIGIN) => Self::AgentCommand,
+            _ => Self::Dictation,
+        }
+    }
+}
+
+/// A recording's purpose and, for an agent command, what it is dispatched
+/// with. Read from the settings under the dictation lock at the Idle ->
+/// Starting transition, so a settings change during the recording applies to
+/// the next one.
+#[derive(Debug, Clone, Default)]
+pub struct PurposeBinding {
+    pub purpose: RecordingPurpose,
+    /// `None` for a dictation, and for an agent command that was requested
+    /// while the setting was off. That recording delivers nothing at all: it
+    /// is neither pasted (the user was not dictating) nor dispatched (the user
+    /// has not agreed to send speech to an agent).
+    pub agent_command: Option<crate::agent_command::AgentCommandConfig>,
+}
+
+impl PurposeBinding {
+    pub fn freeze(requested: RecordingPurpose, global: &DictationState) -> Self {
+        Self::freeze_with_home(requested, global, std::env::var_os("HOME").as_deref())
+    }
+
+    fn freeze_with_home(
+        requested: RecordingPurpose,
+        global: &DictationState,
+        home: Option<&std::ffi::OsStr>,
+    ) -> Self {
+        let agent_command = (requested == RecordingPurpose::AgentCommand
+            && global.agent_command_enabled)
+            .then(|| agent_command_config(global, home))
+            .flatten();
+        Self {
+            purpose: requested,
+            agent_command,
+        }
+    }
+}
+
+/// The dispatch settings as the dispatcher takes them. An empty project
+/// setting means the default project under the user's home folder; with no
+/// home folder there is no project to dispatch to. `t3_bin` stays `None`: the
+/// dispatcher finds the `t3` command itself.
+fn agent_command_config(
+    global: &DictationState,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<crate::agent_command::AgentCommandConfig> {
+    let configured = global.agent_command_dispatch_project.trim();
+    let dispatch_project = if configured.is_empty() {
+        let home = home.filter(|home| !home.is_empty())?;
+        std::path::Path::new(home)
+            .join(DEFAULT_AGENT_DISPATCH_PROJECT)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        configured.to_string()
+    };
+    Some(crate::agent_command::AgentCommandConfig {
+        t3_bin: None,
+        dispatch_project,
+        provider: global.agent_command_provider.clone(),
+        model: global.agent_command_model.clone(),
+    })
+}
+
+/// The default dispatch project, relative to the user's home folder.
+pub const DEFAULT_AGENT_DISPATCH_PROJECT: &str = "Documents/code/agent-dispatch";
+
 #[derive(Clone)]
 pub struct DictationContextSnapshot {
     /// Ephemeral, one-recording session owner; never serialized or reused.
     pub(crate) homophone_engine: Option<Arc<dyn crate::homophone_context::HomophoneEngine>>,
+    /// What this recording is for. `Dictation` unless the start bound an
+    /// agent command (`bind_purpose`).
+    pub purpose: RecordingPurpose,
+    /// See [`PurposeBinding::agent_command`].
+    pub agent_command: Option<crate::agent_command::AgentCommandConfig>,
     pub app: ActiveAppIdentity,
     pub matched_profile: Option<MatchedAppProfile>,
     pub transcription: TranscriptionSettings,
@@ -125,6 +222,19 @@ pub struct DictationContextSnapshot {
     pub enabled_command_groups: EnabledCommandGroups,
     pub context_capture: ContextCapturePermissions,
     pub writing_style: WritingStyle,
+}
+
+impl DictationContextSnapshot {
+    /// Bind the purpose frozen at the recording's start into its snapshot.
+    /// An agent command never routes to a text field, so it carries no smart
+    /// destination.
+    pub(crate) fn bind_purpose(&mut self, binding: PurposeBinding) {
+        if binding.purpose == RecordingPurpose::AgentCommand {
+            self.app.smart_destination = crate::smart_destination::Snapshot::Disabled;
+        }
+        self.purpose = binding.purpose;
+        self.agent_command = binding.agent_command;
+    }
 }
 
 pub struct ResolverInputs<'a> {
@@ -232,6 +342,8 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
 
     DictationContextSnapshot {
         homophone_engine: None,
+        purpose: RecordingPurpose::Dictation,
+        agent_command: None,
         app: ActiveAppIdentity {
             bundle_id: inputs.bundle_id.map(str::to_string),
             process_id: None,
@@ -467,6 +579,126 @@ mod tests {
             ide_context_index: None,
             vocabulary_version: 7,
         })
+    }
+
+    #[test]
+    fn a_recording_is_a_dictation_unless_the_agent_command_key_started_it() {
+        for origin in [None, Some("hold"), Some("toggle"), Some("AgentCommand")] {
+            assert_eq!(
+                RecordingPurpose::from_origin(origin),
+                RecordingPurpose::Dictation,
+                "{origin:?}"
+            );
+        }
+        assert_eq!(
+            RecordingPurpose::from_origin(Some(AGENT_COMMAND_ORIGIN)),
+            RecordingPurpose::AgentCommand
+        );
+        let snapshot = resolve_test(&DictationState::default(), None);
+        assert_eq!(snapshot.purpose, RecordingPurpose::Dictation);
+        assert!(snapshot.agent_command.is_none());
+    }
+
+    fn agent_settings() -> DictationState {
+        DictationState {
+            agent_command_enabled: true,
+            agent_command_dispatch_project: "  /work/dispatch ".to_string(),
+            agent_command_provider: "claude_cpa".to_string(),
+            agent_command_model: "claude-sonnet-5-5".to_string(),
+            ..DictationState::default()
+        }
+    }
+
+    #[test]
+    fn an_agent_command_freezes_its_dispatch_settings() {
+        let home = std::ffi::OsStr::new("/Users/someone");
+        let mut global = agent_settings();
+        let binding =
+            PurposeBinding::freeze_with_home(RecordingPurpose::AgentCommand, &global, Some(home));
+        // A later settings change does not reach the frozen binding.
+        global.agent_command_model = "another-model".to_string();
+        global.agent_command_enabled = false;
+
+        assert_eq!(binding.purpose, RecordingPurpose::AgentCommand);
+        let config = binding.agent_command.expect("an enabled agent command");
+        assert_eq!(config.dispatch_project, "/work/dispatch");
+        assert_eq!(config.provider, "claude_cpa");
+        assert_eq!(config.model, "claude-sonnet-5-5");
+        assert_eq!(config.t3_bin, None);
+    }
+
+    #[test]
+    fn an_empty_dispatch_project_is_the_default_under_the_home_folder() {
+        let mut global = agent_settings();
+        global.agent_command_dispatch_project = "   ".to_string();
+        let binding = PurposeBinding::freeze_with_home(
+            RecordingPurpose::AgentCommand,
+            &global,
+            Some(std::ffi::OsStr::new("/Users/someone")),
+        );
+        assert_eq!(
+            binding.agent_command.expect("config").dispatch_project,
+            "/Users/someone/Documents/code/agent-dispatch"
+        );
+
+        // No home folder: there is no project, so nothing can be dispatched.
+        for home in [None, Some(std::ffi::OsStr::new(""))] {
+            let binding =
+                PurposeBinding::freeze_with_home(RecordingPurpose::AgentCommand, &global, home);
+            assert_eq!(binding.purpose, RecordingPurpose::AgentCommand);
+            assert!(binding.agent_command.is_none());
+        }
+    }
+
+    #[test]
+    fn an_agent_command_requested_while_the_setting_is_off_has_no_dispatch() {
+        let mut global = agent_settings();
+        global.agent_command_enabled = false;
+        let binding = PurposeBinding::freeze_with_home(
+            RecordingPurpose::AgentCommand,
+            &global,
+            Some(std::ffi::OsStr::new("/Users/someone")),
+        );
+        // Still an agent command, so it is not pasted either.
+        assert_eq!(binding.purpose, RecordingPurpose::AgentCommand);
+        assert!(binding.agent_command.is_none());
+    }
+
+    #[test]
+    fn a_dictation_never_carries_dispatch_settings() {
+        let binding = PurposeBinding::freeze_with_home(
+            RecordingPurpose::Dictation,
+            &agent_settings(),
+            Some(std::ffi::OsStr::new("/Users/someone")),
+        );
+        assert_eq!(binding.purpose, RecordingPurpose::Dictation);
+        assert!(binding.agent_command.is_none());
+    }
+
+    #[test]
+    fn binding_an_agent_command_drops_the_smart_destination() {
+        let global = agent_settings();
+        let mut snapshot = resolve_test(&global, None);
+        snapshot.app.smart_destination = crate::smart_destination::Snapshot::Unavailable;
+        snapshot.bind_purpose(PurposeBinding::freeze_with_home(
+            RecordingPurpose::AgentCommand,
+            &global,
+            Some(std::ffi::OsStr::new("/Users/someone")),
+        ));
+        assert_eq!(snapshot.purpose, RecordingPurpose::AgentCommand);
+        assert!(snapshot.agent_command.is_some());
+        assert!(matches!(
+            snapshot.app.smart_destination,
+            crate::smart_destination::Snapshot::Disabled
+        ));
+
+        let mut dictation = resolve_test(&global, None);
+        dictation.app.smart_destination = crate::smart_destination::Snapshot::Unavailable;
+        dictation.bind_purpose(PurposeBinding::default());
+        assert!(matches!(
+            dictation.app.smart_destination,
+            crate::smart_destination::Snapshot::Unavailable
+        ));
     }
 
     #[test]

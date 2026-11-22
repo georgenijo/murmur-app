@@ -583,6 +583,7 @@ const COMMAND_LABELS: &[&str] = &[
     "save_text_export",
     "save_theme_library_blob",
     "scan_code_vocab",
+    "set_agent_command_shortcut",
     "set_app_disabled",
     "set_fn_capture_input",
     "set_keyboard_recording",

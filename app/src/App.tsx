@@ -38,6 +38,7 @@ import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
+import { useAgentCommandKey } from './lib/hooks/useAgentCommandKey';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
 import { useOpenSettingsListener } from './lib/hooks/useOpenSettingsListener';
@@ -230,7 +231,8 @@ function App() {
     status, isCaptureBusy, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
+    handleStart, handleHoldStart, handleHoldStop, handleStop, toggleRecording, audioLevel,
+    handleAgentCommandStart, handleAgentCommandStop, handleAgentCommandCancel,
     smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
     addEntry,
@@ -250,9 +252,19 @@ function App() {
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
   const hotkeysArmed = mainAppReady;
-  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleHoldStart, onStop: handleStop });
+  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleHoldStart, onStop: handleHoldStop });
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
-  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleHoldStart, onStop: handleStop, onToggle: toggleRecording });
+  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleHoldStart, onStop: handleHoldStop, onToggle: toggleRecording });
+  // Opt-in and separate from the dictation key: bound only while the setting
+  // is on, and never while Murmur is disabled.
+  useAgentCommandKey({
+    enabled: hotkeysArmed && initialized && accessibilityGranted === true
+      && settings.agentCommandEnabled && !settings.disabled,
+    shortcut: settings.agentCommandShortcut,
+    onStart: handleAgentCommandStart,
+    onStop: handleAgentCommandStop,
+    onCancel: handleAgentCommandCancel,
+  });
   useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
   // Hands-free finish for any recording not started by holding the trigger
   // key (double-tap, button, overlay, locked mode). The hook tracks the

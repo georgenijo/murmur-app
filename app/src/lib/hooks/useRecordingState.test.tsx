@@ -297,6 +297,120 @@ describe('useRecordingState transition ordering', () => {
     expect(current.recordingDuration).toBe(2);
   });
 
+  describe('the agent command key', () => {
+    const started = { type: 'recording_starting', state: 'starting', recordingId: 9 };
+
+    async function holdAgentKey() {
+      mocks.startRecording.mockResolvedValueOnce(started);
+      await act(async () => current.handleAgentCommandStart());
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      });
+    }
+
+    it('starts a recording for the agent, and its release sends it', async () => {
+      mocks.stopRecording.mockResolvedValueOnce({ type: 'transcription', state: 'idle', text: '' });
+      await holdAgentKey();
+      expect(mocks.startRecording).toHaveBeenCalledExactlyOnceWith(
+        'system_default', 'agent_command', null, undefined,
+      );
+
+      await act(async () => current.handleAgentCommandStop());
+      expect(mocks.stopRecording).toHaveBeenCalledExactlyOnceWith('hold_release');
+      expect(mocks.cancelRecording).not.toHaveBeenCalled();
+    });
+
+    it('keeps the spoken command out of history and stats', async () => {
+      mocks.stopRecording.mockImplementationOnce(async () => {
+        mocks.listeners.get('transcription-complete')?.({
+          payload: { recordingId: 9, purpose: 'agent_command', text: '', duration: 3 },
+        });
+        return { type: 'transcription', state: 'idle', text: '' };
+      });
+      await holdAgentKey();
+      await act(async () => current.handleAgentCommandStop());
+
+      expect(mocks.addEntry).not.toHaveBeenCalled();
+      expect(mocks.updateStats).not.toHaveBeenCalled();
+      expect(current.transcription).toBe('');
+      expect(current.status).toBe('idle');
+    });
+
+    it('is not ended by the dictation key release', async () => {
+      await holdAgentKey();
+      await act(async () => current.handleHoldStop());
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+      expect(mocks.cancelRecording).not.toHaveBeenCalled();
+      expect(current.status).toBe('recording');
+    });
+
+    it('never starts over a recording, and its release leaves that recording alone', async () => {
+      mocks.startRecording.mockResolvedValueOnce(started);
+      await act(async () => current.handleStart());
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      });
+      mocks.startRecording.mockClear();
+
+      await act(async () => current.handleAgentCommandStart());
+      await act(async () => current.handleAgentCommandStop());
+      await act(async () => current.handleAgentCommandCancel());
+
+      expect(mocks.startRecording).not.toHaveBeenCalled();
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+      expect(mocks.cancelRecording).not.toHaveBeenCalled();
+      expect(current.status).toBe('recording');
+    });
+
+    it('discards the recording when the hold turns out to be a shortcut', async () => {
+      mocks.cancelRecording.mockResolvedValueOnce(undefined);
+      await holdAgentKey();
+      await act(async () => current.handleAgentCommandCancel());
+      expect(mocks.cancelRecording).toHaveBeenCalledOnce();
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+
+      // The key comes up afterwards: nothing is left for it to send.
+      await act(async () => current.handleAgentCommandStop());
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+    });
+
+    it('cancels the generation a still-pending start creates', async () => {
+      const start = deferred<typeof started>();
+      mocks.startRecording.mockReturnValueOnce(start.promise);
+      mocks.cancelRecording.mockResolvedValueOnce(undefined);
+      let starting!: Promise<void>;
+      await act(async () => {
+        starting = current.handleAgentCommandStart();
+      });
+      await act(async () => current.handleAgentCommandCancel());
+      expect(mocks.cancelRecording).not.toHaveBeenCalled();
+
+      await act(async () => {
+        start.resolve(started);
+        await starting;
+      });
+      expect(mocks.cancelRecording).toHaveBeenCalledExactlyOnceWith(9);
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+    });
+
+    it('gives the dictation key its release back once the agent recording has ended', async () => {
+      await holdAgentKey();
+      // Escape, or a failure, ended the recording without the key coming up.
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+      });
+      mocks.startRecording.mockResolvedValueOnce(started);
+      mocks.stopRecording.mockResolvedValueOnce({ type: 'transcription', state: 'idle' });
+      await act(async () => current.handleHoldStart());
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      });
+      await act(async () => current.handleHoldStop());
+      expect(mocks.stopRecording).toHaveBeenCalledOnce();
+    });
+  });
+
   it('passes an explicit toggle trigger only for a hotkey toggle stop', async () => {
     mocks.stopRecording.mockResolvedValueOnce({ type: 'transcription', state: 'idle' })
       .mockResolvedValueOnce({ type: 'transcription', state: 'idle' });

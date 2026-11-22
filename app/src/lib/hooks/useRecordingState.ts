@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { cancelRecording, startRecording, stopRecording, syncFnCaptureInput, type DictationStopTrigger } from '../dictation';
+import { cancelRecording, startRecording, stopRecording, syncFnCaptureInput, type DictationStopTrigger, type RecordingOrigin } from '../dictation';
 import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
@@ -465,7 +465,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     return () => { cancelled = true; unlisten?.(); };
   }, [addEntry]);
 
-  const beginRecording = useCallback(async (origin: 'toggle' | 'hold', gestureToken?: string) => {
+  const beginRecording = useCallback(async (
+    origin: RecordingOrigin,
+    gestureToken?: string,
+  ) => {
     if (canStart && !canStart()) return;
     if (startOperationRef.current) {
       await startOperationRef.current;
@@ -617,6 +620,52 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     }
   }, [presentError]);
 
+  // The agent command key owns the recording it started, and only that one:
+  // it never starts over another capture, and the dictation key's release
+  // cannot stop it. The flag is true from the key's start until its stop,
+  // its cancel, or the recording ending some other way (Escape, a failure).
+  const agentCommandHoldRef = useRef(false);
+  useEffect(() => {
+    if (status === 'idle' && !startOperationRef.current) agentCommandHoldRef.current = false;
+  }, [status]);
+
+  const handleAgentCommandStart = useCallback(async () => {
+    if (isStartingRef.current || statusRef.current !== 'idle') return;
+    agentCommandHoldRef.current = true;
+    await beginRecording('agent_command');
+    // A refused start records nothing, so the hold owns nothing.
+    if (statusRef.current === 'idle') agentCommandHoldRef.current = false;
+  }, [beginRecording]);
+
+  const handleAgentCommandStop = useCallback(async () => {
+    if (!agentCommandHoldRef.current) return;
+    agentCommandHoldRef.current = false;
+    await handleStop('hold_release');
+  }, [handleStop]);
+
+  /** The hold was a shortcut after all: discard the recording, send nothing. */
+  const handleAgentCommandCancel = useCallback(async () => {
+    if (!agentCommandHoldRef.current) return;
+    agentCommandHoldRef.current = false;
+    if (startOperationRef.current && statusRef.current === 'idle') {
+      // Not accepted yet: the start cancels the generation it creates.
+      stopRequestedDuringStartRef.current = true;
+      return;
+    }
+    if (statusRef.current !== 'starting' && statusRef.current !== 'recording') return;
+    try {
+      await cancelRecording();
+    } catch {
+      // The recording ended on its own; nothing is left to cancel.
+    }
+  }, []);
+
+  /** The dictation key's release. It never ends an agent command's recording. */
+  const handleHoldStop = useCallback(async () => {
+    if (agentCommandHoldRef.current) return;
+    await handleStop();
+  }, [handleStop]);
+
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async (gestureToken?: string) => {
     if (statusRef.current === 'processing' || statusRef.current === 'recovering') return;
@@ -648,6 +697,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     dismissError,
     handleStart,
     handleHoldStart,
+    handleHoldStop,
+    handleAgentCommandStart,
+    handleAgentCommandStop,
+    handleAgentCommandCancel,
     handleStop,
     toggleRecording,
     audioLevel,

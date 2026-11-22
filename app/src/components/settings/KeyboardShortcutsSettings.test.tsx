@@ -61,4 +61,25 @@ describe('KeyboardShortcutsSettings', () => {
     expect(container.querySelectorAll('ul[aria-label="Main-window shortcuts"] kbd')).toHaveLength(4);
   });
 
+  it('lists the agent command key as off until it is switched on, then as a hold', async () => {
+    await render(DEFAULT_SETTINGS);
+    const off = container.querySelector('[data-shortcut-id="agent-command"]')!;
+    expect(off.querySelector('.settings-shortcut-label')?.textContent).toBe('Agent command');
+    expect(off.querySelector('.settings-shortcut-state')?.textContent).toBe('Off');
+    expect(off.querySelector('kbd')).toBeNull();
+
+    await render({ ...DEFAULT_SETTINGS, agentCommandEnabled: true, agentCommandShortcut: 'shift_r' });
+    const on = container.querySelector('[data-shortcut-id="agent-command"]')!;
+    expect(on.querySelector('.settings-shortcut-state')).toBeNull();
+    expect(on.querySelector('.settings-shortcut-hold')?.textContent).toBe('Hold');
+    expect(on.querySelector('kbd')?.textContent).toBe('⇧ Right Shift');
+    const button = on.querySelector('button')!;
+    expect(button.getAttribute('aria-label')).toBe('Configure in Recording');
+    await act(async () => button.click());
+    expect(onOpenOwner).toHaveBeenCalledWith({ shortcutId: 'agent-command', page: 'recording', target: 'agent-commands' });
+
+    await render({ ...DEFAULT_SETTINGS, agentCommandEnabled: true, disabled: true });
+    expect(container.querySelector('[data-shortcut-id="agent-command"] .settings-shortcut-state')?.textContent).toBe('Paused');
+  });
+
 });

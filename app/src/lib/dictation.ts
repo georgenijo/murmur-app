@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { microphoneDeviceNameArg, Settings, AppProfile, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
+import { microphoneDeviceNameArg, Settings, AppProfile, VocabularyEntry, type AgentCommandKey, type SmartAutoMicrophoneRequest } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -17,9 +17,16 @@ export async function initDictation(): Promise<DictationResponse> {
   return await invoke('init_dictation');
 }
 
+/**
+ * The gesture that starts a recording. `agent_command` is the agent command
+ * key's hold: the native start freezes that recording as an agent command,
+ * which is handed to the local T3 Code server and never typed or pasted.
+ */
+export type RecordingOrigin = 'toggle' | 'hold' | 'agent_command';
+
 export async function startRecording(
   deviceName?: string,
-  origin: 'toggle' | 'hold' = 'toggle',
+  origin: RecordingOrigin = 'toggle',
   smartAuto?: SmartAutoMicrophoneRequest | null,
   gestureToken?: string,
 ): Promise<DictationResponse> {
@@ -61,6 +68,11 @@ export async function syncFnCaptureInput(
     deviceName: smartAuto ? null : microphoneDeviceNameArg(deviceName),
     smartAuto: smartAuto ?? null,
   });
+}
+
+/** Bind the hold-to-talk agent command key natively; `null` unbinds it. */
+export async function setAgentCommandShortcut(shortcut: AgentCommandKey | null): Promise<void> {
+  await invoke('set_agent_command_shortcut', { shortcut });
 }
 
 export type DictationStopTrigger = 'hold_release' | 'toggle' | 'overlay' | 'auto_stop' | 'other';
@@ -125,6 +137,10 @@ export interface ConfigureOptions {
   homophoneContextEnabled?: boolean;
   streamingPipelineEnabled?: boolean;
   muteSpeakersWhileDictating?: boolean;
+  agentCommandEnabled?: boolean;
+  agentCommandDispatchProject?: string;
+  agentCommandProvider?: string;
+  agentCommandModel?: string;
 }
 
 /**
@@ -203,6 +219,10 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     homophoneContextEnabled: s.homophoneContextEnabled,
     streamingPipelineEnabled: s.streamingPipelineEnabled,
     muteSpeakersWhileDictating: s.muteSpeakersWhileDictating,
+    agentCommandEnabled: s.agentCommandEnabled,
+    agentCommandDispatchProject: s.agentCommandDispatchProject,
+    agentCommandProvider: s.agentCommandProvider,
+    agentCommandModel: s.agentCommandModel,
   };
 }
 

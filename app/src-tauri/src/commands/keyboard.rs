@@ -185,8 +185,85 @@ pub fn set_paste_last_shortcut(
     keyboard::start_paste_last_listener(app_handle, &shortcut)
 }
 
+/// Why `key` cannot be the agent-command key, if it cannot. The allow-list is
+/// disjoint from the dictation keys, the Paste Last chords and Murmur's own
+/// shortcuts, so each conflict is named before the generic refusal.
+fn agent_command_key_conflict(key: &str) -> Option<&'static str> {
+    if keyboard::is_dictation_key_id(key) {
+        Some("That key is already assigned to Dictation.")
+    } else if keyboard::is_paste_last_shortcut_id(key) {
+        Some("That shortcut is already assigned to Paste Last.")
+    } else if key == "command_shift_p" {
+        Some("That shortcut opens Murmur's command palette.")
+    } else if key == "command_comma" {
+        Some("That shortcut opens Murmur Settings.")
+    } else if !keyboard::is_agent_command_key_id(key) {
+        Some("Unsupported agent command key. Choose one from Settings.")
+    } else {
+        None
+    }
+}
+
+/// Bind the hold-to-talk agent-command key, or unbind it with `None`. The
+/// frontend sends a key only while the Agent commands setting is on.
+#[tauri::command]
+pub fn set_agent_command_shortcut(
+    app_handle: tauri::AppHandle,
+    shortcut: Option<String>,
+) -> Result<(), String> {
+    let Some(shortcut) = shortcut else {
+        keyboard::stop_agent_command_listener();
+        return Ok(());
+    };
+    if let Some(conflict) = agent_command_key_conflict(&shortcut) {
+        return Err(conflict.to_string());
+    }
+    if !injector::is_accessibility_enabled() {
+        return Err("Accessibility permission is required for the agent command key.".to_string());
+    }
+    // Validates before it mutates, so a refused key keeps the working binding.
+    keyboard::start_agent_command_listener(app_handle, &shortcut)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_command_key_rejects_every_other_binding() {
+        use super::agent_command_key_conflict as conflict;
+        for key in ["alt_r", "shift_r", "ctrl_l"] {
+            assert_eq!(conflict(key), None, "{key}");
+        }
+        for key in ["shift_l", "alt_l", "ctrl_r", "fn", "f5"] {
+            assert_eq!(
+                conflict(key),
+                Some("That key is already assigned to Dictation."),
+                "{key}"
+            );
+        }
+        for key in ["command_shift_v", "command_option_v", "command_control_v"] {
+            assert_eq!(
+                conflict(key),
+                Some("That shortcut is already assigned to Paste Last."),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            conflict("command_shift_p"),
+            Some("That shortcut opens Murmur's command palette.")
+        );
+        assert_eq!(
+            conflict("command_comma"),
+            Some("That shortcut opens Murmur Settings.")
+        );
+        for key in ["", "space", "f21", "meta_r"] {
+            assert_eq!(
+                conflict(key),
+                Some("Unsupported agent command key. Choose one from Settings."),
+                "{key}"
+            );
+        }
+    }
+
     #[test]
     fn frontend_registration_is_idempotent_and_restarts_after_stop_or_change() {
         let mut registration = super::ListenerRegistration::default();

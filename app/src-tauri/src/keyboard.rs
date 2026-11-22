@@ -641,6 +641,11 @@ impl ShortcutModifierState {
     fn any(self) -> bool {
         self.0 != 0
     }
+
+    /// Whether a modifier other than `key` is down.
+    fn any_except(self, key: Key) -> bool {
+        self.0 & !shortcut_modifier_bit(key).unwrap_or(0) != 0
+    }
 }
 
 fn shortcut_modifier_bit(key: Key) -> Option<u16> {
@@ -1566,8 +1571,10 @@ fn log_hotkey_arming_cancelled(mode: DetectorMode, reason: &'static str, held_ms
 
 // -- Both-mode arbitration state --
 
+mod agent_command;
 mod fn_capture;
 mod hold_promotion;
+pub use agent_command::is_agent_command_key_id;
 pub(crate) use fn_capture::{set_capture_input as set_fn_capture_input, CaptureInput};
 use hold_promotion::HoldPromotion;
 
@@ -1750,6 +1757,8 @@ pub fn set_app_disabled(disabled: bool) {
     if disabled {
         invalidate_preparation(crate::audio::prepare::InvalidateReason::Disabled);
         fn_capture::abandon(crate::audio_lifecycle::speculative::DiscardReason::Disabled);
+        // No release will be seen while disabled: cancel a command in progress.
+        agent_command::abandon(true);
     }
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
@@ -2021,9 +2030,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 shortcut_modifiers.update(&event.event_type);
                 let repeated_function_press = pressed_function_keys.update(&event.event_type);
 
-                // Dictation and Paste Last independently keep this thread active.
+                // Dictation, Paste Last and the agent-command key independently
+                // keep this thread active.
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst)
                     && !PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
+                    && !agent_command::active()
                 {
                     return;
                 }
@@ -2070,6 +2081,9 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     HOLD_PROMOTION.invalidate();
                     invalidate_preparation(crate::audio::prepare::InvalidateReason::Escape);
                     fn_capture::abandon(crate::audio_lifecycle::speculative::DiscardReason::Escape);
+                    // `escape-cancel` below cancels the recording; the held
+                    // agent-command key's release must not then stop anything.
+                    agent_command::abandon(false);
 
                     tracing::info!(
                         target: "keyboard",
@@ -2082,6 +2096,14 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
 
                 if APP_DISABLED.load(Ordering::SeqCst) {
                     return;
+                }
+
+                // Independent of the dictation key and of whether dictation
+                // is listening at all.
+                if agent_command::active() {
+                    agent_command::handle_event(&handle, &event.event_type, |target| {
+                        shortcut_modifiers.any_except(target)
+                    });
                 }
 
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
@@ -2464,6 +2486,22 @@ pub fn start_paste_last_listener(
 
 pub fn stop_paste_last_listener() {
     configure_paste_last_shortcut(None).expect("disabling Paste Last is infallible");
+}
+
+/// Bind the agent-command key and make sure the shared listener runs. An
+/// unknown id is refused before the working binding is touched.
+pub fn start_agent_command_listener(
+    app_handle: tauri::AppHandle,
+    key_id: &str,
+) -> Result<(), String> {
+    agent_command::configure(Some(app_handle.clone()), Some(key_id))?;
+    ensure_listener_thread_spawned(app_handle);
+    Ok(())
+}
+
+/// Unbind the agent-command key. A command being recorded is cancelled.
+pub fn stop_agent_command_listener() {
+    agent_command::configure(None, None).expect("unbinding the agent command key is infallible");
 }
 
 /// Stop processing keyboard events (the thread stays alive but idle).

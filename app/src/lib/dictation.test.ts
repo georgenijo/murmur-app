@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
-import { buildConfigureOptions, cancelRecording, startRecording, stopRecording } from './dictation';
+import { buildConfigureOptions, cancelRecording, setAgentCommandShortcut, startRecording, stopRecording } from './dictation';
 import { DEFAULT_SETTINGS } from './settings';
 
 describe('buildConfigureOptions', () => {
@@ -71,6 +71,43 @@ describe('startRecording gesture correlation', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, 'start_native_recording', {
       deviceName: null, smartAuto: null, origin: 'toggle',
     });
+  });
+});
+
+describe('agent commands', () => {
+  it('starts an agent command by its origin, with no other argument', async () => {
+    invoke.mockClear();
+    await startRecording(undefined, 'agent_command');
+    await startRecording(undefined, 'hold');
+    expect(invoke).toHaveBeenNthCalledWith(1, 'start_native_recording', {
+      deviceName: null, smartAuto: null, origin: 'agent_command',
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'start_native_recording', {
+      deviceName: null, smartAuto: null, origin: 'hold',
+    });
+  });
+
+  it('binds and unbinds the agent command key', async () => {
+    invoke.mockClear();
+    await setAgentCommandShortcut('alt_r');
+    await setAgentCommandShortcut(null);
+    expect(invoke).toHaveBeenNthCalledWith(1, 'set_agent_command_shortcut', { shortcut: 'alt_r' });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'set_agent_command_shortcut', { shortcut: null });
+  });
+
+  it('configures the dispatcher but not the key, which the native listener owns', () => {
+    const options = buildConfigureOptions({
+      ...DEFAULT_SETTINGS,
+      agentCommandEnabled: true,
+      agentCommandDispatchProject: '/tmp/agent-dispatch',
+    });
+    expect(options).toMatchObject({
+      agentCommandEnabled: true,
+      agentCommandDispatchProject: '/tmp/agent-dispatch',
+      agentCommandProvider: 'claude_cpa',
+      agentCommandModel: 'claude-sonnet-5-5',
+    });
+    expect(options).not.toHaveProperty('agentCommandShortcut');
   });
 });
 

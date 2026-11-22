@@ -1,5 +1,6 @@
 #[cfg(feature = "internal-benchmark")]
 mod accuracy_corpus;
+pub mod agent_command;
 #[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
@@ -381,6 +382,7 @@ pub fn run() {
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
             commands::keyboard::set_paste_last_shortcut,
+            commands::keyboard::set_agent_command_shortcut,
             commands::meeting::start_meeting,
             commands::meeting::rename_meeting_remote_speaker,
             diarization_model::get_diarization_model_status,

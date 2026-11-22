@@ -31,6 +31,14 @@ export type PasteLastShortcut =
   | 'command_option_v'
   | 'command_control_v';
 
+/**
+ * Keys the hold-to-talk agent command may use. Mirrors
+ * `AGENT_COMMAND_KEY_IDS` in `keyboard/agent_command.rs`. None is a dictation
+ * key, a Paste Last chord or a Murmur shortcut, so the bindings cannot collide.
+ */
+export const AGENT_COMMAND_KEY_IDS = ['alt_r', 'shift_r', 'ctrl_l'] as const;
+export type AgentCommandKey = (typeof AGENT_COMMAND_KEY_IDS)[number];
+
 export type WritingStyle =
   | 'conversational'
   | 'polished'
@@ -217,6 +225,18 @@ export interface Settings {
   autoPasteDelayMs: number;
   /** Global Paste Last chord. `null` disables it. */
   pasteLastShortcut: PasteLastShortcut | null;
+  /**
+   * Opt-in. While on, what is said with `agentCommandShortcut` held is sent to
+   * the local T3 Code server and the model it runs, instead of being typed.
+   */
+  agentCommandEnabled: boolean;
+  /** Hold-to-talk key for agent commands. Bound only while enabled. */
+  agentCommandShortcut: AgentCommandKey;
+  /** T3 project the dispatcher runs in. Empty = `~/Documents/code/agent-dispatch`. */
+  agentCommandDispatchProject: string;
+  /** T3 provider and model the dispatcher thread runs on. */
+  agentCommandProvider: string;
+  agentCommandModel: string;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -438,6 +458,58 @@ export function pasteLastShortcutConflict(
   return null;
 }
 
+export const AGENT_COMMAND_KEY_OPTIONS: { value: AgentCommandKey; label: string }[] = [
+  { value: 'alt_r', label: '⌥ Right Option' },
+  { value: 'shift_r', label: '⇧ Right Shift' },
+  { value: 'ctrl_l', label: '⌃ Left Control' },
+];
+
+const AGENT_COMMAND_KEY_ID_SET: ReadonlySet<string> = new Set(AGENT_COMMAND_KEY_IDS);
+
+export function isAgentCommandKey(value: unknown): value is AgentCommandKey {
+  return typeof value === 'string' && AGENT_COMMAND_KEY_ID_SET.has(value);
+}
+
+export function agentCommandKeyLabel(key: AgentCommandKey): string {
+  return AGENT_COMMAND_KEY_OPTIONS.find((option) => option.value === key)?.label ?? key;
+}
+
+/** Why `key` cannot be the agent command key, or `null` when it can. */
+export function agentCommandKeyConflict(
+  key: string,
+  settings: Pick<Settings, 'doubleTapKey' | 'pasteLastShortcut'>,
+): string | null {
+  if (key === settings.doubleTapKey || isDictationKey(key)) {
+    return 'That key is already assigned to Dictation. Choose another agent command key.';
+  }
+  if (key === settings.pasteLastShortcut) {
+    return 'That shortcut is already assigned to Paste Last. Choose another agent command key.';
+  }
+  if (key === 'command_shift_p') {
+    return 'That shortcut opens Murmur\'s command palette. Choose another agent command key.';
+  }
+  if (key === 'command_comma') {
+    return 'That shortcut opens Murmur Settings. Choose another agent command key.';
+  }
+  return null;
+}
+
+/** Longest dispatch project path, and provider or model id, that is stored. */
+export const AGENT_COMMAND_PROJECT_MAX = 4096;
+export const AGENT_COMMAND_ID_MAX = 128;
+
+/**
+ * One agent command text setting as it is stored: trimmed, without control
+ * characters (it becomes a command-line argument) and bounded. Anything that
+ * is not a string, or is empty after cleaning, becomes `fallback`.
+ */
+export function sanitizeAgentCommandText(value: unknown, max: number, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = Array.from(value.trim().replace(/[\u0000-\u001f\u007f-\u009f]/g, '')).slice(0, max).join('');
+  return cleaned === '' ? fallback : cleaned;
+}
+
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold down' },
   { value: 'double_tap', label: 'Double-tap' },
@@ -498,6 +570,13 @@ export const DEFAULT_SETTINGS: Settings = {
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
   pasteLastShortcut: null,
+  // Opt-in: speech leaves Murmur for the local T3 Code server only once the
+  // user turns this on.
+  agentCommandEnabled: false,
+  agentCommandShortcut: 'alt_r',
+  agentCommandDispatchProject: '',
+  agentCommandProvider: 'claude_cpa',
+  agentCommandModel: 'claude-sonnet-5-5',
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -980,6 +1059,36 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
           parsed.pasteLastShortcut = null;
         }
       }
+
+      // Agent commands send speech off to an agent, so every malformed value
+      // fails closed: off, on the default key, with the default dispatcher.
+      if (typeof parsed.agentCommandEnabled !== 'boolean') {
+        parsed.agentCommandEnabled = DEFAULT_SETTINGS.agentCommandEnabled;
+      }
+      if (!isAgentCommandKey(parsed.agentCommandShortcut)) {
+        parsed.agentCommandShortcut = DEFAULT_SETTINGS.agentCommandShortcut;
+        parsed.agentCommandEnabled = false;
+      } else if (agentCommandKeyConflict(parsed.agentCommandShortcut, {
+        doubleTapKey: parsed.doubleTapKey ?? DEFAULT_SETTINGS.doubleTapKey,
+        pasteLastShortcut: parsed.pasteLastShortcut ?? null,
+      }) !== null) {
+        parsed.agentCommandEnabled = false;
+      }
+      parsed.agentCommandDispatchProject = sanitizeAgentCommandText(
+        parsed.agentCommandDispatchProject,
+        AGENT_COMMAND_PROJECT_MAX,
+        DEFAULT_SETTINGS.agentCommandDispatchProject,
+      );
+      parsed.agentCommandProvider = sanitizeAgentCommandText(
+        parsed.agentCommandProvider,
+        AGENT_COMMAND_ID_MAX,
+        DEFAULT_SETTINGS.agentCommandProvider,
+      );
+      parsed.agentCommandModel = sanitizeAgentCommandText(
+        parsed.agentCommandModel,
+        AGENT_COMMAND_ID_MAX,
+        DEFAULT_SETTINGS.agentCommandModel,
+      );
 
       // outputDir feeds a filesystem path on the Rust side — coerce anything
       // non-string back to the default (empty = app-chosen Documents/Murmur).

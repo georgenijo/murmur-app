@@ -3073,6 +3073,91 @@ fn with_current_recording_generation<T>(
     Some(operation())
 }
 
+/// What became of an agent command's final text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentCommandDelivery {
+    /// Handed to the dispatcher.
+    Dispatched,
+    /// Nothing was said.
+    NoText,
+    /// The recording was started as an agent command while the setting was
+    /// off, or no dispatch project could be resolved: nothing is sent.
+    NotConfigured,
+    /// The recording was cancelled or superseded before the hand-off.
+    StaleOwner,
+}
+
+/// The agent-command counterpart of the paste: hand the final text to
+/// `dispatch`, and to nothing else. It runs only while this recording still
+/// owns the Processing state, under the dictation lock, exactly like the
+/// clipboard write of a dictation, so a cancel either stops the hand-off or
+/// arrives after it. `dispatch` must return at once (`spawn_dispatch` does).
+fn deliver_agent_command(
+    app_state: &AppState,
+    recording_id: u64,
+    text: &str,
+    config: Option<&crate::agent_command::AgentCommandConfig>,
+    dispatch: impl FnOnce(String, crate::agent_command::AgentCommandConfig),
+) -> AgentCommandDelivery {
+    if text.trim().is_empty() {
+        return AgentCommandDelivery::NoText;
+    }
+    let Some(config) = config else {
+        return AgentCommandDelivery::NotConfigured;
+    };
+    match with_current_delivery_owner(app_state, recording_id, || {
+        dispatch(text.to_string(), config.clone())
+    }) {
+        Some(()) => AgentCommandDelivery::Dispatched,
+        None => AgentCommandDelivery::StaleOwner,
+    }
+}
+
+/// The pipeline's delivery when the recording is an agent command. `None` for
+/// a dictation, which goes on to file output and the paste; `Some` means the
+/// text was offered to `dispatch` only and must not be delivered anywhere else.
+fn deliver_if_agent_command(
+    app_state: &AppState,
+    recording_id: u64,
+    context: &DictationContextSnapshot,
+    text: &str,
+    dispatch: impl FnOnce(String, crate::agent_command::AgentCommandConfig),
+) -> Option<AgentCommandDelivery> {
+    (context.purpose == dictation_context::RecordingPurpose::AgentCommand).then(|| {
+        deliver_agent_command(
+            app_state,
+            recording_id,
+            text,
+            context.agent_command.as_ref(),
+            dispatch,
+        )
+    })
+}
+
+/// Shows the dispatcher's replies as macOS notifications. The title and body
+/// come from the dispatcher and are never logged here.
+struct NotificationAgentNotifier(tauri::AppHandle);
+
+impl crate::agent_command::AgentNotifier for NotificationAgentNotifier {
+    fn notify(&self, title: &str, body: &str) {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(error) = self
+            .0
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+        {
+            // The error names the platform failure only, never the content.
+            tracing::warn!(
+                target: "pipeline",
+                "agent command notification failed: {error}"
+            );
+        }
+    }
+}
+
 fn emit_auto_paste_failure_if_current(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
@@ -4734,6 +4819,59 @@ async fn run_transcription_pipeline(
         });
     }
 
+    // An agent command (purpose frozen at the recording's start) is delivered
+    // to the dispatcher and nowhere else: no file output, no clipboard write,
+    // no paste, no Paste Last memory and no NotchPill mirror. The text is
+    // never logged.
+    if let Some(outcome) = deliver_if_agent_command(
+        app_state,
+        recording_id,
+        &context,
+        &text,
+        |transcript, config| {
+            crate::agent_command::spawn_dispatch(
+                transcript,
+                config,
+                Arc::new(NotificationAgentNotifier(app_handle.clone())),
+            );
+        },
+    ) {
+        // Content-free, and debug level: off unless debug logging is on.
+        tracing::debug!(
+            target: "pipeline",
+            recording_id,
+            dispatched = outcome == AgentCommandDelivery::Dispatched,
+            configured = outcome != AgentCommandDelivery::NotConfigured,
+            "agent command delivery"
+        );
+        timings.correction_ms = correction_ms;
+        timings.transform_ms = transform_ms;
+        timings.transform_stages = transform_stages;
+        gaps.ended_at = Some(std::time::Instant::now());
+        timings.gaps = gaps;
+        let (text, terminal, history) = match outcome {
+            AgentCommandDelivery::StaleOwner => (
+                String::new(),
+                PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
+                None,
+            ),
+            _ if text.trim().is_empty() => (
+                text,
+                PipelineTerminal::NoSpeech(
+                    backend_empty_error.unwrap_or(DictationErrorCode::EmptyOutput),
+                ),
+                Some(history),
+            ),
+            _ => (text, PipelineTerminal::Success, Some(history)),
+        };
+        return Ok(PipelineResult {
+            text,
+            timings,
+            terminal,
+            history,
+        });
+    }
+
     // Phase: File output (optional) -- persist audio/transcript before injection.
     // Non-fatal: a write failure is logged and surfaced to the UI, but the text
     // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
@@ -5841,6 +5979,46 @@ pub fn report_start_cue_finished(recording_id: u64) {
     crate::output_quieting::start_cue_finished(recording_id);
 }
 
+/// One agent-command setting as it is stored: trimmed, free of control
+/// characters (it becomes a command-line argument of `t3`) and bounded.
+fn bounded_agent_setting(value: &str, max_chars: usize) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+/// The agent-command settings of one `configure_dictation` call. Each applies
+/// to the next recording: the start freezes them at Idle -> Starting. A key
+/// that is absent or of the wrong type leaves its setting unchanged; an empty
+/// provider or model keeps the stored one, and an empty project means the
+/// default under the home directory.
+fn apply_agent_command_options(
+    dictation: &mut crate::state::DictationState,
+    options: &serde_json::Value,
+) {
+    let text = |key: &str, max_chars: usize| {
+        options
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|v| bounded_agent_setting(v, max_chars))
+    };
+    if let Some(v) = options.get("agentCommandEnabled").and_then(|v| v.as_bool()) {
+        dictation.agent_command_enabled = v;
+    }
+    if let Some(v) = text("agentCommandDispatchProject", 4_096) {
+        dictation.agent_command_dispatch_project = v;
+    }
+    if let Some(v) = text("agentCommandProvider", 128).filter(|v| !v.is_empty()) {
+        dictation.agent_command_provider = v;
+    }
+    if let Some(v) = text("agentCommandModel", 128).filter(|v| !v.is_empty()) {
+        dictation.agent_command_model = v;
+    }
+}
+
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
@@ -6043,6 +6221,8 @@ pub async fn configure_dictation(
     {
         dictation.homophone_context_enabled = v;
     }
+
+    apply_agent_command_options(&mut dictation, &options);
 
     // Applies to the next recording: the seam reads it at Idle -> Starting.
     if let Some(v) = options
@@ -7571,6 +7751,10 @@ fn refuse_reentrant_start() -> Result<(), String> {
     }
 }
 
+/// The start. Its origin names the gesture, and the agent-command key's
+/// origin makes the recording an agent command: that purpose and its dispatch
+/// settings are frozen under the dictation lock at the Idle -> Starting
+/// transition and bound into the recording's context.
 async fn start_native_recording_inner(
     host: &dyn DictationHost,
     state: &State,
@@ -7630,8 +7814,11 @@ async fn start_native_recording_inner(
     // The pre-D admission checks: `app_disabled`, then Smart Auto with a fixed
     // microphone. Both facts are read here, in the old order.
     let app_disabled = host.keyboard().is_app_disabled();
+    // The agent-command key is a hold like the dictation key's; only what
+    // becomes of the text differs.
+    let requested_purpose = dictation_context::RecordingPurpose::from_origin(origin.as_deref());
     let origin = match origin.as_deref() {
-        Some("hold") => "hold",
+        Some("hold" | dictation_context::AGENT_COMMAND_ORIGIN) => "hold",
         _ => "toggle",
     };
     let hold = origin == "hold";
@@ -7725,7 +7912,7 @@ async fn start_native_recording_inner(
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
     // Site 101 (R101.3-.15): `decide_start_request`, inline at today's line.
-    let (rid, smart_enabled, parked, mut capture_guard, smart_auto_reason) = {
+    let (rid, smart_enabled, purpose, parked, mut capture_guard, smart_auto_reason) = {
         // Finishes queued re-entrantly while this synchronous section held D are
         // handed up to the flight's drain when it ends (an unwind-safe scope on this
         // thread, D-S2-4 / D-S2-13). The start holds T across its awaits (today's
@@ -7937,7 +8124,11 @@ async fn start_native_recording_inner(
             .bound_recording_id()
             .expect("R101.15's `ID+` allocated the recording id");
         // Read under the same hold, right after the delivery target was frozen.
-        let smart_enabled = smart_destination_eligible(&dictation);
+        // The purpose is frozen here too. An agent command is never routed to
+        // a text field, so it observes no smart destination.
+        let purpose = dictation_context::PurposeBinding::freeze(requested_purpose, &dictation);
+        let smart_enabled = purpose.purpose == dictation_context::RecordingPurpose::Dictation
+            && smart_destination_eligible(&dictation);
         #[cfg(feature = "dictation-shadow")]
         after_d.hold(flight_101.seal_d(&state.app_state, &dictation));
         drop(dictation);
@@ -7960,7 +8151,14 @@ async fn start_native_recording_inner(
                 unreachable!("the start's PostDT phase was refused: {kind:?}")
             }
         };
-        (rid, smart_enabled, parked, capture_guard, smart_auto_reason)
+        (
+            rid,
+            smart_enabled,
+            purpose,
+            parked,
+            capture_guard,
+            smart_auto_reason,
+        )
     };
     if let Some(parked) = parked {
         // May wait for the kept test's confirmed exit (see
@@ -8092,6 +8290,7 @@ async fn start_native_recording_inner(
                 _transition,
                 rid,
                 smart_enabled,
+                purpose,
                 delivery_target,
                 performance_started_at_ms,
                 smart_auto_reason,
@@ -8218,6 +8417,7 @@ async fn start_after_capture(
     transition: tokio::sync::MutexGuard<'_, ()>,
     rid: u64,
     smart_enabled: bool,
+    purpose: dictation_context::PurposeBinding,
     delivery_target: crate::frontmost::DeliveryTargetSnapshot,
     performance_started_at_ms: i64,
     smart_auto_reason: Option<&'static str>,
@@ -8280,6 +8480,7 @@ async fn start_after_capture(
     let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
     host.refresh_expired_ide_context(&state.app_state, app_identity.bundle_id.as_deref());
     let mut context = resolve_recording_context(&state.app_state, destination);
+    Arc::make_mut(&mut context).bind_purpose(purpose);
     // Install the resource in the immutable recording snapshot before publishing
     // it. The live-dictation engine currently refuses generation and preparation
     // (#1081); if re-enabled, preparation waits for Activate below.
@@ -9613,11 +9814,16 @@ async fn stop_native_recording_admitted(
             now,
         )
     });
+    // An agent command's text went to the dispatcher only: the reply and the
+    // completion broadcast carry no text, so it reaches neither the history
+    // nor any window. The counts above stay content-free.
+    let agent_command = context.purpose == dictation_context::RecordingPurpose::AgentCommand;
+    let reply_text = if agent_command { "" } else { text.as_str() };
     if let Verdict::Invalid(_) = tail.verdict {
         // An invalid decision has no header: named, so the books balance.
         #[cfg(feature = "dictation-shadow")]
         capture::no_decision();
-        return reply_of(&tail, None, &text);
+        return reply_of(&tail, None, reply_text);
     }
     let outcome = match pipeline.terminal {
         PipelineTerminal::Success => RunOutcomeV1::Success,
@@ -9639,8 +9845,12 @@ async fn stop_native_recording_admitted(
             // `TERM`: the terminal with the private capture, then the metrics and
             // stage-gap trace lines that followed it.
             terminal: Some(Box::new(|terminal_outcome, terminal_error| {
-                let successful_capture =
-                    history.as_ref().map(|history| SuccessfulPrivateCapture {
+                // An agent command's text is kept nowhere in Murmur: an armed
+                // diagnostic capture records its outcome only.
+                let successful_capture = history
+                    .as_ref()
+                    .filter(|_| !agent_command)
+                    .map(|history| SuccessfulPrivateCapture {
                         raw_text: &history.raw_text,
                         final_text: &text,
                         model_id: &model_name,
@@ -9697,6 +9907,20 @@ async fn stop_native_recording_admitted(
             // can update its history even when recording was initiated from the
             // overlay).
             event: Some(Box::new(|| {
+                if agent_command {
+                    return host
+                        .emit_event(
+                            "transcription-complete",
+                            serde_json::json!({
+                                "recordingId": rid,
+                                "purpose": "agent_command",
+                                "text": "",
+                                "duration": recording_secs,
+                                "interrupted": interruption,
+                            }),
+                        )
+                        .is_ok();
+                }
                 let history = history
                     .as_ref()
                     .expect("non-empty completed transcription has history metadata");
@@ -9752,7 +9976,7 @@ async fn stop_native_recording_admitted(
         stop_ports::TAIL.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
     }
 
-    reply_of(&tail, None, &text)
+    reply_of(&tail, None, reply_text)
 }
 
 /// Site 203 (R203.1-.8): the capture stop failed or returned fewer than

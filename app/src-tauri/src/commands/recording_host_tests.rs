@@ -260,6 +260,9 @@ struct Script {
     /// What the Smart Auto resolve answers (`None`: not scripted, an error).
     smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
     pipeline_error: Option<String>,
+    /// The final text a successful pipeline returns. Its delivery runs through
+    /// production's purpose gate and is recorded in `Shared::deliveries`.
+    pipeline_text: Option<String>,
     on_emit_smart_destination: Option<Hook>,
     on_supervisor_start: Option<Hook>,
     /// Runs inside the supervisor stop, after the stop was admitted.
@@ -272,6 +275,10 @@ struct Shared {
     script: StdMutex<Script>,
     /// `on_emit_smart_destination` is due at the next host call after the emit.
     after_emit_hook_due: std::sync::atomic::AtomicBool,
+    /// Where a scripted successful pipeline delivered its text: a `paste` for a
+    /// dictation, a `dispatch` for an agent command. Not a port, so it stays
+    /// out of the trace.
+    deliveries: StdMutex<Vec<String>>,
 }
 
 impl Shared {
@@ -306,6 +313,7 @@ impl FakeHost {
         Self {
             shared: Arc::new(Shared {
                 after_emit_hook_due: std::sync::atomic::AtomicBool::new(false),
+                deliveries: StdMutex::new(Vec::new()),
                 log: StdMutex::new(Vec::new()),
                 state,
                 script: StdMutex::new(Script::default()),
@@ -332,6 +340,14 @@ impl FakeHost {
 
     fn log(&self) -> Vec<String> {
         self.recorded().log
+    }
+
+    fn deliveries(&self) -> Vec<String> {
+        self.shared
+            .deliveries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -431,16 +447,57 @@ impl DictationHost for FakeHost {
     fn run_transcription_pipeline<'a>(
         &'a self,
         samples: &'a [f32],
-        _app_state: &'a AppState,
+        app_state: &'a AppState,
         recording_id: u64,
         _performance_guard: &'a mut NativeDictationPerformanceGuard,
-        _context: Arc<DictationContextSnapshot>,
+        context: Arc<DictationContextSnapshot>,
         stop: PipelineStopContext,
     ) -> HostFuture<'a, Result<PipelineResult, String>> {
         self.shared.push(
             Call::RunTranscriptionPipeline,
             format!("{recording_id} samples={}", samples.len()),
         );
+        if let Some(text) = self.shared.script().pipeline_text.take() {
+            let shared = Arc::clone(&self.shared);
+            return Box::pin(async move {
+                let PipelineStopContext { pipeline_op, .. } = stop;
+                // Production's pipeline guard: its drop writes Idle.
+                let _guard = IdleGuard::for_pipeline(app_state, recording_id, pipeline_op);
+                let deliver = |entry: String| {
+                    shared
+                        .deliveries
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(entry)
+                };
+                // Production's gate decides where the text goes; the fake only
+                // records the two sinks instead of running them.
+                match deliver_if_agent_command(
+                    app_state,
+                    recording_id,
+                    &context,
+                    &text,
+                    |transcript, config| {
+                        deliver(format!(
+                            "dispatch {transcript:?} project={} provider={} model={}",
+                            config.dispatch_project, config.provider, config.model
+                        ))
+                    },
+                ) {
+                    Some(outcome) => deliver(format!("agent_command {outcome:?}")),
+                    None => deliver(format!("paste {text:?}")),
+                }
+                Ok(PipelineResult {
+                    history: Some(PipelineHistory {
+                        raw_text: text.clone(),
+                        stages: Vec::new(),
+                    }),
+                    text,
+                    timings: PipelineTimings::default(),
+                    terminal: PipelineTerminal::Success,
+                })
+            });
+        }
         let error = self
             .shared
             .script()
@@ -1715,4 +1772,394 @@ fn every_port_is_reached_in_two_scenarios() {
             "port `{call:?}` is reached by {count} scenario(s); two are required"
         );
     }
+}
+
+// ---------------------------------------------------------- agent command
+//
+// These run a whole start or stop against the fake, but are not scenarios: they
+// assert where the text went, not the port order (the scenarios above own
+// that), so the two-scenario coverage count is unchanged.
+
+const AGENT_PROJECT: &str = "/tmp/agent-dispatch";
+
+fn enable_agent_commands(state: &State) {
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    dictation.agent_command_enabled = true;
+    dictation.agent_command_dispatch_project = AGENT_PROJECT.to_string();
+    dictation.agent_command_provider = "claude_cpa".to_string();
+    dictation.agent_command_model = "claude-sonnet-5-5".to_string();
+}
+
+fn start_agent_command(host: &FakeHost, state: &State) -> Result<serde_json::Value, String> {
+    run(start_native_recording_inner(
+        host,
+        state,
+        None,
+        None,
+        Some(dictation_context::AGENT_COMMAND_ORIGIN.to_string()),
+        None,
+    ))
+}
+
+/// A recording in flight whose context was started for `purpose`, as the
+/// start binds it.
+fn recording_fixture(
+    purpose: dictation_context::RecordingPurpose,
+    configure: fn(&State),
+) -> (Arc<State>, FakeHost) {
+    let (state, host) = fixture(DictationStatus::Recording, 7);
+    configure(&state);
+    let binding = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        dictation_context::PurposeBinding::freeze(purpose, &dictation)
+    };
+    let destination = select_recording_destination(
+        &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+        crate::smart_destination::Snapshot::Disabled,
+    );
+    let mut context = resolve_recording_context(&state.app_state, destination);
+    Arc::make_mut(&mut context).bind_purpose(binding);
+    state.app_state.set_active_context(7, context);
+    (state, host)
+}
+
+fn stop_with_text(host: &FakeHost, state: &State, text: &str) -> serde_json::Value {
+    {
+        let mut script = host.script();
+        script.stop_result = Some(Ok(vec![0.0; 5_000]));
+        script.pipeline_text = Some(text.to_string());
+    }
+    stop(host, state, None).expect("the stop replies")
+}
+
+/// The `transcription-complete` payload the stop emitted.
+fn completion_payload(host: &FakeHost) -> serde_json::Value {
+    let prefix = "emit transcription-complete ";
+    let log = host.log();
+    let mut completions = log.iter().filter_map(|entry| entry.strip_prefix(prefix));
+    let payload = completions.next().expect("the stop emits a completion");
+    assert!(completions.next().is_none(), "one completion per stop");
+    serde_json::from_str(payload).expect("the completion payload is JSON")
+}
+
+#[test]
+fn agent_command_start_freezes_the_purpose_and_dispatch_settings() {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    enable_agent_commands(&state);
+    // Smart Destination is on and eligible, and must still not be captured.
+    enable_smart_destination(&state);
+    start_agent_command(&host, &state).expect("the start replies");
+
+    // Later settings changes belong to the next recording.
+    {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        dictation.agent_command_enabled = false;
+        dictation.agent_command_model = "another-model".to_string();
+    }
+    let context = state
+        .app_state
+        .active_context(1)
+        .expect("the start installed its context");
+    assert_eq!(
+        context.purpose,
+        dictation_context::RecordingPurpose::AgentCommand
+    );
+    let config = context
+        .agent_command
+        .as_ref()
+        .expect("the dispatch settings were frozen at start");
+    assert_eq!(config.dispatch_project, AGENT_PROJECT);
+    assert_eq!(config.provider, "claude_cpa");
+    assert_eq!(config.model, "claude-sonnet-5-5");
+    assert!(
+        host.log()
+            .contains(&"smart_destination.capture enabled=false".to_string()),
+        "an agent command captures no Smart Destination: {:?}",
+        host.log()
+    );
+}
+
+#[test]
+fn dictation_start_carries_no_agent_command() {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    enable_agent_commands(&state);
+    start(&host, &state).expect("the start replies");
+    let context = state
+        .app_state
+        .active_context(1)
+        .expect("the start installed its context");
+    assert_eq!(
+        context.purpose,
+        dictation_context::RecordingPurpose::Dictation
+    );
+    assert!(context.agent_command.is_none());
+}
+
+#[test]
+fn agent_command_stop_dispatches_and_does_not_inject() {
+    let (state, host) = recording_fixture(
+        dictation_context::RecordingPurpose::AgentCommand,
+        enable_agent_commands,
+    );
+    let reply = stop_with_text(&host, &state, "launch a thread on volta");
+
+    assert_eq!(
+        host.deliveries(),
+        strings(&[
+            "dispatch \"launch a thread on volta\" project=/tmp/agent-dispatch provider=claude_cpa model=claude-sonnet-5-5",
+            "agent_command Dispatched",
+        ]),
+        "the text goes to the dispatcher once and is never pasted"
+    );
+    // The reply and the completion event carry no text: nothing was typed, so
+    // the frontend has nothing to show as dictated or to keep in history.
+    assert_eq!(reply["text"], "");
+    let completion = completion_payload(&host);
+    assert_eq!(completion["purpose"], "agent_command");
+    assert_eq!(completion["text"], "");
+    assert_eq!(completion["recordingId"], 7);
+    assert_eq!(status(&state), DictationStatus::Idle);
+}
+
+#[test]
+fn dictation_stop_injects_and_does_not_dispatch() {
+    // Agent commands are switched on, and a dictation still goes to the paste.
+    let (state, host) = recording_fixture(
+        dictation_context::RecordingPurpose::Dictation,
+        enable_agent_commands,
+    );
+    let reply = stop_with_text(&host, &state, "hello world");
+
+    assert_eq!(host.deliveries(), strings(&["paste \"hello world\""]));
+    assert_eq!(reply["text"], "hello world");
+    let completion = completion_payload(&host);
+    assert_eq!(completion["text"], "hello world");
+    assert!(
+        completion.get("purpose").is_none(),
+        "the dictation completion payload is unchanged: {completion}"
+    );
+}
+
+#[test]
+fn agent_command_with_the_setting_off_delivers_nowhere() {
+    let (state, host) =
+        recording_fixture(dictation_context::RecordingPurpose::AgentCommand, |_| {});
+    let context = state.app_state.active_context(7).expect("installed");
+    assert!(context.agent_command.is_none());
+    let reply = stop_with_text(&host, &state, "launch a thread on volta");
+
+    assert_eq!(host.deliveries(), strings(&["agent_command NotConfigured"]));
+    assert_eq!(reply["text"], "");
+    assert_eq!(completion_payload(&host)["text"], "");
+}
+
+fn agent_config() -> crate::agent_command::AgentCommandConfig {
+    crate::agent_command::AgentCommandConfig {
+        t3_bin: None,
+        dispatch_project: AGENT_PROJECT.to_string(),
+        provider: "claude_cpa".to_string(),
+        model: "claude-sonnet-5-5".to_string(),
+    }
+}
+
+/// `deliver_agent_command` against `status`, returning the outcome and what
+/// reached the dispatcher.
+fn deliver_at(
+    status: DictationStatus,
+    prepare: impl FnOnce(&State),
+    text: &str,
+    config: Option<&crate::agent_command::AgentCommandConfig>,
+) -> (AgentCommandDelivery, Vec<String>) {
+    let (state, _host) = fixture(status, 7);
+    prepare(&state);
+    let mut dispatched = Vec::new();
+    let outcome = deliver_agent_command(&state.app_state, 7, text, config, |transcript, _| {
+        dispatched.push(transcript)
+    });
+    (outcome, dispatched)
+}
+
+#[test]
+fn agent_command_is_dispatched_only_by_the_processing_owner() {
+    let config = agent_config();
+
+    let (outcome, dispatched) =
+        deliver_at(DictationStatus::Processing, |_| {}, "run it", Some(&config));
+    assert_eq!(outcome, AgentCommandDelivery::Dispatched);
+    assert_eq!(dispatched, strings(&["run it"]));
+
+    // Cancelled while processing.
+    let (outcome, dispatched) = deliver_at(
+        DictationStatus::Processing,
+        |state| {
+            state.app_state.cancel_recording(7);
+        },
+        "run it",
+        Some(&config),
+    );
+    assert_eq!(outcome, AgentCommandDelivery::StaleOwner);
+    assert!(dispatched.is_empty());
+
+    // Superseded by a newer recording.
+    let (outcome, dispatched) = deliver_at(
+        DictationStatus::Processing,
+        |state| {
+            state.app_state.recording_id.store(8, Ordering::SeqCst);
+            crate::dictation_executor::FieldAdapter::seed_core(
+                &state.app_state,
+                &mut state.app_state.dictation.lock_or_recover(),
+            );
+        },
+        "run it",
+        Some(&config),
+    );
+    assert_eq!(outcome, AgentCommandDelivery::StaleOwner);
+    assert!(dispatched.is_empty());
+
+    // No longer processing.
+    let (outcome, dispatched) = deliver_at(DictationStatus::Idle, |_| {}, "run it", Some(&config));
+    assert_eq!(outcome, AgentCommandDelivery::StaleOwner);
+    assert!(dispatched.is_empty());
+}
+
+#[test]
+fn agent_command_without_text_or_settings_is_not_dispatched() {
+    let config = agent_config();
+
+    let (outcome, dispatched) =
+        deliver_at(DictationStatus::Processing, |_| {}, "  \n", Some(&config));
+    assert_eq!(outcome, AgentCommandDelivery::NoText);
+    assert!(dispatched.is_empty());
+
+    let (outcome, dispatched) = deliver_at(DictationStatus::Processing, |_| {}, "run it", None);
+    assert_eq!(outcome, AgentCommandDelivery::NotConfigured);
+    assert!(dispatched.is_empty());
+}
+
+#[test]
+fn agent_command_settings_round_trip_from_configure_to_the_recording() {
+    let mut dictation = crate::state::DictationState::default();
+    assert!(!dictation.agent_command_enabled, "off until opted in");
+    assert_eq!(dictation.agent_command_provider, "claude_cpa");
+    assert_eq!(dictation.agent_command_model, "claude-sonnet-5-5");
+
+    apply_agent_command_options(
+        &mut dictation,
+        &serde_json::json!({
+            "agentCommandEnabled": true,
+            "agentCommandDispatchProject": "  /tmp/agent-dispatch\n",
+            "agentCommandProvider": "codex",
+            "agentCommandModel": "gpt-6.2-sol",
+        }),
+    );
+    let binding = dictation_context::PurposeBinding::freeze(
+        dictation_context::RecordingPurpose::AgentCommand,
+        &dictation,
+    );
+    let config = binding.agent_command.expect("enabled and configured");
+    assert_eq!(config.dispatch_project, AGENT_PROJECT);
+    assert_eq!(config.provider, "codex");
+    assert_eq!(config.model, "gpt-6.2-sol");
+
+    // The stored state survives its own serialization.
+    let restored: crate::state::DictationState =
+        serde_json::from_value(serde_json::to_value(&dictation).expect("serializes"))
+            .expect("deserializes");
+    assert!(restored.agent_command_enabled);
+    assert_eq!(restored.agent_command_dispatch_project, AGENT_PROJECT);
+    assert_eq!(restored.agent_command_provider, "codex");
+    assert_eq!(restored.agent_command_model, "gpt-6.2-sol");
+}
+
+#[test]
+fn agent_command_settings_ignore_malformed_and_empty_values() {
+    let mut dictation = crate::state::DictationState::default();
+    apply_agent_command_options(
+        &mut dictation,
+        &serde_json::json!({
+            "agentCommandEnabled": "yes",
+            "agentCommandDispatchProject": 7,
+            "agentCommandProvider": "   ",
+            "agentCommandModel": "",
+        }),
+    );
+    assert!(!dictation.agent_command_enabled);
+    assert_eq!(dictation.agent_command_dispatch_project, "");
+    assert_eq!(dictation.agent_command_provider, "claude_cpa");
+    assert_eq!(dictation.agent_command_model, "claude-sonnet-5-5");
+
+    // Control characters never reach a `t3` argument, and a value is bounded.
+    apply_agent_command_options(
+        &mut dictation,
+        &serde_json::json!({
+            "agentCommandProvider": "claude\u{0}_cpa\u{1b}",
+            "agentCommandModel": "m".repeat(500),
+        }),
+    );
+    assert_eq!(dictation.agent_command_provider, "claude_cpa");
+    assert_eq!(dictation.agent_command_model.chars().count(), 128);
+
+    // Settings written before this feature existed deserialize to it being off.
+    let mut legacy =
+        serde_json::to_value(crate::state::DictationState::default()).expect("serializes");
+    let fields = legacy.as_object_mut().expect("an object");
+    for key in [
+        "agent_command_enabled",
+        "agent_command_dispatch_project",
+        "agent_command_provider",
+        "agent_command_model",
+    ] {
+        assert!(fields.remove(key).is_some(), "`{key}` is a stored field");
+    }
+    let restored: crate::state::DictationState =
+        serde_json::from_value(legacy).expect("older state still loads");
+    assert!(!restored.agent_command_enabled);
+    assert_eq!(restored.agent_command_provider, "claude_cpa");
+    assert_eq!(restored.agent_command_model, "claude-sonnet-5-5");
+}
+
+/// Whether the diagnostic capture armed for a recording of `purpose` kept the
+/// transcript when that recording stopped.
+fn armed_capture_kept_the_text(purpose: dictation_context::RecordingPurpose) -> bool {
+    let (state, host) = recording_fixture(purpose, enable_agent_commands);
+    let root = tempfile::tempdir().expect("a temporary capture store");
+    let diagnostics = &state.dictation_diagnostics;
+    diagnostics
+        .initialize(root.path().join("diagnostics"))
+        .expect("the capture store initializes");
+    diagnostics.arm_next().expect("the capture arms");
+    assert!(
+        diagnostics.claim(7),
+        "the recording claims the armed capture"
+    );
+
+    stop_with_text(&host, &state, "launch a thread on volta");
+
+    // The capture is persisted on a blocking task after the terminal.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let captures = diagnostics.list_captures().expect("the store lists");
+        if let Some(capture) = captures.first() {
+            assert_eq!(capture.recording_id, 7);
+            assert_eq!(capture.outcome, "success");
+            return capture.has_content;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stop persisted no capture"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn an_armed_diagnostic_capture_never_keeps_an_agent_command() {
+    // The same stop keeps a dictation's text, so the absence below is the
+    // purpose's doing and not a capture that never ran.
+    assert!(armed_capture_kept_the_text(
+        dictation_context::RecordingPurpose::Dictation
+    ));
+    assert!(!armed_capture_kept_the_text(
+        dictation_context::RecordingPurpose::AgentCommand
+    ));
 }
