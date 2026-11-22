@@ -501,6 +501,60 @@ describe('useRecordingState transition ordering', () => {
       expect(mocks.cancelRecording).toHaveBeenCalledOnce();
     });
 
+    it.each(['starting', 'recording'] as const)(
+      'waits for the recording id when the %s event arrives before the start response',
+      async (lifecycle) => {
+        const start = deferred<typeof started>();
+        mocks.startRecording.mockReturnValueOnce(start.promise);
+        mocks.cancelRecording.mockResolvedValue(undefined);
+        let starting!: Promise<void>;
+        await act(async () => {
+          starting = current.handleAgentCommandStart();
+        });
+        // The lifecycle event overtakes the start response.
+        await act(async () => {
+          mocks.listeners.get('recording-status-changed')?.({ payload: lifecycle });
+        });
+        expect(current.status).toBe(lifecycle);
+
+        // Neither the cancel nor the key coming up may cancel unscoped: that
+        // call could land on a newer recording.
+        await act(async () => current.handleAgentCommandCancel());
+        await act(async () => current.handleAgentCommandStop());
+        expect(mocks.cancelRecording).not.toHaveBeenCalled();
+
+        await act(async () => {
+          start.resolve(started);
+          await starting;
+        });
+        expect(mocks.cancelRecording).toHaveBeenCalledExactlyOnceWith(9);
+        expect(mocks.stopRecording).not.toHaveBeenCalled();
+      },
+    );
+
+    it('cancels nothing when the cancelled recording ended before its start response', async () => {
+      const start = deferred<typeof started>();
+      mocks.startRecording.mockReturnValueOnce(start.promise);
+      let starting!: Promise<void>;
+      await act(async () => {
+        starting = current.handleAgentCommandStart();
+      });
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'starting' });
+      });
+      await act(async () => current.handleAgentCommandCancel());
+      await act(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+      });
+      await act(async () => {
+        start.resolve(started);
+        await starting;
+      });
+      expect(mocks.cancelRecording).not.toHaveBeenCalled();
+      expect(mocks.stopRecording).not.toHaveBeenCalled();
+    });
+
     it('discards a command cancelled before its start was accepted, even when the first try fails', async () => {
       const start = deferred<typeof started>();
       mocks.startRecording.mockReturnValueOnce(start.promise);

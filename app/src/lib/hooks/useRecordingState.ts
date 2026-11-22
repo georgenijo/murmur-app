@@ -45,7 +45,9 @@ const REFUSAL_NOTICE_MS = 5000;
 
 /** The recording the agent command key started and is still responsible for. */
 interface AgentCommandHold {
-  /** Known once the start is accepted; scopes a discard to this recording. */
+  /** The start was accepted, so `recordingId` is known. */
+  started: boolean;
+  /** Scopes a discard to this recording; a newer one is never touched. */
   recordingId?: number;
   /** The user cancelled it: it may be discarded, never stopped and sent. */
   discarding: boolean;
@@ -603,14 +605,25 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
    * leaves capture running, so the hold keeps its ownership (no release or
    * stop can then send the command), the cancel is retried, and a recording
    * that still cannot be discarded is reported.
+   *
+   * Every cancel names the hold's own recording. An unscoped one could reach
+   * the native side after this recording ended and cancel a newer one.
    */
   const discardAgentCommand = useCallback(async (hold: AgentCommandHold) => {
     hold.discarding = true;
+    // The id arrives with the start response, which a `starting` or
+    // `recording` event can overtake. The start discards the recording then.
+    if (!hold.started) return;
+    const { recordingId } = hold;
     const stillRecording = () => agentCommandHoldRef.current === hold
       && (statusRef.current === 'starting' || statusRef.current === 'recording');
-    for (let attempt = 0; attempt < AGENT_DISCARD_ATTEMPTS && stillRecording(); attempt += 1) {
+    for (
+      let attempt = 0;
+      recordingId !== undefined && attempt < AGENT_DISCARD_ATTEMPTS && stillRecording();
+      attempt += 1
+    ) {
       try {
-        await cancelRecording(hold.recordingId);
+        await cancelRecording(recordingId);
         if (agentCommandHoldRef.current === hold) agentCommandHoldRef.current = null;
         return;
       } catch {
@@ -620,7 +633,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     if (stillRecording()) {
       presentError(
         'Murmur could not discard the agent command and is still recording. Press Escape to discard it.',
-        { recordingId: hold.recordingId },
+        { recordingId },
       );
     }
   }, [presentError]);
@@ -694,7 +707,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
 
   const handleAgentCommandStart = useCallback(async () => {
     if (isStartingRef.current || statusRef.current !== 'idle') return;
-    const hold: AgentCommandHold = { discarding: false };
+    const hold: AgentCommandHold = { started: false, discarding: false };
     agentCommandHoldRef.current = hold;
     const accepted = await beginRecording('agent_command');
     // The recording already ended, or a newer hold took over.
@@ -704,16 +717,19 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       agentCommandHoldRef.current = null;
       return;
     }
+    hold.started = true;
     hold.recordingId = accepted.recordingId;
-    // Cancelled while the start was pending: discard what it created.
+    // Cancelled or released while the start was pending: discard what it created.
     if (hold.discarding) await discardAgentCommand(hold);
   }, [beginRecording, discardAgentCommand]);
 
   const handleAgentCommandStop = useCallback(async () => {
     const hold = agentCommandHoldRef.current;
     if (!hold) return;
-    if (hold.discarding) {
+    if (hold.discarding || statusRef.current !== 'recording') {
       // A cancelled command is never sent; the release retries its discard.
+      // A key that comes up before the microphone is recording has nothing to
+      // send either, and its recording is discarded by id, never unscoped.
       await discardAgentCommand(hold);
       return;
     }
@@ -724,13 +740,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   /** The hold was a shortcut after all: discard the recording, send nothing. */
   const handleAgentCommandCancel = useCallback(async () => {
     const hold = agentCommandHoldRef.current;
-    if (!hold) return;
-    if (startOperationRef.current && statusRef.current === 'idle') {
-      // Not accepted yet: the start discards the recording it creates.
-      hold.discarding = true;
-      return;
-    }
-    await discardAgentCommand(hold);
+    if (hold) await discardAgentCommand(hold);
   }, [discardAgentCommand]);
 
   /** The dictation key's release. It never ends an agent command's recording. */

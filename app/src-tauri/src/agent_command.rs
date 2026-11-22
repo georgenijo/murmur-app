@@ -38,7 +38,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READER_GRACE: Duration = Duration::from_secs(5);
 /// How often the stdout reader checks whether it was stopped. Output wakes it at once.
 const READER_POLL: Duration = Duration::from_millis(100);
-/// How long a stopped reader gets to notice.
+/// How long a stopped reader gets to notice where its read cannot be polled.
+#[cfg(any(not(unix), test))]
 const READER_STOP_WAIT: Duration = Duration::from_secs(1);
 
 /// Exit code `t3 thread … --wait` uses when the agent is waiting for an answer.
@@ -130,27 +131,49 @@ impl ProcessRunner for SystemRunner {
 /// and keeps the pipe open can neither pin the thread nor hide what `t3`
 /// already wrote.
 struct StdoutReader {
-    captured: Arc<Mutex<Vec<u8>>>,
+    /// `None` once the runner has taken the output: nothing is added after that.
+    captured: Arc<Mutex<Option<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
     finished: std::sync::mpsc::Receiver<()>,
 }
 
+/// What a wait on the pipe found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    /// Data, or the end of the pipe: a read returns at once.
+    Ready,
+    /// Nothing yet.
+    Idle,
+    /// The wait itself failed; the pipe cannot be read safely.
+    Failed,
+}
+
+/// A pipe the reader can wait on with a timeout, so it sees a stop request.
+trait StdoutPipe: Read + Send + 'static {
+    fn wait_readable(&self, timeout: Duration) -> Readiness;
+}
+
 impl StdoutReader {
-    fn spawn(mut pipe: std::process::ChildStdout) -> Self {
-        let captured = Arc::new(Mutex::new(Vec::new()));
+    fn spawn(mut pipe: impl StdoutPipe) -> Self {
+        let captured = Arc::new(Mutex::new(Some(Vec::new())));
         let stop = Arc::new(AtomicBool::new(false));
         let (finished_tx, finished) = std::sync::mpsc::channel();
         let (thread_captured, thread_stop) = (Arc::clone(&captured), Arc::clone(&stop));
         std::thread::spawn(move || {
             let mut chunk = [0_u8; 8192];
             while !thread_stop.load(Ordering::SeqCst) {
-                if !wait_readable(&pipe, READER_POLL) {
-                    continue;
+                match pipe.wait_readable(READER_POLL) {
+                    Readiness::Ready => {}
+                    Readiness::Idle => continue,
+                    Readiness::Failed => break,
                 }
                 match pipe.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(read) => {
                         let mut captured = thread_captured.lock_or_recover();
+                        let Some(captured) = captured.as_mut() else {
+                            break;
+                        };
                         let room = STDOUT_LIMIT_BYTES.saturating_sub(captured.len());
                         // Past the limit, keep draining so a chatty child is
                         // never blocked on a full pipe.
@@ -171,15 +194,23 @@ impl StdoutReader {
         }
     }
 
-    /// Waits up to `grace` for the pipe to close, then stops the reader.
-    /// Returns everything read, and whether the reader thread has ended.
-    fn finish(self, grace: Duration) -> (Vec<u8>, bool) {
-        let mut ended = self.finished.recv_timeout(grace).is_ok();
-        if !ended {
+    /// Waits up to `grace` for the pipe to close, then stops the reader and
+    /// waits for it to end. Returns everything it read; by then the reader has
+    /// closed its end of the pipe.
+    fn finish(self, grace: Duration) -> Vec<u8> {
+        if self.finished.recv_timeout(grace).is_err() {
             self.stop.store(true, Ordering::SeqCst);
-            ended = self.finished.recv_timeout(READER_STOP_WAIT).is_ok();
+            // The reader polls, so it always notices the stop, however late it
+            // is scheduled. Waiting for it means the output is taken only when
+            // nothing more can be added, and the pipe is closed on return.
+            #[cfg(unix)]
+            let _ = self.finished.recv();
+            // A blocked read cannot be stopped here. Taking the output below
+            // ends the reader at its next read and drops what that read got.
+            #[cfg(not(unix))]
+            let _ = self.finished.recv_timeout(READER_STOP_WAIT);
         }
-        (std::mem::take(&mut *self.captured.lock_or_recover()), ended)
+        self.captured.lock_or_recover().take().unwrap_or_default()
     }
 }
 
@@ -189,30 +220,38 @@ impl Drop for StdoutReader {
     }
 }
 
-/// Whether `pipe` has data or reached its end, waiting at most `timeout`.
 #[cfg(unix)]
-fn wait_readable(pipe: &std::process::ChildStdout, timeout: Duration) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let mut poll_fd = libc::pollfd {
-        fd: pipe.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: one valid `pollfd` that outlives the call; the descriptor is
-    // owned by `pipe`, which the caller keeps borrowed.
-    let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-    if ready < 0 {
-        // A signal is a retry; any other failure is the read's to report.
-        return std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted;
+impl StdoutPipe for std::process::ChildStdout {
+    fn wait_readable(&self, timeout: Duration) -> Readiness {
+        use std::os::unix::io::AsRawFd;
+        let mut poll_fd = libc::pollfd {
+            fd: self.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: one valid `pollfd` that outlives the call; the descriptor
+        // is owned by `self`, which stays borrowed.
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        match ready {
+            0 => Readiness::Idle,
+            ready if ready > 0 => Readiness::Ready,
+            // A signal is a retry. After any other failure a read could block
+            // with no way to stop it, so the reader gives up instead.
+            _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {
+                Readiness::Idle
+            }
+            _ => Readiness::Failed,
+        }
     }
-    ready > 0
 }
 
 /// Without `poll` the read blocks, so a stop is seen only between reads.
 #[cfg(not(unix))]
-fn wait_readable(_pipe: &std::process::ChildStdout, _timeout: Duration) -> bool {
-    true
+impl StdoutPipe for std::process::ChildStdout {
+    fn wait_readable(&self, _timeout: Duration) -> Readiness {
+        Readiness::Ready
+    }
 }
 
 fn run_process(
@@ -284,7 +323,7 @@ fn run_process(
     // A descendant that outlives t3 may hold the pipe open; do not wait on it
     // forever. What t3 wrote before it exited is kept either way. The
     // descendant is left alone: t3 exited normally and chose to leave it.
-    let (captured, _) = reader
+    let captured = reader
         .map(|reader| reader.finish(reader_grace))
         .unwrap_or_default();
     Ok(RunOutput {
@@ -1309,7 +1348,7 @@ mod tests {
             let reader = StdoutReader::spawn(child.stdout.take().unwrap());
             child.wait().unwrap();
 
-            let (captured, ended) = reader.finish(Duration::from_millis(200));
+            let captured = reader.finish(Duration::from_millis(200));
             let descendant: i32 = String::from_utf8(captured)
                 .unwrap()
                 .parse()
@@ -1320,7 +1359,62 @@ mod tests {
             let alive = unsafe { libc::kill(descendant, 0) } == 0;
             kill(descendant);
             assert!(alive);
-            assert!(ended, "the reader thread must end once it is stopped");
+        }
+
+        /// A pipe whose reader is held up for `delay` (a starved thread) on
+        /// its second wait, with one more chunk to deliver after that.
+        struct DelayedPipe {
+            chunks: VecDeque<&'static [u8]>,
+            waits: std::cell::Cell<usize>,
+            delay: Duration,
+            closed: Arc<AtomicBool>,
+        }
+
+        impl Read for DelayedPipe {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let chunk = self.chunks.pop_front().unwrap_or_default();
+                buffer[..chunk.len()].copy_from_slice(chunk);
+                Ok(chunk.len())
+            }
+        }
+
+        impl StdoutPipe for DelayedPipe {
+            fn wait_readable(&self, timeout: Duration) -> Readiness {
+                let wait = self.waits.get();
+                self.waits.set(wait + 1);
+                if wait == 1 {
+                    std::thread::sleep(self.delay);
+                }
+                if self.chunks.is_empty() {
+                    std::thread::sleep(timeout);
+                    return Readiness::Idle;
+                }
+                Readiness::Ready
+            }
+        }
+
+        impl Drop for DelayedPipe {
+            fn drop(&mut self) {
+                self.closed.store(true, Ordering::SeqCst);
+            }
+        }
+
+        #[test]
+        fn a_delayed_reader_is_waited_for_and_loses_nothing() {
+            let closed = Arc::new(AtomicBool::new(false));
+            let reader = StdoutReader::spawn(DelayedPipe {
+                chunks: VecDeque::from([b"reply".as_slice(), b" tail".as_slice()]),
+                waits: std::cell::Cell::new(0),
+                // Longer than a bounded wait for the stop would allow.
+                delay: READER_STOP_WAIT + Duration::from_millis(500),
+                closed: Arc::clone(&closed),
+            });
+
+            let captured = reader.finish(Duration::from_millis(100));
+            // The runner returns only after the reader has closed the pipe,
+            // with everything the reader read.
+            assert!(closed.load(Ordering::SeqCst), "the pipe is still open");
+            assert_eq!(captured, b"reply tail");
         }
 
         #[test]
