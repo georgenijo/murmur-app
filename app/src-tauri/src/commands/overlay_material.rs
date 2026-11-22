@@ -145,6 +145,50 @@ pub(crate) fn frame_in(bounds: (f64, f64), shape: MaterialShape, flipped: bool) 
     [x, y, shape.width, shape.height]
 }
 
+/// The two layers' frames for `shape` in a window of `bounds`: the lift layer
+/// spans the window and carries the rise, and the card layer sits at its
+/// bottom, centred, carrying only size. Their composition puts the card's
+/// bottom edge exactly `shape.lift` above the window's bottom, as the CSS card
+/// (`align-items: flex-end`, `translateY(-lift)`) sits.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn layer_frames(
+    bounds: (f64, f64),
+    shape: MaterialShape,
+    flipped: bool,
+) -> ([f64; 4], [f64; 4]) {
+    let lift = frame_in(
+        bounds,
+        MaterialShape {
+            width: bounds.0,
+            height: bounds.1,
+            ..shape
+        },
+        flipped,
+    );
+    let card = frame_in(bounds, MaterialShape { lift: 0.0, ..shape }, false);
+    (lift, card)
+}
+
+/// The shape to remember once `plan` has run. A `Keep` leaves the lift layer
+/// where it was, so the lift it holds is the previous one, not the requested
+/// one: remembering the request would make the next update believe the layer
+/// already rose (or fell) and keep it there. A hidden card skips the lift this
+/// way when the pill's hover opens or closes while it has no words.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn applied_shape(
+    previous: Option<MaterialShape>,
+    next: MaterialShape,
+    plan: Plan,
+) -> MaterialShape {
+    match previous {
+        Some(previous) if plan.lift == Step::Keep => MaterialShape {
+            lift: previous.lift,
+            ..next
+        },
+        _ => next,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) enum Motion {
@@ -191,6 +235,13 @@ pub(crate) fn plan(
             } else {
                 Step::Snap
             },
+            card: Step::Snap,
+        },
+        // A material with nothing applied yet has no place to fade out in:
+        // put it where it belongs, unseen, so no later `Keep` trusts a frame
+        // it never had.
+        Motion::Island if !next.visible && previous.is_none() => Plan {
+            lift: Step::Snap,
             card: Step::Snap,
         },
         // Hiding fades out in place, as the island does.
@@ -501,26 +552,15 @@ mod native {
                     entry.shape = None;
                 });
             }
-            let previous = entry.shape.replace(shape);
+            let previous = entry.shape;
             let (lift, view) = (entry.lift.clone(), entry.view.clone());
             let bounds = content.bounds().size;
             let bounds = (bounds.width, bounds.height);
-            let lift_target = rect(frame_in(
-                bounds,
-                MaterialShape {
-                    width: bounds.0,
-                    height: bounds.1,
-                    ..shape
-                },
-                content.isFlipped(),
-            ));
-            let card_target = rect(frame_in(
-                bounds,
-                MaterialShape { lift: 0.0, ..shape },
-                false,
-            ));
+            let (lift_frame, card_frame) = layer_frames(bounds, shape, content.isFlipped());
+            let (lift_target, card_target) = (rect(lift_frame), rect(card_frame));
             let was_visible = previous.is_some_and(|p| p.visible) && view.alphaValue() > 0.0;
             let plan = plan(previous, shape, motion, was_visible);
+            entry.shape = Some(applied_shape(previous, shape, plan));
             let reduce_motion =
                 NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
             let place = |layer: &Retained<NSView>, target: NSRect, step: Step| match step {
@@ -1015,6 +1055,113 @@ mod tests {
             plan(Some(card(200.0, 20.0, 0.0)), shape, Motion::Instant, true).lift,
             Step::Snap
         );
+    }
+
+    /// What the lift layer holds after a sequence of updates, driven through
+    /// the same `plan`/`applied_shape` the native code uses.
+    struct Layer {
+        remembered: Option<MaterialShape>,
+        held_lift: f64,
+    }
+
+    impl Layer {
+        fn new() -> Self {
+            Layer {
+                remembered: None,
+                held_lift: 0.0,
+            }
+        }
+
+        fn update(&mut self, next: MaterialShape, motion: Motion) {
+            let was_visible = self.remembered.is_some_and(|p| p.visible);
+            let plan = plan(self.remembered, next, motion, was_visible);
+            if plan.lift != Step::Keep {
+                self.held_lift = next.lift;
+            }
+            self.remembered = Some(applied_shape(self.remembered, next, plan));
+        }
+    }
+
+    fn hidden(lift: f64) -> MaterialShape {
+        MaterialShape {
+            visible: false,
+            ..card(0.0, 0.0, lift)
+        }
+    }
+
+    #[test]
+    fn the_card_rests_on_the_bottom_edge_it_is_lifted_from() {
+        // The CSS card is bottom-aligned in its window and translates up by
+        // `lift`. Composing the lift layer and the card layer must leave the
+        // card's bottom edge exactly `lift` above the window's bottom, for
+        // any card size, in either coordinate system.
+        let window = (460.0, 168.0);
+        for (width, height) in [(436.0, 63.6), (220.0, 20.0), (436.0, 40.0)] {
+            for lift in [0.0, 64.0] {
+                let shape = card(width, height, lift);
+                for flipped in [false, true] {
+                    let (lift_frame, card_frame) = layer_frames(window, shape, flipped);
+                    // The lift layer always spans the window.
+                    assert_eq!((lift_frame[2], lift_frame[3]), window, "{lift_frame:?}");
+                    // Bottom of the card above the window bottom, y-up.
+                    let lift_bottom = if flipped {
+                        window.1 - (lift_frame[1] + lift_frame[3])
+                    } else {
+                        lift_frame[1]
+                    };
+                    assert_eq!(lift_bottom, lift, "lift layer, flipped={flipped}");
+                    assert_eq!(card_frame[1], 0.0, "card sits on its layer's bottom");
+                    assert_eq!(lift_bottom + card_frame[1], lift);
+                    // Centred in the window, card-sized.
+                    assert_eq!(card_frame[0], (window.0 - width) / 2.0);
+                    assert_eq!((card_frame[2], card_frame[3]), (width, height));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_hover_change_while_the_card_is_hidden_never_strands_the_lift() {
+        // Hover opens while words show: the layer rises.
+        let mut layer = Layer::new();
+        layer.update(card(436.0, 40.0, 0.0), Motion::Island);
+        layer.update(card(436.0, 40.0, 64.0), Motion::Island);
+        assert_eq!(layer.held_lift, 64.0);
+        // Dictation stops: the words clear, and the card has no size.
+        layer.update(hidden(64.0), Motion::Instant);
+        // The pointer leaves the pill while there are no words. The hidden
+        // card fades in place, so the layer stays up...
+        layer.update(hidden(0.0), Motion::Island);
+        assert_eq!(layer.held_lift, 64.0);
+        // ...and the next recording's first words must bring it down, not
+        // trust that it is already there.
+        let words = card(436.0, 63.6, 0.0);
+        let step = plan(layer.remembered, words, Motion::Instant, false).lift;
+        assert_eq!(step, Step::Snap);
+        layer.update(words, Motion::Instant);
+        assert_eq!(layer.held_lift, words.lift);
+    }
+
+    #[test]
+    fn a_hover_rise_while_the_card_is_hidden_is_applied_when_words_arrive() {
+        let mut layer = Layer::new();
+        layer.update(card(436.0, 40.0, 0.0), Motion::Island);
+        layer.update(hidden(0.0), Motion::Instant);
+        // Hover opens before any words: the web card will wait lifted.
+        layer.update(hidden(64.0), Motion::Island);
+        assert_eq!(layer.held_lift, 0.0);
+        let words = card(436.0, 40.0, 64.0);
+        layer.update(words, Motion::Instant);
+        assert_eq!(layer.held_lift, 64.0);
+    }
+
+    #[test]
+    fn a_material_with_nothing_applied_is_placed_even_when_hidden() {
+        let mut layer = Layer::new();
+        layer.update(hidden(64.0), Motion::Island);
+        assert_eq!(layer.held_lift, 64.0);
+        layer.update(card(436.0, 40.0, 64.0), Motion::Instant);
+        assert_eq!(layer.held_lift, 64.0);
     }
 
     #[test]
