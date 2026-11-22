@@ -1046,8 +1046,9 @@ unconfirmed press discards it (see
 An adopted capture logs `audio.capture_ready` with `warm=true` and
 `speculative=true`. A first clean tap in Double Tap or Both mode may silently
 spawn, signature-verify, and handshake an idle capture helper, but only when
-microphone permission is already granted. It creates no AudioUnit, opens no
-device, and captures no audio. The confirmed start for the same gesture adopts
+microphone permission is already granted. A bare AudioUnit instance may exist
+in the helper after the preparation ack; nothing is initialized, bound to
+input, or started, and no audio is captured. The confirmed start for the same gesture adopts
 that helper; otherwise it is torn down. See
 [Performance diagnostics](performance-diagnostics.md#clean-taps-and-silent-first-tap-helper-preparation).
 An arming press for a hold creates no speculative helper.
