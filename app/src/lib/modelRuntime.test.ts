@@ -1,3 +1,4 @@
+import { modelNeedsRepair, modelStatusLabel } from './modelRuntime';
 import { describe, expect, it } from 'vitest';
 import { applyRuntimeUpdate, type ModelRuntimeSnapshot } from './modelRuntime';
 
@@ -38,4 +39,16 @@ describe('model runtime updates', () => {
     const current = snapshot(4, 'ready');
     expect(applyRuntimeUpdate([current], snapshot(3, 'loading'))).toEqual([current]);
   });
+});
+
+it('flags partial or failed Core ML installs for repair and keeps status copy readable', () => {
+  expect(modelNeedsRepair({ installState: 'notInstalled', failurePresent: true })).toBe(true);
+  expect(modelNeedsRepair({ installState: 'invalid', failurePresent: false })).toBe(true);
+  expect(modelNeedsRepair({ installState: 'notInstalled', failurePresent: false })).toBe(false);
+  expect(modelNeedsRepair({ installState: 'installed', failurePresent: false })).toBe(false);
+  for (const installState of ['notInstalled', 'installing', 'validating', 'installed', 'invalid'] as const) {
+    for (const failurePresent of [true, false]) {
+      expect(modelStatusLabel({ installState, failurePresent })).not.toMatch(/notInstalled|validating|invalid|failed/);
+    }
+  }
 });

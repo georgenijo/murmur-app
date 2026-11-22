@@ -204,6 +204,22 @@ pub fn model_definition(model_name: &str) -> Result<&'static ModelDefinition, St
         .ok_or_else(|| format!("Unknown transcription model '{model_name}'"))
 }
 
+/// Content-free classification of a model preparation failure for logs. The
+/// error text itself is never logged; only one of these fixed labels is.
+pub(crate) fn prepare_failure_kind(error: &str) -> &'static str {
+    if error.contains("not downloaded") || error.contains("not installed") {
+        "not_installed"
+    } else if error.starts_with("Unknown ") {
+        "unknown_model"
+    } else if error.starts_with("Failed to load") || error.contains("FluidAudio initialized") {
+        "load_failed"
+    } else if error.contains("Could not") && error.contains("Core ML") {
+        "cache_unavailable"
+    } else {
+        "other"
+    }
+}
+
 pub fn model_supported(definition: &ModelDefinition) -> bool {
     match definition.platform {
         PlatformRequirement::Mac => true,
@@ -1544,5 +1560,16 @@ mod tests {
         assert!(!json.contains("path"));
         assert!(!json.contains("error"));
         assert!(json.contains("failurePresent"));
+    }
+
+    #[test]
+    fn prepare_failure_kind_is_a_fixed_label() {
+        assert_eq!(
+            prepare_failure_kind("Core ML model is not downloaded. Open Settings to download it."),
+            "not_installed"
+        );
+        assert_eq!(prepare_failure_kind("Unknown Core ML model 'x'"), "unknown_model");
+        assert_eq!(prepare_failure_kind("Failed to load Core ML model: /Users/a/b"), "load_failed");
+        assert_eq!(prepare_failure_kind("something with /private/path"), "other");
     }
 }

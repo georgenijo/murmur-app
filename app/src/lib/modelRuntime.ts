@@ -106,3 +106,24 @@ export function useModelRuntimeCatalog(enabled = true) {
   );
   return { models, byName, error };
 }
+
+/** Human-readable model status for user-facing copy; never show raw enum values. */
+export function modelStatusLabel(model: Pick<ModelRuntimeSnapshot, 'installState' | 'failurePresent'>): string {
+  if (model.installState === 'installing') return 'Downloading…';
+  if (model.installState === 'validating') return 'Verifying…';
+  if (model.installState === 'invalid') return 'Needs re-download';
+  if (model.installState === 'notInstalled') return 'Not downloaded';
+  return model.failurePresent ? 'Couldn’t load' : 'Downloaded';
+}
+
+/**
+ * A model that is not usable but left files behind (partial cache) or whose last
+ * preparation failed needs a repair. Downloading again runs the installer, which
+ * clears the incomplete cache first, so the action is "Re-download".
+ */
+export function modelNeedsRepair(model: Pick<ModelRuntimeSnapshot, 'installState' | 'failurePresent'>): boolean {
+  return model.installState === 'invalid'
+    || (model.installState === 'notInstalled' && model.failurePresent);
+}
+
+export const MODEL_REPAIR_MESSAGE = 'Model files are incomplete. Re-download to repair.';

@@ -489,6 +489,26 @@ mockIPC((command, payload) => {
       errorCode: null,
     };
   }
+  if (requestedState === 'settings-folding' && query.get('runtime') === 'failed') {
+    if (command === 'get_model_hardware_guidance') return {
+      schemaVersion: 1, chip: 'Apple M5 Pro', chipTier: 'currentAppleSilicon', physicalMemoryGib: 48,
+      modelMemoryBudgetMib: 8192, recommendedModel: 'parakeet-tdt-0.6b-v3-coreml', warnedModels: [],
+    };
+    if (command === 'get_model_runtime_catalog') {
+      const capabilities = { partialResults: false, initialPrompts: false, multilingual: false, translation: false,
+        timestamps: false, confidence: false, punctuationControl: false };
+      const row = (modelName: string, label: string, size: string, extra: Record<string, unknown> = {}) => ({
+        generation: 1, modelName, label, size, backend: 'whisper', accelerator: 'Metal GPU', capabilities,
+        supportedPlatforms: ['macos'], supported: true, unavailableReason: null,
+        installState: 'notInstalled', lifecycleState: 'unloaded', failurePresent: false, ...extra,
+      });
+      return [
+        row('parakeet-tdt-0.6b-v3-coreml', 'Parakeet Core ML', '~470 MB', { backend: 'coreml', accelerator: 'Apple Neural Engine', lifecycleState: 'failed', failurePresent: true }),
+        row('whisper-tiny.en', 'Whisper Tiny (English)', '~75 MB'),
+        row('whisper-base.en', 'Whisper Base (English)', '~150 MB', { installState: 'installed' }),
+      ];
+    }
+  }
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
 
   if (command.includes('version')) return '0.27.0';

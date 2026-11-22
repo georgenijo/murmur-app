@@ -35,7 +35,7 @@ import {
 import { setPasteLastShortcut } from '../../lib/deliveryRecovery';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
-import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
+import { MODEL_REPAIR_MESSAGE, modelNeedsRepair, modelStatusLabel, useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
   modelGuidanceSummary,
   modelMemoryWarning,
@@ -662,6 +662,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     ? modelMemoryWarning(modelHardwareGuidance, settings.model)
     : null;
   const modelAvailable = selectedRuntime ? selectedRuntime.installState === 'installed' : null;
+  const needsRepair = selectedRuntime ? modelNeedsRepair(selectedRuntime) : false;
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
     | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -1232,7 +1233,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               >
                 <span className="settings-title-description">
                   <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Speech-to-text</span>
-                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime ? modelStatusLabel(selectedRuntime) : 'Local model'}</span>
                 </span>
                 <SettingsChevron direction="right" />
               </button>
@@ -1247,7 +1248,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 disabled={isRecording}
                 items={AVAILABLE_MODEL_OPTIONS.map((model) => ({
                   value: model.value,
-                  label: `${model.label} (${model.size})`,
+                  label: model.label,
                   badge: modelHardwareGuidance?.warnedModels.includes(model.value)
                     ? 'Higher memory'
                     : modelHardwareGuidance?.recommendedModel === model.value
@@ -1267,11 +1268,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                   {selectedModelMemoryWarning}
                 </div>
               )}
-{selectedRuntime && <p className="text-xs text-on-surface-variant" data-testid="model-runtime-status">{selectedRuntime.label}: {selectedRuntime.backend} / {selectedRuntime.accelerator} / {selectedRuntime.size} · {selectedRuntime.installState} · {selectedRuntime.lifecycleState}</p>}
-{isRecording && <p className="text-xs text-primary">Stop recording before changing model.</p>}
+{isRecording && <p className="text-[length:var(--ui-font-caption)] text-primary">Stop recording before changing model.</p>}
 {modelAvailable === false && modelDownload.phase === 'idle' && (
                 <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span>Model not downloaded</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Download</Button>
+                  <span>{needsRepair ? MODEL_REPAIR_MESSAGE : 'Not downloaded yet'}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">{needsRepair ? 'Re-download' : 'Download'}</Button>
                 </div>
               )}
 {modelDownload.phase === 'downloading' && (
