@@ -697,3 +697,24 @@
   .settings-microphone-input .settings-row-title ~ p { grid-column: 1; grid-row: auto; }
   .settings-live-input-level-control { width: 100%; }
 }
+
+/* Full-width status notice inside a settings card: icon, one sentence, one action. */
+.settings-rows > .settings-notice { display: flex; align-items: center; gap: 12px; margin: 0 var(--settings-row-x) 12px; padding: 10px 12px; border: 1px solid var(--settings-notice-border, var(--settings-divider)); border-radius: var(--settings-radius-control, 8px); background: var(--settings-notice-bg, transparent); }
+.settings-rows > .settings-notice + .settings-notice { margin-top: 0; }
+.settings-notice > svg { width: 16px; height: 16px; flex: none; color: var(--settings-notice-accent, var(--murmur-on-surface-variant)); }
+.settings-notice > p { flex: 1; min-width: 0; margin: 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); color: var(--murmur-on-surface); text-wrap: pretty; }
+.settings-notice[data-tone='warning'] { --settings-notice-accent: var(--murmur-warning); --settings-notice-border: color-mix(in srgb, var(--murmur-warning) 40%, transparent); --settings-notice-bg: color-mix(in srgb, var(--murmur-warning) 12%, var(--murmur-surface-container-lowest)); }
+.settings-notice[data-tone='danger'] { --settings-notice-accent: var(--murmur-error); --settings-notice-border: color-mix(in srgb, var(--murmur-error) 40%, transparent); --settings-notice-bg: color-mix(in srgb, var(--murmur-error) 10%, var(--murmur-surface-container-lowest)); }
+.settings-notice[data-tone='neutral'] { --settings-notice-bg: color-mix(in srgb, var(--murmur-on-surface) 4%, transparent); }
+.settings-rows > .settings-setting-row:has(+ .settings-notice) { padding-bottom: 12px; }
+.settings-rows > .settings-notice { border-top-width: 1px; }
+
+/* Model storage: one grouped list with hairlines; every row shares one action column. */
+.model-storage-list { margin-top: var(--settings-field-gap); border-top: 1px solid var(--settings-divider); }
+.model-storage-list > * + * { border-top: 1px solid var(--settings-divider); }
+.model-storage-row { display: grid; grid-template-columns: minmax(0, 1fr) 8rem; align-items: center; column-gap: 12px; padding: 8px 0; }
+.model-storage-action { display: flex; justify-content: flex-end; align-items: center; }
+.model-storage-marker { display: inline-flex; align-items: center; gap: 4px; font-size: var(--ui-font-caption); font-weight: 500; color: var(--murmur-on-surface-variant); }
+.model-storage-marker svg { width: 14px; height: 14px; color: var(--murmur-primary); }
+[data-setting-target='transcription-model'] .settings-row-description { text-wrap: balance; }
+.settings-field[aria-label='Transcription model storage'] > p + p { margin-top: var(--settings-copy-gap); }

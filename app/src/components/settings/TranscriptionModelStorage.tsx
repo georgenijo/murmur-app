@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { modelStatusLabel, type ModelRuntimeSnapshot } from '../../lib/modelRuntime';
 import { Button } from '../ui/FormControls';
+import { Check } from 'lucide-react';
 
 export function TranscriptionModelStorage({ models, selectedModel, busy }: {
   models: ModelRuntimeSnapshot[];
@@ -14,6 +15,8 @@ export function TranscriptionModelStorage({ models, selectedModel, busy }: {
   const pendingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setConfirmRemove(null), [selectedModel, busy]);
+  // Selected first, then downloaded models, then the rest.
+  const rank = (model: ModelRuntimeSnapshot) => model.modelName === selectedModel ? 0 : model.installState === 'installed' ? 1 : 2;
 
   async function run(modelName: string, remove: boolean) {
     if (pendingRef.current || busy) return;
@@ -39,7 +42,11 @@ export function TranscriptionModelStorage({ models, selectedModel, busy }: {
     <div className="settings-field" aria-label="Transcription model storage">
       <p className="text-[length:var(--ui-font-label)] font-medium text-on-surface">Model storage</p>
       <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">Downloaded models take up disk space. Remove the ones you no longer use.</p>
-      {models.map((model) => {
+      <div role="list" className="model-storage-list">
+        {[...models]
+          .map((model, index) => ({ model, index }))
+          .sort((left, right) => rank(left.model) - rank(right.model) || left.index - right.index)
+          .map(({ model }) => {
         const installed = model.installState === 'installed';
         const active = model.modelName === selectedModel
           || !['unloaded', 'failed'].includes(model.lifecycleState);
@@ -49,31 +56,34 @@ export function TranscriptionModelStorage({ models, selectedModel, busy }: {
         const canDownload = !installed && !installing && model.supported && !selected;
         const status = modelStatusLabel(model);
         return (
-          <div key={model.modelName} data-testid="model-storage-row" className="flex items-center gap-3 rounded-lg border border-outline-variant/30 px-3 py-2">
-            <span className="min-w-0 flex-1 text-[length:var(--ui-font-caption)] text-on-surface">
-              <span className="block truncate font-medium">{model.label}</span>
+          <div key={model.modelName} role="listitem" data-testid="model-storage-row" className="model-storage-row">
+            <span className="min-w-0 text-[length:var(--ui-font-caption)] text-on-surface">
+              <span className="block truncate text-[length:var(--ui-font-label)] font-medium">{model.label}</span>
               <span className="text-on-surface-variant">{model.size} · {status}{!selected && active ? ' · In use' : ''}</span>
             </span>
-            {selected && (
-              <span className="shrink-0 rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-[length:var(--ui-font-caption)] font-semibold text-on-surface">Selected</span>
-            )}
-            {canRemove && (
-              <Button type="button" variant="ghost" size="xs" disabled={busy || pending !== null}
-                onKeyDown={noDefaultButtonKeyDown} onClick={() => void run(model.modelName, true)}
-                onBlur={() => setConfirmRemove(null)}
-                aria-label={`${confirmRemove === model.modelName ? 'Confirm remove' : 'Remove'} ${model.label}…`}>
-                {pending === model.modelName ? 'Working…' : confirmRemove === model.modelName ? 'Confirm remove…' : 'Remove…'}
-              </Button>
-            )}
-            {canDownload && (
-              <Button type="button" variant="ghost" size="xs" disabled={busy || pending !== null}
-                aria-label={`Download ${model.label}`} onClick={() => void run(model.modelName, false)}>
-                {pending === model.modelName ? 'Working…' : 'Download'}
-              </Button>
-            )}
+            <span className="model-storage-action">
+              {selected && (
+                <span className="model-storage-marker"><Check aria-hidden="true" />Selected</span>
+              )}
+              {canRemove && (
+                <Button type="button" size="xs" disabled={busy || pending !== null}
+                  onKeyDown={noDefaultButtonKeyDown} onClick={() => void run(model.modelName, true)}
+                  onBlur={() => setConfirmRemove(null)}
+                  aria-label={`${confirmRemove === model.modelName ? 'Confirm remove' : 'Remove'} ${model.label}…`}>
+                  {pending === model.modelName ? 'Working…' : confirmRemove === model.modelName ? 'Confirm remove…' : 'Remove…'}
+                </Button>
+              )}
+              {canDownload && (
+                <Button type="button" size="xs" disabled={busy || pending !== null}
+                  aria-label={`Download ${model.label}`} onClick={() => void run(model.modelName, false)}>
+                  {pending === model.modelName ? 'Working…' : 'Download'}
+                </Button>
+              )}
+            </span>
           </div>
         );
       })}
+      </div>
       {error && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{error}</p>}
     </div>
   );

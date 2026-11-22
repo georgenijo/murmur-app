@@ -79,9 +79,13 @@ it('explains storage plainly and never renders raw runtime enum values', async (
     expect(container.textContent).not.toContain(raw);
   }
   const rows = [...container.querySelectorAll('[data-testid="model-storage-row"]')];
-  expect(rows[0].textContent).toContain('Selected');
-  expect(rows[0].textContent).toContain('Not downloaded');
-  expect(rows[1].textContent).toContain('Needs re-download');
-  expect(rows[2].textContent).toContain('Verifying…');
-  expect(rows[3].textContent).toContain('Downloaded');
+  const row = (name: string) => rows.find((candidate) => candidate.textContent?.includes(name))!;
+  // Order: selected, then downloaded, then the rest.
+  expect(rows.map((candidate) => candidate.querySelector('.font-medium')?.textContent))
+    .toEqual(['base.en', 'medium.en', 'tiny.en', 'small.en']);
+  expect(row('base.en').textContent).toContain('Selected');
+  expect(row('base.en').textContent).toContain('Not downloaded');
+  expect(row('tiny.en').textContent).toContain('Incomplete');
+  expect(row('small.en').textContent).toContain('Verifying…');
+  expect(row('medium.en').textContent).toContain('Downloaded');
 });

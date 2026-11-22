@@ -1,4 +1,4 @@
-import { Search } from 'lucide-react';
+import { Download, Search, TriangleAlert } from 'lucide-react';
 import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
 import { ADVANCED_TARGETS, visibleSettingsTarget } from './settingsDisclosureRouting';
 import { SettingsChevron } from './SettingsChevron';
@@ -1259,29 +1259,42 @@ export const SettingsPanel = memo(function SettingsPanel({
                     ? 'warning' as const
                     : 'accent' as const,
                 }))}
-              />}><p className="text-xs text-on-surface-variant">
-                {modelHardwareGuidance
-                  ? modelGuidanceSummary(modelHardwareGuidance)
-                  : 'Larger models may improve accuracy but use more memory'}
-              </p>
+              />} description={modelHardwareGuidance
+                ? modelGuidanceSummary(modelHardwareGuidance)
+                : 'Larger models may improve accuracy but use more memory'}>
 {selectedModelMemoryWarning && (
                 <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-on-surface">
                   {selectedModelMemoryWarning}
                 </div>
               )}
 {isRecording && <p className="text-[length:var(--ui-font-caption)] text-primary">Stop recording before changing model.</p>}
+</SettingsRow>
 {modelAvailable === false && !installRunningElsewhere && modelDownload.phase === 'idle' && (
-                <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span data-testid="model-repair-message" className="min-w-0 flex-1">{needsRepair ? <>Model files are incomplete. <span className="whitespace-nowrap">Re-download</span> to repair.</> : 'Not downloaded yet'}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto shrink-0 whitespace-nowrap">{needsRepair ? 'Re-download' : 'Download'}</Button>
-                </div>
-              )}
-{modelDownload.phase === 'downloading' && (
-                <div>
-                  <div className="mb-1 flex justify-between text-xs text-on-surface-variant"><span>{modelDownloadLabel(modelDownload.progress)}</span><span>{downloadProgress === null ? 'Working…' : `${downloadProgress}%`}</span></div>
+              <div className="settings-notice" data-tone={needsRepair ? 'warning' : 'neutral'} data-testid="model-notice" role={needsRepair ? 'alert' : 'status'}>
+                {needsRepair ? <TriangleAlert aria-hidden="true" /> : <Download aria-hidden="true" />}
+                <p data-testid="model-repair-message">
+                  {needsRepair
+                    ? <>{selectedRuntime?.label} is incomplete, so dictation can’t run. <span className="whitespace-nowrap">Re-download</span> to fix it.</>
+                    : <>{selectedRuntime?.label ?? 'This model'} isn’t downloaded yet.</>}
+                </p>
+                <Button type="button" variant="primary" size="sm" onClick={() => void downloadModel()} className="shrink-0 whitespace-nowrap">{needsRepair ? 'Re-download' : 'Download'}</Button>
+              </div>
+            )}
+            {modelDownload.phase === 'downloading' && (
+              <div className="settings-notice" data-tone="neutral" data-testid="model-notice">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex justify-between text-[length:var(--ui-font-caption)] text-on-surface-variant"><span>{modelDownloadLabel(modelDownload.progress)}</span><span>{downloadProgress === null ? 'Working…' : `${downloadProgress}%`}</span></div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest"><div role="progressbar" aria-valuenow={downloadProgress ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-valuetext={downloadProgress === null ? 'Model installation in progress' : `Download progress: ${downloadProgress} percent`} className={`h-full rounded-full bg-primary ${downloadProgress === null ? 'model-download-indeterminate' : 'transition-all duration-200'}`} style={downloadProgress === null ? undefined : { width: `${downloadProgress}%` }} /></div>
                 </div>
-              )}
-{modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Retry</Button></div>}</SettingsRow>
+              </div>
+            )}
+            {modelDownload.phase === 'error' && (
+              <div className="settings-notice" data-tone="danger" data-testid="model-notice" role="alert">
+                <TriangleAlert aria-hidden="true" />
+                <p>{modelDownload.message}</p>
+                <Button type="button" variant="primary" size="sm" onClick={() => void downloadModel()} className="shrink-0 whitespace-nowrap">Retry</Button>
+              </div>
+            )}
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'English only — use Whisper Large Turbo for others' : 'Auto-detect picks the language each time'}</p></SettingsRow>
             <SettingsDisclosure title="Advanced" layout="rows">

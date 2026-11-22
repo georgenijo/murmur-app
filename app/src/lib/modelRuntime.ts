@@ -110,11 +110,11 @@ export function useModelRuntimeCatalog(enabled = true) {
 }
 
 /** Human-readable model status for user-facing copy; never show raw enum values. */
-export function modelStatusLabel(model: Pick<ModelRuntimeSnapshot, 'installState' | 'failurePresent'>): string {
+export function modelStatusLabel(model: Pick<ModelRuntimeSnapshot, 'installState' | 'failurePresent' | 'cacheIncomplete'>): string {
   if (model.installState === 'installing') return 'Downloading…';
   if (model.installState === 'validating') return 'Verifying…';
-  if (model.installState === 'invalid') return 'Needs re-download';
-  if (model.installState === 'notInstalled') return 'Not downloaded';
+  if (model.installState === 'invalid') return 'Incomplete';
+  if (model.installState === 'notInstalled') return model.cacheIncomplete ? 'Incomplete' : 'Not downloaded';
   return model.failurePresent ? 'Couldn’t load' : 'Downloaded';
 }
 

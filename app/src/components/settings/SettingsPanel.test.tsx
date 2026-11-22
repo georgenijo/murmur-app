@@ -259,7 +259,7 @@ describe('SettingsPanel information architecture', () => {
   it('offers Re-download for an incomplete cache and invokes download_model', async () => {
     runtimeMocks.models = [coreml({ cacheIncomplete: true })];
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 1 }));
-    expect(container.textContent).toContain('Model files are incomplete. Re-download to repair.');
+    expect(container.textContent).toContain('Parakeet Core ML is incomplete, so dictation can’t run. Re-download to fix it.');
     const button = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((candidate) => candidate.textContent === 'Re-download')!;
     await act(async () => button.click());
@@ -271,7 +271,7 @@ describe('SettingsPanel information architecture', () => {
     runtimeMocks.models = [coreml({ cacheIncomplete: false })];
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 1 }));
     expect(container.textContent).not.toContain('incomplete');
-    expect(container.textContent).toContain('Not downloaded yet');
+    expect(container.textContent).toContain('Parakeet Core ML isn’t downloaded yet.');
     const labels = Array.from(container.querySelectorAll('button')).map((candidate) => candidate.textContent);
     expect(labels).toContain('Download');
     expect(labels).not.toContain('Re-download');
@@ -280,7 +280,7 @@ describe('SettingsPanel information architecture', () => {
   it('does not offer Download while an install is already running', async () => {
     runtimeMocks.models = [coreml({ installState: 'installing', failurePresent: false })];
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 1 }));
-    expect(container.textContent).not.toContain('Not downloaded yet');
+    expect(container.textContent).not.toContain('Parakeet Core ML isn’t downloaded yet.');
     const labels = Array.from(container.querySelectorAll('button')).map((candidate) => candidate.textContent);
     expect(labels).not.toContain('Download');
     expect(labels).not.toContain('Re-download');
