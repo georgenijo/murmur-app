@@ -207,14 +207,15 @@ pub fn model_definition(model_name: &str) -> Result<&'static ModelDefinition, St
 /// Content-free classification of a model preparation failure for logs. The
 /// error text itself is never logged; only one of these fixed labels is.
 pub(crate) fn prepare_failure_kind(error: &str) -> &'static str {
-    if error.contains("not downloaded") || error.contains("not installed") {
+    if error.contains("not downloaded")
+        || error.contains("not installed")
+        || error.contains("not found")
+    {
         "not_installed"
     } else if error.starts_with("Unknown ") {
         "unknown_model"
     } else if error.starts_with("Failed to load") || error.contains("FluidAudio initialized") {
         "load_failed"
-    } else if error.contains("Could not") && error.contains("Core ML") {
-        "cache_unavailable"
     } else {
         "other"
     }
@@ -258,6 +259,20 @@ pub fn create_backend(model_name: &str) -> Result<Box<dyn TranscriptionBackend>,
                 Err("Core ML transcription requires Apple Silicon macOS".to_string())
             }
         }
+    }
+}
+
+fn cache_incomplete_signal(definition: &ModelDefinition, install_state: InstallState) -> bool {
+    if install_state == InstallState::Installed || definition.install_kind != InstallKind::Coreml {
+        return false;
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::transcriber::coreml::model_cache_incomplete(definition.model_name)
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        false
     }
 }
 
@@ -357,6 +372,9 @@ pub struct ModelRuntimeSnapshot {
     pub install_state: InstallState,
     pub lifecycle_state: LifecycleState,
     pub failure_present: bool,
+    /// The model is not installed but left an incomplete cache behind. Only a
+    /// real on-disk signal sets this; a failed warm-up alone never does.
+    pub cache_incomplete: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -444,6 +462,7 @@ impl ModelRuntimeManager {
             .copied()
             .unwrap_or_default();
         let supported = model_supported(definition);
+        let install_state = self.current_install_state(model_name);
         Ok(ModelRuntimeSnapshot {
             generation: self.generation.load(Ordering::SeqCst),
             model_name: definition.model_name.to_string(),
@@ -455,9 +474,10 @@ impl ModelRuntimeManager {
             supported_platforms: supported_platforms(definition),
             supported,
             unavailable_reason: (!supported).then_some("unsupportedPlatform"),
-            install_state: self.current_install_state(model_name),
+            install_state,
             lifecycle_state: status.lifecycle,
             failure_present: status.failure_present,
+            cache_incomplete: cache_incomplete_signal(definition, install_state),
         })
     }
 
@@ -594,6 +614,17 @@ impl ModelRuntimeManager {
         self.install_states
             .lock_or_recover()
             .insert(model_name.to_string(), state);
+        if state == InstallState::Installed {
+            // A failed warm-up from before the (re)install describes files that
+            // no longer exist; do not keep reporting it for the repaired model.
+            let mut statuses = self.statuses.lock_or_recover();
+            if statuses
+                .get(model_name)
+                .is_some_and(|status| status.failure_present)
+            {
+                statuses.remove(model_name);
+            }
+        }
         self.publish(app, model_name, "installStateChanged")
     }
 
@@ -1563,13 +1594,53 @@ mod tests {
     }
 
     #[test]
-    fn prepare_failure_kind_is_a_fixed_label() {
+    fn prepare_failure_kind_covers_the_real_missing_model_errors() {
+        let whisper = crate::transcriber::whisper::get_model_path("no-such-model").unwrap_err();
+        assert_eq!(prepare_failure_kind(&whisper), "not_installed");
+        let parakeet = crate::transcriber::parakeet::bundle_missing_error(
+            "bundle",
+            std::path::Path::new("/tmp/x"),
+        );
+        assert_eq!(prepare_failure_kind(&parakeet), "not_installed");
         assert_eq!(
-            prepare_failure_kind("Core ML model is not downloaded. Open Settings to download it."),
+            prepare_failure_kind(crate::transcriber::coreml::NOT_DOWNLOADED_MESSAGE),
             "not_installed"
         );
-        assert_eq!(prepare_failure_kind("Unknown Core ML model 'x'"), "unknown_model");
-        assert_eq!(prepare_failure_kind("Failed to load Core ML model: /Users/a/b"), "load_failed");
-        assert_eq!(prepare_failure_kind("something with /private/path"), "other");
+        assert_eq!(
+            prepare_failure_kind("Unknown Core ML model 'x'"),
+            "unknown_model"
+        );
+        assert_eq!(
+            prepare_failure_kind("Failed to load Core ML model: boom"),
+            "load_failed"
+        );
+        assert_eq!(prepare_failure_kind("something else"), "other");
+    }
+
+    #[test]
+    fn successful_install_clears_a_failure_left_by_an_earlier_warm_up() {
+        let manager = ModelRuntimeManager::default();
+        manager
+            .set_lifecycle(None, "base.en", LifecycleState::Failed, true, "startupWarm")
+            .unwrap();
+        assert!(manager.snapshot("base.en").unwrap().failure_present);
+        manager
+            .set_install_state(None, "base.en", InstallState::Installed)
+            .unwrap();
+        let snapshot = manager.snapshot("base.en").unwrap();
+        assert!(!snapshot.failure_present);
+        assert_eq!(snapshot.lifecycle_state, LifecycleState::Unloaded);
+    }
+
+    #[test]
+    fn incomplete_cache_signal_is_never_set_for_installed_or_non_coreml_models() {
+        let whisper = model_definition("base.en").unwrap();
+        assert!(!cache_incomplete_signal(
+            whisper,
+            InstallState::NotInstalled
+        ));
+        assert!(!cache_incomplete_signal(whisper, InstallState::Invalid));
+        let coreml = model_definition("parakeet-tdt-0.6b-v3-coreml").unwrap();
+        assert!(!cache_incomplete_signal(coreml, InstallState::Installed));
     }
 }

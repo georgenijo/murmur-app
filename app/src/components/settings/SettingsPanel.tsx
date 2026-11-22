@@ -35,7 +35,7 @@ import {
 import { setPasteLastShortcut } from '../../lib/deliveryRecovery';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
-import { modelNeedsRepair, modelStatusLabel, useModelRuntimeCatalog } from '../../lib/modelRuntime';
+import { modelInstallInProgress, modelNeedsRepair, modelStatusLabel, useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
   modelGuidanceSummary,
   modelMemoryWarning,
@@ -663,6 +663,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     : null;
   const modelAvailable = selectedRuntime ? selectedRuntime.installState === 'installed' : null;
   const needsRepair = selectedRuntime ? modelNeedsRepair(selectedRuntime) : false;
+  const installRunningElsewhere = selectedRuntime ? modelInstallInProgress(selectedRuntime) : false;
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
     | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -1269,9 +1270,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               )}
 {isRecording && <p className="text-[length:var(--ui-font-caption)] text-primary">Stop recording before changing model.</p>}
-{modelAvailable === false && modelDownload.phase === 'idle' && (
+{modelAvailable === false && !installRunningElsewhere && modelDownload.phase === 'idle' && (
                 <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span data-testid="model-repair-message">{needsRepair ? <>Model files are incomplete. <span className="whitespace-nowrap">Re-download</span> to repair.</> : 'Not downloaded yet'}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto shrink-0 whitespace-nowrap">{needsRepair ? 'Re-download' : 'Download'}</Button>
+                  <span data-testid="model-repair-message" className="min-w-0 flex-1">{needsRepair ? <>Model files are incomplete. <span className="whitespace-nowrap">Re-download</span> to repair.</> : 'Not downloaded yet'}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto shrink-0 whitespace-nowrap">{needsRepair ? 'Re-download' : 'Download'}</Button>
                 </div>
               )}
 {modelDownload.phase === 'downloading' && (

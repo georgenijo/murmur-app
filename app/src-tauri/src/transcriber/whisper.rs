@@ -65,7 +65,7 @@ pub(crate) fn get_model_search_paths() -> Vec<PathBuf> {
 }
 
 /// Get the path to a specific model file, searching multiple locations.
-fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
+pub(crate) fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
     let filename = format!("ggml-{}.bin", model_name);
     let search_paths = get_model_search_paths();
 

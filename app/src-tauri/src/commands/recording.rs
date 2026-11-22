@@ -2595,7 +2595,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
                 model = model_name.as_str(),
                 total_ms,
                 failed = true,
-                reason = model_runtime::prepare_failure_kind(&error),
+                failure_kind = model_runtime::prepare_failure_kind(&error),
                 "model_prepare_failed"
             ),
         }

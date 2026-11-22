@@ -66,6 +66,14 @@ impl ParakeetVariant {
 /// fp16 (non-quantized) + greedy was the accuracy/speed sweet spot in testing
 /// (int8 lost accuracy, beam was a no-op). Add rows here — plus matching
 /// `MODEL_OPTIONS` entries in settings.ts — to expose more variants.
+pub(crate) fn bundle_missing_error(dir: &str, path: &Path) -> String {
+    format!(
+        "Parakeet model bundle '{}' not found or incomplete at {}",
+        dir,
+        path.display()
+    )
+}
+
 fn variant_for(model_name: &str) -> Option<ParakeetVariant> {
     match model_name {
         "parakeet-tdt-0.6b-v2-fp16" => Some(ParakeetVariant {
@@ -161,11 +169,7 @@ impl TranscriptionBackend for ParakeetBackend {
         let models_dir = self.models_dir()?;
         let model_dir = models_dir.join(variant.dir);
         if !variant.is_complete(&models_dir) {
-            return Err(format!(
-                "Parakeet model bundle '{}' not found or incomplete at {}",
-                variant.dir,
-                model_dir.display()
-            ));
+            return Err(bundle_missing_error(variant.dir, &model_dir));
         }
 
         let to_str = |p: PathBuf| -> Result<String, String> {

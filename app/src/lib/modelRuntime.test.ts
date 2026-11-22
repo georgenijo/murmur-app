@@ -1,4 +1,4 @@
-import { modelNeedsRepair, modelStatusLabel } from './modelRuntime';
+import { modelInstallInProgress, modelNeedsRepair, modelStatusLabel } from './modelRuntime';
 import { describe, expect, it } from 'vitest';
 import { applyRuntimeUpdate, type ModelRuntimeSnapshot } from './modelRuntime';
 
@@ -41,14 +41,22 @@ describe('model runtime updates', () => {
   });
 });
 
-it('flags partial or failed Core ML installs for repair and keeps status copy readable', () => {
-  expect(modelNeedsRepair({ installState: 'notInstalled', failurePresent: true })).toBe(true);
-  expect(modelNeedsRepair({ installState: 'invalid', failurePresent: false })).toBe(true);
-  expect(modelNeedsRepair({ installState: 'notInstalled', failurePresent: false })).toBe(false);
-  expect(modelNeedsRepair({ installState: 'installed', failurePresent: false })).toBe(false);
+it('shows repair copy only for an incomplete cache or an invalid install', () => {
+  expect(modelNeedsRepair({ installState: 'notInstalled', cacheIncomplete: true })).toBe(true);
+  expect(modelNeedsRepair({ installState: 'invalid', cacheIncomplete: false })).toBe(true);
+  // Never downloaded or cleanly removed, even after a failed warm-up: neutral copy.
+  expect(modelNeedsRepair({ installState: 'notInstalled', cacheIncomplete: false })).toBe(false);
+  expect(modelNeedsRepair({ installState: 'notInstalled' })).toBe(false);
+  expect(modelNeedsRepair({ installState: 'installed', cacheIncomplete: true })).toBe(false);
+});
+
+it('keeps status copy readable for every install state', () => {
   for (const installState of ['notInstalled', 'installing', 'validating', 'installed', 'invalid'] as const) {
     for (const failurePresent of [true, false]) {
       expect(modelStatusLabel({ installState, failurePresent })).not.toMatch(/notInstalled|validating|invalid|failed/);
     }
   }
+  expect(modelInstallInProgress({ installState: 'installing' })).toBe(true);
+  expect(modelInstallInProgress({ installState: 'validating' })).toBe(true);
+  expect(modelInstallInProgress({ installState: 'notInstalled' })).toBe(false);
 });

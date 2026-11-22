@@ -46,7 +46,15 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../../lib/soundCues', () => ({ playSoundCue: soundCueMock }));
-vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
+const runtimeMocks = vi.hoisted(() => ({ models: [] as Array<Record<string, unknown>> }));
+vi.mock('../../lib/modelRuntime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../lib/modelRuntime')>(),
+  useModelRuntimeCatalog: () => ({
+    models: runtimeMocks.models,
+    byName: new Map(runtimeMocks.models.map((model) => [model.modelName as string, model])),
+    error: null,
+  }),
+}));
 vi.mock('../../lib/modelHardwareGuidance', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../lib/modelHardwareGuidance')>(),
   useModelHardwareGuidance: () => guidanceMocks.current,
@@ -78,6 +86,7 @@ beforeEach(() => {
   coreMocks.notchPillInstalled = false;
   coreMocks.notchPillDetectionError = false;
   coreMocks.invoke.mockReset();
+  runtimeMocks.models = [];
   guidanceMocks.current = {
     schemaVersion: 1,
     chip: 'Apple M5 Pro',
@@ -237,6 +246,44 @@ describe('SettingsPanel information architecture', () => {
     expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
     expect(Array.from(list.children).every(element => element.firstElementChild?.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
+  });
+
+  const coreml = (extra: Record<string, unknown> = {}) => ({
+    generation: 1, modelName: 'parakeet-tdt-0.6b-v3-coreml', label: 'Parakeet Core ML', size: '~470 MB',
+    backend: 'coreml', accelerator: 'Apple Neural Engine', supported: true, unavailableReason: null,
+    supportedPlatforms: ['macos'], installState: 'notInstalled', lifecycleState: 'failed', failurePresent: true,
+    cacheIncomplete: false,
+    capabilities: { multilingual: true }, ...extra,
+  });
+
+  it('offers Re-download for an incomplete cache and invokes download_model', async () => {
+    runtimeMocks.models = [coreml({ cacheIncomplete: true })];
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 1 }));
+    expect(container.textContent).toContain('Model files are incomplete. Re-download to repair.');
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((candidate) => candidate.textContent === 'Re-download')!;
+    await act(async () => button.click());
+    expect(coreMocks.invoke).toHaveBeenCalledWith('download_model', { modelName: 'parakeet-tdt-0.6b-v3-coreml' });
+    for (const raw of ['notInstalled', 'coreml /', 'failed']) expect(container.textContent).not.toContain(raw);
+  });
+
+  it('keeps neutral Not downloaded copy when a failed warm-up left no cache behind', async () => {
+    runtimeMocks.models = [coreml({ cacheIncomplete: false })];
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 1 }));
+    expect(container.textContent).not.toContain('incomplete');
+    expect(container.textContent).toContain('Not downloaded yet');
+    const labels = Array.from(container.querySelectorAll('button')).map((candidate) => candidate.textContent);
+    expect(labels).toContain('Download');
+    expect(labels).not.toContain('Re-download');
+  });
+
+  it('does not offer Download while an install is already running', async () => {
+    runtimeMocks.models = [coreml({ installState: 'installing', failurePresent: false })];
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 1 }));
+    expect(container.textContent).not.toContain('Not downloaded yet');
+    const labels = Array.from(container.querySelectorAll('button')).map((candidate) => candidate.textContent);
+    expect(labels).not.toContain('Download');
+    expect(labels).not.toContain('Re-download');
   });
 
   it('labels back buttons with their parent page names', async () => {

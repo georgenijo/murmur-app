@@ -20,6 +20,9 @@ const REQUIRED_MODELS: &[&str] = &[
 ];
 const VOCAB_FILE: &str = "parakeet_vocab.json";
 const REPAIR_MARKER: &str = ".murmur-coreml-repair-pending-v1";
+/// Returned by `load_model` when the cache is missing or incomplete.
+pub(crate) const NOT_DOWNLOADED_MESSAGE: &str =
+    "Core ML model is not downloaded. Open Settings to download it.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelPreparationPhase {
@@ -155,6 +158,12 @@ where
     Ok(())
 }
 
+/// True when the cache directory exists but is not a complete model. A model that
+/// was never downloaded, or was cleanly removed, has no directory and is false.
+pub(crate) fn model_cache_incomplete(model_name: &str) -> bool {
+    is_coreml_model(model_name) && model_dir().as_deref().is_some_and(cache_requires_repair)
+}
+
 pub fn specific_model_exists(model_name: &str) -> bool {
     #[cfg(debug_assertions)]
     if std::env::var("MURMUR_COREML_FORCE_NOT_INSTALLED").as_deref() == Ok("1") {
@@ -281,9 +290,7 @@ impl TranscriptionBackend for CoreMlBackend {
             return Err(format!("Unknown Core ML model '{model_name}'"));
         }
         if !specific_model_exists(model_name) {
-            return Err(
-                "Core ML model is not downloaded. Open Settings to download it.".to_string(),
-            );
+            return Err(NOT_DOWNLOADED_MESSAGE.to_string());
         }
 
         self.reset();

@@ -503,7 +503,7 @@ mockIPC((command, payload) => {
         installState: 'notInstalled', lifecycleState: 'unloaded', failurePresent: false, ...extra,
       });
       return [
-        row('parakeet-tdt-0.6b-v3-coreml', 'Parakeet Core ML', '~470 MB', { backend: 'coreml', accelerator: 'Apple Neural Engine', lifecycleState: 'failed', failurePresent: true }),
+        row('parakeet-tdt-0.6b-v3-coreml', 'Parakeet Core ML', '~470 MB', { backend: 'coreml', accelerator: 'Apple Neural Engine', lifecycleState: 'failed', failurePresent: true, cacheIncomplete: true }),
         row('whisper-tiny.en', 'Whisper Tiny (English)', '~75 MB'),
         row('whisper-base.en', 'Whisper Base (English)', '~150 MB', { installState: 'installed' }),
       ];

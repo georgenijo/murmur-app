@@ -41,6 +41,8 @@ export interface ModelRuntimeSnapshot {
   installState: ModelInstallState;
   lifecycleState: ModelLifecycleState;
   failurePresent: boolean;
+  /** Not installed, but an incomplete cache is on disk. Never set by a failed warm-up alone. */
+  cacheIncomplete?: boolean;
 }
 
 export function getModelRuntimeCatalog(): Promise<ModelRuntimeSnapshot[]> {
@@ -117,11 +119,16 @@ export function modelStatusLabel(model: Pick<ModelRuntimeSnapshot, 'installState
 }
 
 /**
- * A model that is not usable but left files behind (partial cache) or whose last
- * preparation failed needs a repair. Downloading again runs the installer, which
- * clears the incomplete cache first, so the action is "Re-download".
+ * Repair copy is for a real on-disk signal (an incomplete cache) or an install
+ * that ended invalid. A never-downloaded or cleanly removed model, even after a
+ * failed warm-up, is just "Not downloaded".
  */
-export function modelNeedsRepair(model: Pick<ModelRuntimeSnapshot, 'installState' | 'failurePresent'>): boolean {
+export function modelNeedsRepair(model: Pick<ModelRuntimeSnapshot, 'installState' | 'cacheIncomplete'>): boolean {
   return model.installState === 'invalid'
-    || (model.installState === 'notInstalled' && model.failurePresent);
+    || (model.installState === 'notInstalled' && model.cacheIncomplete === true);
+}
+
+/** An install is already running (possibly started before this panel mounted). */
+export function modelInstallInProgress(model: Pick<ModelRuntimeSnapshot, 'installState'>): boolean {
+  return model.installState === 'installing' || model.installState === 'validating';
 }
