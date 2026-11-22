@@ -1467,14 +1467,35 @@ fn start_cpal(
     Ok((CaptureStream::Cpal(stream), rate))
 }
 
-/// Passive reads only: inventory, raw UIDs, and current default. Never asks
-/// Core Audio for an Audio Unit, stream format, or input stream. Retained only
-/// until the separate confirmed Start command, within the host's request TTL.
+/// Passive reads only: inventory, raw UIDs, and current default. Never binds a
+/// device, opens a stream, or touches input. Retained only until the separate
+/// confirmed Start command, within the host's request TTL.
+///
+/// It may also hold one component instance that was created but never
+/// initialized, bound to a device, or started (`prewarm_audio_unit`). Creating
+/// the HAL output component is the first Core Audio call of the process and
+/// costs 18-30 ms; it touches no hardware, no input, and cannot present a TCC
+/// prompt, so it is paid here instead of after the confirmed Start.
 struct PassiveInput {
     devices: Vec<(AudioDeviceID, Option<String>)>,
     default_device: Option<AudioDeviceID>,
+    prewarmed_unit: Option<AudioUnit>,
 }
+
+/// Create the uninitialized HAL output instance a prepared Start will adopt.
+/// A failure is not reported here: the confirmed Start creates its own and
+/// reports `StreamOpenFailed` through the ordinary setup bracket.
+fn prewarm_audio_unit() -> Option<AudioUnit> {
+    AudioUnit::new_uninitialized(IOType::HalOutput).ok()
+}
+
 impl PassiveInput {
+    fn set_prewarmed_unit(&mut self, unit: Option<AudioUnit>) {
+        self.prewarmed_unit = unit;
+    }
+    fn take_prewarmed_unit(&mut self) -> Option<AudioUnit> {
+        self.prewarmed_unit.take()
+    }
     fn lookup() -> Result<Self, ()> {
         Self::lookup_with(
             microphone_authorization_granted(),
@@ -1506,6 +1527,7 @@ impl PassiveInput {
         Ok(Self {
             devices,
             default_device: default_device(),
+            prewarmed_unit: None,
         })
     }
     fn resolve(
@@ -1611,13 +1633,14 @@ fn start_auhal_resolved(
     ring: Arc<SpscRing>,
     callback_clock: Option<Arc<CallbackClock>>,
     emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
-    prepared: Option<&PassiveInput>,
+    prepared: Option<&mut PassiveInput>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
     emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Entered,
     ))?;
     let (device, evidence) = prepared
+        .as_deref()
         .and_then(|p| p.resolve(requested))
         .unwrap_or_else(|| resolve_auhal_input(requested));
     emit(MicrophoneSetupObservation::InputResolution(evidence))?;
@@ -1637,9 +1660,16 @@ fn start_auhal_resolved(
     // The owning uninitialized constructor disposes the instance on all error
     // paths. Do not transmute a raw handle into coreaudio-rs's private layout.
     // Preserve the old executable order: initialize BEFORE setting IO/device/
-    // format. This runs only after confirmed Start, never in PrepareInput.
-    let mut unit = AudioUnit::new_uninitialized(IOType::HalOutput)
-        .map_err(|_| FailureCode::StreamOpenFailed)?;
+    // format. Initialization and every later step run only after confirmed
+    // Start, never in PrepareInput; only the bare instance may be prewarmed.
+    // A prepared helper already paid for the instance while it waited for this
+    // Start, so this bracket is near zero there. The unit is device-independent:
+    // it is adopted even when the prepared device resolution was discarded.
+    let mut unit = match prepared.and_then(PassiveInput::take_prewarmed_unit) {
+        Some(unit) => unit,
+        None => AudioUnit::new_uninitialized(IOType::HalOutput)
+            .map_err(|_| FailureCode::StreamOpenFailed)?,
+    };
     emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitNew,
         SetupTransition::Completed,
@@ -2835,6 +2865,7 @@ mod tests {
                 5,
                 nonce,
                 || Ok(passive_fixture()),
+                || None,
             );
             let mut frames = output.as_slice();
             assert_eq!(
@@ -2860,12 +2891,73 @@ mod tests {
             &mut output,
             5,
             nonce,
-            || Err(())
+            || Err(()),
+            || panic!("a failed lookup must not prewarm anything"),
         )
         .is_err());
         assert!(
             output.is_empty(),
             "failed resolution cannot publish an adoptable helper"
+        );
+    }
+
+    /// Counts what the preparation wrote, so a hook can tell whether the ack
+    /// had already been published when it ran.
+    struct CountingWriter {
+        bytes: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes.set(self.bytes.get() + buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn audio_unit_prewarm_runs_after_the_preparation_ack_and_before_start() {
+        let nonce = [9; 16];
+        let mut input = Vec::new();
+        write_production_control(
+            &mut input,
+            5,
+            nonce,
+            &ProductionHostMessage::Start {
+                device_id: None,
+                backend: CaptureBackend::Auhal,
+            },
+        )
+        .unwrap();
+        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen_at_prewarm = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut output = CountingWriter {
+            bytes: bytes.clone(),
+        };
+        let seen = seen_at_prewarm.clone();
+        let observed = bytes.clone();
+        let (_, prepared) = prepare_input_command(
+            ProductionHostMessage::PrepareInput,
+            &mut input.as_slice(),
+            &mut output,
+            5,
+            nonce,
+            || Ok(passive_fixture()),
+            move || {
+                seen.set(Some(observed.get()));
+                None
+            },
+        )
+        .unwrap();
+        assert!(
+            seen_at_prewarm.get().is_some_and(|written| written > 0),
+            "the ack must be published before the instance is created"
+        );
+        let mut prepared = prepared.unwrap();
+        assert!(
+            prepared.take_prewarmed_unit().is_none(),
+            "a failed prewarm leaves nothing to adopt; Start creates its own"
         );
     }
 
@@ -3572,11 +3664,12 @@ fn prepare_input_command(
     capture_id: u64,
     nonce: SessionNonce,
     lookup: impl FnOnce() -> Result<PassiveInput, ()>,
+    prewarm: impl FnOnce() -> Option<AudioUnit>,
 ) -> Result<(ProductionHostMessage, Option<PassiveInput>), ()> {
     if command != ProductionHostMessage::PrepareInput {
         return Ok((command, None));
     }
-    let prepared = lookup()?;
+    let mut prepared = lookup()?;
     write_production_control(
         output,
         capture_id,
@@ -3584,6 +3677,9 @@ fn prepare_input_command(
         &ProductionHelperMessage::InputPrepared,
     )
     .map_err(|_| ())?;
+    // After the ack, so the host's preparation is never delayed by it. A Start
+    // that arrives meanwhile waits in the pipe and finds the unit ready.
+    prepared.set_prewarmed_unit(prewarm());
     // Only a separate confirmed Start can open capture. EOF, cancel, and all
     // other feature commands exit without any Audio Unit or production run.
     let command = read_control(input, capture_id, nonce)?;
@@ -3618,13 +3714,14 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
     )
     .map_err(|_| ())?;
     let command = read_control(&mut stdin, capture_id, nonce)?;
-    let (command, prepared_input) = prepare_input_command(
+    let (command, mut prepared_input) = prepare_input_command(
         command,
         &mut stdin,
         &mut stdout,
         capture_id,
         nonce,
         PassiveInput::lookup,
+        prewarm_audio_unit,
     )?;
     let (command, automatic_deadline, preauthorized) = match command {
         ProductionHostMessage::StartAutomaticProbe {
@@ -3786,7 +3883,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                             Arc::clone(&ring),
                             None,
                             &mut emit_setup,
-                            prepared_input.as_ref(),
+                            prepared_input.as_mut(),
                         ),
                     },
                 }

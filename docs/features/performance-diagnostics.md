@@ -484,9 +484,12 @@ In Double Tap or Both mode, a first clean release of the double-tap key may
 silently prepare an idle capture helper. Preparation verifies its signature,
 spawns it, completes hello, then sends a distinct `PrepareInput` command for
 bounded, nonopening HAL input-UID/default lookup. Both host and helper require
-an existing microphone grant; neither requests permission. No Audio Unit is
-created, configured, initialized, or started, no Start is sent, and no PCM or
-Murmur UI exists before confirmation. The contract is indicator- and prompt-free;
+an existing microphone grant; neither requests permission. After acknowledging
+the lookup, the helper creates one bare HAL output component instance
+(`AudioComponentInstanceNew`, the process's first Core Audio call, 18-30 ms)
+that a confirmed AUHAL Start adopts. No Audio Unit is initialized, configured,
+bound to a device, or started, no Start is sent, and no PCM or Murmur UI exists
+before confirmation. The contract is indicator- and prompt-free;
 final native interaction on the rebuilt signed helper must verify that contract.
 Preparation runs only while audio is idle, with no dictation starting/recording
 and no live standby. Admission and the preparation-slot claim hold the same
@@ -544,7 +547,9 @@ clears them, so a fallback never mixes steps from two backends. The helper
 duration fields still sum across attempts. Older records omit these five fields
 and `helperPreparation`. A missing value is unavailable, never zero.
 
-All AUHAL brackets run after confirmed Start. Creation uses the pinned safe
+All AUHAL brackets run after confirmed Start. For an adopted prepared helper the
+`AudioUnitNew` bracket only takes the prewarmed instance, so `audioUnitNewMs` is
+near zero there; a notPrepared start still pays the creation inside it. Creation uses the pinned safe
 owning `coreaudio-rs 0.14.2` uninitialized constructor; its separate `initialize`
 call immediately follows, preserving the old new → initialize → IO/device/format
 configuration → callback → start order. The legacy HAL inventory helpers stay
