@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { loadSettings } from '../settings';
+import { getModelRuntimeStatus, type ModelRuntimeSnapshot } from '../modelRuntime';
 import type { DictationStatus } from '../types';
 import {
   HOTKEY_MISS_FLASH_MS,
@@ -22,6 +23,15 @@ import {
   smartDestinationSelectionFromPayload,
   type SmartDestinationSelection,
 } from '../smartDestination';
+
+import {
+  MODEL_UNAVAILABLE_EVENT,
+  MODEL_UNAVAILABLE_FLASH_MS,
+  modelCueRepaired,
+  modelUnavailableFromPayload,
+  type ModelUnavailableCue,
+  type ModelUnavailableReason,
+} from '../modelUnavailable';
 
 const CANCELLED_FLASH_MS = 800;
 /** How long the secure-field refusal flash shows (issue #312 PR-C2). */
@@ -120,6 +130,14 @@ export interface OverlayRuntime {
    */
   /** Bounded, content-free microphone-initialization failure cue. */
   showMicrophoneFailure: MicrophoneFailureCue | null;
+  /** The selected speech model cannot serve a dictation (content-free). */
+  modelUnavailable: ModelUnavailableReason | null;
+  /**
+   * Re-checks the cue against the live runtime when the pill is clicked: true
+   * when the model is still unusable (open Settings), false when it was repaired
+   * or switched in the meantime (the cue is cleared and the click falls through).
+   */
+  confirmModelUnavailable: () => Promise<boolean>;
   /** A bounded inline delivery cue is visible. */
   showClipboardOnly: boolean;
   /** Current inline delivery result, kept content-free. */
@@ -161,6 +179,10 @@ export function useOverlayRuntime({
   const [showCancelled, setShowCancelled] = useState(false);
   const [showMicrophoneFailure, setShowMicrophoneFailure] =
     useState<MicrophoneFailureCue | null>(null);
+  const [modelCue, setModelCue] = useState<ModelUnavailableCue | null>(null);
+  const modelCueRef = useRef<ModelUnavailableCue | null>(null);
+  const modelUnavailable = modelCue?.reason ?? null;
+  const modelUnavailableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [deliveryCue, setDeliveryCue] = useState<OverlayDeliveryCue | null>(null);
   const [smartDestinationSelection, setSmartDestinationSelection] =
     useState<SmartDestinationSelection | null>(null);
@@ -485,7 +507,125 @@ export function useOverlayRuntime({
     microphoneFailureTimerRef.current = null;
     microphoneFailureRecordingIdRef.current = 0;
     setShowMicrophoneFailure(null);
+    // A model refusal leaves the app idle; any new active lifecycle (a start
+    // that got past the model gate) supersedes it. A transcribe-time signal
+    // arrives after `processing` began, so it is set after this runs.
+    if (status !== 'processing') {
+      if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+      modelUnavailableTimerRef.current = null;
+      modelCueRef.current = null;
+      setModelCue(null);
+    }
   }, [status]);
+
+  const clearModelCue = useCallback(() => {
+    if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+    modelUnavailableTimerRef.current = null;
+    modelCueRef.current = null;
+    setModelCue(null);
+  }, []);
+
+  // The cue ends when its model is repaired (a runtime snapshot says installed)
+  // or another model is selected (the settings change, or the newly selected
+  // model reports its own state), not only when the 8 s timer runs out.
+  useEffect(() => {
+    let cancelled = false;
+    const unlistens: (() => void)[] = [];
+    const selectedModel = (): string | null => {
+      try {
+        const model = loadSettings().model;
+        return typeof model === 'string' ? model : null;
+      } catch {
+        return null;
+      }
+    };
+    listen<ModelRuntimeSnapshot>('model-runtime-status-changed', (event) => {
+      const cue = modelCueRef.current;
+      const snapshot = event.payload;
+      if (cancelled || !cue || !snapshot || typeof snapshot.modelName !== 'string') return;
+      if (cue.model === null || snapshot.modelName === cue.model) {
+        if (modelCueRepaired(cue, snapshot)) clearModelCue();
+        return;
+      }
+      // A snapshot for another model: it matters only if that model is now the
+      // selected one.
+      if (snapshot.modelName === selectedModel()) clearModelCue();
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    }).catch(() => {});
+    listen<unknown>('settings-changed', () => {
+      const cue = modelCueRef.current;
+      const selected = selectedModel();
+      if (!cancelled && cue && cue.model !== null && selected !== null && selected !== cue.model) {
+        clearModelCue();
+      }
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      unlistens.forEach((fn) => fn());
+    };
+  }, [clearModelCue]);
+
+  const confirmModelUnavailable = useCallback(async (): Promise<boolean> => {
+    const cue = modelCueRef.current;
+    if (!cue) return false;
+    if (cue.model === null) return true;
+    try {
+      const live = await getModelRuntimeStatus(cue.model);
+      if (modelCueRef.current !== cue) return false;
+      if (modelCueRepaired(cue, live)) {
+        clearModelCue();
+        return false;
+      }
+    } catch {
+      // The runtime is unreachable: keep the cue and open Settings.
+    }
+    const selected = (() => {
+      try {
+        const model = loadSettings().model;
+        return typeof model === 'string' ? model : null;
+      } catch {
+        return null;
+      }
+    })();
+    if (selected !== null && selected !== cue.model) {
+      clearModelCue();
+      return false;
+    }
+    return modelCueRef.current === cue;
+  }, [clearModelCue]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>(MODEL_UNAVAILABLE_EVENT, (event) => {
+      if (cancelled) return;
+      const cue = modelUnavailableFromPayload(event.payload);
+      if (!cue) return;
+      if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+      modelCueRef.current = cue;
+      setModelCue(cue);
+      modelUnavailableTimerRef.current = setTimeout(() => {
+        if (!cancelled) {
+          modelCueRef.current = null;
+          setModelCue(null);
+        }
+        modelUnavailableTimerRef.current = null;
+      }, MODEL_UNAVAILABLE_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    }).catch(() => {
+      // Non-Tauri previews do not expose the native event bridge.
+    });
+    return () => {
+      cancelled = true;
+      if (modelUnavailableTimerRef.current) clearTimeout(modelUnavailableTimerRef.current);
+      modelUnavailableTimerRef.current = null;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -553,6 +693,8 @@ export function useOverlayRuntime({
   return {
     showCancelled,
     showMicrophoneFailure,
+    modelUnavailable,
+    confirmModelUnavailable,
     showClipboardOnly: deliveryCue !== null,
     deliveryCue,
     smartDestinationStatus: smartDestinationSelection?.status ?? null,

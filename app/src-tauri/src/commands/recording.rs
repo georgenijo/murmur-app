@@ -4587,43 +4587,60 @@ async fn run_transcription_pipeline(
     let t_backend = std::time::Instant::now();
     gaps.pre_backend_us = micros_between(t_after_vad, t_backend);
     let mut decode_ended_at = None;
-    let (transcription_attempt, load_report) = app_state.model_runtime.with_ready_backend(
-        Some(app_handle),
-        &transcription.model_name,
-        PreparationReason::Pipeline,
-        |backend| {
-            let decode_started = std::time::Instant::now();
-            gaps.backend_acquire_us = micros_between(t_backend, decode_started);
-            // Take only after acquiring the backend: a preview decode that was
-            // running holds it, so by now it has finished and committed or not.
-            let reuse_plan = take_stream_reuse_plan(
-                app_state,
-                transcription,
-                recording_id,
-                final_bounds.as_deref(),
-                &samples_for_transcription,
-            );
-            let result = decode_final_transcript(
-                backend,
-                transcription,
-                &samples_for_transcription,
-                samples,
-                vad_trimmed,
-                reuse_plan,
-            )
-            .map(|decoded| {
-                if let Some(outcome) = &decoded.reuse {
-                    crate::stream_reuse::emit_outcome(recording_id, outcome);
-                }
-                decoded.attempt
-            });
-            decode_ms = decode_started.elapsed().as_millis() as u64;
-            let decode_ended = std::time::Instant::now();
-            gaps.backend_decode_us = micros_between(decode_started, decode_ended);
-            decode_ended_at = Some(decode_ended);
-            result
-        },
-    )?;
+    let mut decode_errored = false;
+    let (transcription_attempt, load_report) = app_state
+        .model_runtime
+        .with_ready_backend(
+            Some(app_handle),
+            &transcription.model_name,
+            PreparationReason::Pipeline,
+            |backend| {
+                let decode_started = std::time::Instant::now();
+                gaps.backend_acquire_us = micros_between(t_backend, decode_started);
+                // Take only after acquiring the backend: a preview decode that was
+                // running holds it, so by now it has finished and committed or not.
+                let reuse_plan = take_stream_reuse_plan(
+                    app_state,
+                    transcription,
+                    recording_id,
+                    final_bounds.as_deref(),
+                    &samples_for_transcription,
+                );
+                let result = decode_final_transcript(
+                    backend,
+                    transcription,
+                    &samples_for_transcription,
+                    samples,
+                    vad_trimmed,
+                    reuse_plan,
+                )
+                .map(|decoded| {
+                    if let Some(outcome) = &decoded.reuse {
+                        crate::stream_reuse::emit_outcome(recording_id, outcome);
+                    }
+                    decoded.attempt
+                });
+                decode_ms = decode_started.elapsed().as_millis() as u64;
+                let decode_ended = std::time::Instant::now();
+                gaps.backend_decode_us = micros_between(decode_started, decode_ended);
+                decode_ended_at = Some(decode_ended);
+                // An error from here is a decode error, not a preparation error.
+                decode_errored = result.is_err();
+                result
+            },
+        )
+        .inspect_err(|error| {
+            if let Some(reason) = app_state.model_runtime.failure_reason_for(
+                &transcription.model_name,
+                error,
+                decode_errored,
+            ) {
+                let _ = app_handle.emit(
+                    crate::events::MODEL_UNAVAILABLE_EVENT,
+                    model_unavailable_payload(reason, "transcribe", &transcription.model_name),
+                );
+            }
+        })?;
     let t_after_backend = std::time::Instant::now();
     gaps.backend_release_us = decode_ended_at
         .map(|ended| micros_between(ended, t_after_backend))
@@ -7551,6 +7568,36 @@ pub async fn start_native_recording(
     .await
 }
 
+/// The content-free `dictation-model-unavailable` payload: a fixed reason label
+/// the phase and the selected model's catalogue id (a setting, never a path or
+/// transcript). The overlay uses the id to clear the cue once that model is
+/// repaired or another is selected.
+fn model_unavailable_payload(
+    reason: model_runtime::ModelUnavailable,
+    phase: &'static str,
+    model_name: &str,
+) -> serde_json::Value {
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.model_unavailable",
+        reason = reason.as_str(),
+        phase,
+        "selected transcription model unavailable"
+    );
+    serde_json::json!({ "reason": reason.as_str(), "phase": phase, "model": model_name })
+}
+
+/// The reply of a start refused because the selected model cannot run. The
+/// start was admitted from Idle (no generation, no microphone owner), so the
+/// reply reports `idle` truthfully.
+fn model_unavailable_reply(reason: model_runtime::ModelUnavailable) -> serde_json::Value {
+    serde_json::json!({
+        "type": "model_unavailable",
+        "reason": reason.as_str(),
+        "state": "idle",
+    })
+}
+
 /// The first statement of the start entry (C4.2, decisions D-S2-2 / D-S2-3): a
 /// start reached while this thread is inside a core span (an inline listener of
 /// an emit, run with D or T held) is refused before any lock, claim or
@@ -7883,6 +7930,26 @@ async fn start_native_recording_inner(
             return start_ports::reply_of(&decision, None);
         }
         debug_assert_eq!(decision.row, RowId("R101.15"));
+        // The model gate: only a start that has passed every other refusal (app
+        // disabled, busy, already recording or starting, Smart Auto) and would
+        // now create a generation. The decision is pure and no effect has run:
+        // no id, status write, claim hand-off or microphone owner exists yet, so
+        // this refuses with nothing to undo. Dropping `slots` discards the
+        // key-down capture; the gesture stamp was consumed at entry.
+        let selected_model = dictation.model_name.clone();
+        if let Some(reason) = state.app_state.model_runtime.start_gate(&selected_model) {
+            // No shadow seal here on purpose: a gated line would make this a shadow
+            // change (`check_shadow_diff.py`, insertion only). The shadow flight is
+            // dropped unsealed, which `Flight::drop` hands over safely.
+            drop(dictation);
+            drop(_transition);
+            // Emitted after D and T are released, never inside a core span.
+            let _ = host.emit_json(
+                crate::events::MODEL_UNAVAILABLE_EVENT,
+                model_unavailable_payload(reason, "start", &selected_model),
+            );
+            return Ok(model_unavailable_reply(reason));
+        }
         let (selected_device_name, device_selection, smart_auto_reason) = match smart_auto.as_ref()
         {
             Some(_) => match resolved {

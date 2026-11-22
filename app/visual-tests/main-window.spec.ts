@@ -390,6 +390,30 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
 });
 
+test('every model-problem word fits inside the 120pt floating pill', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 320 });
+  await page.goto('/visual-fixtures.html?state=overlay-model-pill&appearance=dark');
+  for (const [reason, word] of [
+    ['notInstalled', 'No model'], ['incomplete', 'Incomplete'], ['downloading', 'Downloading'],
+    ['unsupported', 'Unsupported'], ['loadFailed', 'Load failed'],
+  ]) {
+    const pill = page.locator(`[data-model-pill="${reason}"] .overlay-island`);
+    const text = pill.getByText(word, { exact: true });
+    await expect(text).toBeVisible();
+    const [capsule, label, glyph] = await Promise.all([
+      pill.boundingBox(), text.boundingBox(), pill.locator('.bezel-glyph').boundingBox(),
+    ]);
+    expect(capsule && label && glyph).toBeTruthy();
+    expect(capsule!.width).toBe(120);
+    // The glyph and the word sit inside the capsule with room to spare, side by side.
+    expect(glyph!.x).toBeGreaterThanOrEqual(capsule!.x + 1);
+    expect(label!.x).toBeGreaterThanOrEqual(glyph!.x + glyph!.width);
+    expect(label!.x + label!.width).toBeLessThanOrEqual(capsule!.x + capsule!.width - 1);
+    // One line: no wrapping.
+    expect(label!.height).toBeLessThan(16);
+  }
+});
+
 test('synthetic meeting suggestion overlay keeps its prompt and actions visible', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 260 });
   await page.goto('/visual-fixtures.html?state=overlay-meeting-suggestion&appearance=dark');

@@ -1716,3 +1716,206 @@ fn every_port_is_reached_in_two_scenarios() {
         );
     }
 }
+
+// ------------------------------------------------------------- the model gate
+//
+// `start_native_recording_inner` consults the model gate only once a start has
+// passed every other refusal and would create a generation. The tests force the
+// gate on this thread (`force_start_blocker`); a test machine has no model.
+
+fn model_event(reason: &str) -> String {
+    format!(
+        "emit {} {}",
+        crate::events::MODEL_UNAVAILABLE_EVENT,
+        serde_json::json!({ "reason": reason, "phase": "start", "model": "base.en" })
+    )
+}
+
+fn gate_start(
+    host: &FakeHost,
+    state: &State,
+    origin: &str,
+    token: Option<String>,
+) -> serde_json::Value {
+    run(start_native_recording_inner(
+        host,
+        state,
+        None,
+        None,
+        Some(origin.to_string()),
+        token,
+    ))
+    .expect("start replies")
+}
+
+#[test]
+fn a_blocked_model_refuses_the_start_before_any_generation_exists() {
+    use crate::model_runtime::{force_start_blocker, ModelUnavailable};
+    for (blocker, name) in [
+        (ModelUnavailable::NotInstalled, "notInstalled"),
+        (ModelUnavailable::Incomplete, "incomplete"),
+        (ModelUnavailable::Downloading, "downloading"),
+        (ModelUnavailable::Unsupported, "unsupported"),
+    ] {
+        let (state, host) = fixture(DictationStatus::Idle, 0);
+        let _forced = force_start_blocker(Some(blocker));
+        let reply = start(&host, &state).expect("start replies");
+        assert_eq!(
+            reply,
+            serde_json::json!({ "type": "model_unavailable", "reason": name, "state": "idle" })
+        );
+        assert_eq!(status(&state), DictationStatus::Idle);
+        assert_eq!(state.app_state.recording_id.load(Ordering::SeqCst), 0);
+        // The transition, the admission reads and the one event: no AX sample, no
+        // generation, no status emit, no performance record, no supervisor start.
+        assert_eq!(
+            host.recorded().log,
+            vec![
+                "mic_transition".to_string(),
+                "keyboard.is_app_disabled".to_string(),
+                "supervisor.is_dictation_cleanup_pending 0".to_string(),
+                model_event(name),
+            ]
+        );
+    }
+}
+
+#[test]
+fn a_usable_model_does_not_change_the_start() {
+    use crate::model_runtime::force_start_blocker;
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    let _forced = force_start_blocker(None);
+    let reply = start(&host, &state).expect("start replies");
+    assert_eq!(reply["type"], "recording_starting");
+    assert!(!host
+        .recorded()
+        .log
+        .iter()
+        .any(|entry| entry.contains(crate::events::MODEL_UNAVAILABLE_EVENT)));
+}
+
+#[test]
+fn the_model_gate_consumes_the_gesture_and_speculative_claims_for_hold_and_toggle() {
+    use crate::audio_lifecycle::{gesture, speculative};
+    use crate::model_runtime::{force_start_blocker, ModelUnavailable};
+    for (origin, hold) in [("hold", true), ("toggle", false)] {
+        let (state, host) = fixture(DictationStatus::Idle, 0);
+        let _forced = force_start_blocker(Some(ModelUnavailable::NotInstalled));
+        gesture::clear_pending();
+        speculative::clear_binding();
+        let token = gesture::emit(gesture::Candidate::new(), hold);
+        speculative::bind(token.parse().expect("decimal token"), 9);
+
+        let reply = gate_start(&host, &state, origin, Some(token.clone()));
+        assert_eq!(reply["type"], "model_unavailable", "{origin}");
+        assert_eq!(status(&state), DictationStatus::Idle, "{origin}");
+        assert_eq!(
+            state.app_state.recording_id.load(Ordering::SeqCst),
+            0,
+            "{origin}"
+        );
+        // The stamp and the key-down capture were taken by this request and are
+        // not left for a later one.
+        assert!(
+            gesture::claim(Some(&token)).accepted(hold).timing.is_none(),
+            "{origin}"
+        );
+        assert!(!speculative::claim(Some(&token)).is_claimed(), "{origin}");
+        let log = host.recorded().log;
+        assert!(
+            !log.iter()
+                .any(|entry| entry.starts_with("supervisor.start")),
+            "{origin}"
+        );
+        assert!(log.contains(&model_event("notInstalled")), "{origin}");
+        gesture::clear_pending();
+        speculative::clear_binding();
+    }
+}
+
+/// A start another gate already refuses keeps its own reply and never reaches
+/// the model gate: no model event, and the status the refusal reports is true.
+#[test]
+fn the_model_gate_does_not_preempt_the_other_start_refusals() {
+    use crate::model_runtime::{force_start_blocker, ModelUnavailable};
+    type Setup = fn(&State, &FakeHost);
+    let cases: [(&str, DictationStatus, u64, Setup); 5] = [
+        ("app disabled", DictationStatus::Idle, 0, |_, host| {
+            host.script().app_disabled = true;
+        }),
+        ("meeting busy", DictationStatus::Idle, 0, |state, _| {
+            state.app_state.meeting_active.store(true, Ordering::SeqCst);
+        }),
+        (
+            "file transcription busy",
+            DictationStatus::Idle,
+            0,
+            |state, _| {
+                state
+                    .app_state
+                    .file_transcribing
+                    .store(true, Ordering::SeqCst);
+            },
+        ),
+        (
+            "already recording",
+            DictationStatus::Recording,
+            4,
+            |_, _| {},
+        ),
+        ("already starting", DictationStatus::Starting, 4, |_, _| {}),
+    ];
+    for (name, initial, id, setup) in cases {
+        let control = {
+            let (state, host) = fixture(initial, id);
+            setup(&state, &host);
+            let _forced = force_start_blocker(None);
+            let reply = start(&host, &state).expect("start replies");
+            (reply, status(&state))
+        };
+        let (state, host) = fixture(initial, id);
+        setup(&state, &host);
+        let _forced = force_start_blocker(Some(ModelUnavailable::NotInstalled));
+        let reply = start(&host, &state).expect("start replies");
+        assert_ne!(reply["type"], "model_unavailable", "{name}");
+        assert_eq!((reply, status(&state)), control, "{name}");
+        assert!(
+            !host
+                .recorded()
+                .log
+                .iter()
+                .any(|entry| entry.contains(crate::events::MODEL_UNAVAILABLE_EVENT)),
+            "{name}"
+        );
+        assert_eq!(
+            state.app_state.recording_id.load(Ordering::SeqCst),
+            id,
+            "{name}"
+        );
+    }
+}
+
+/// The transcribe-phase cue is decided by `failure_reason`: an error out of the
+/// decode closure of `with_ready_backend` never becomes a model cue, so the
+/// pipeline (which sets `decode_errored` from the closure's own result) shows
+/// "No model" only for a preparation failure.
+#[test]
+fn the_transcribe_phase_cue_ignores_decode_closure_errors() {
+    use crate::model_runtime::{failure_reason, InstallState, ModelUnavailable};
+    let prepare = failure_reason(
+        true,
+        InstallState::Installed,
+        false,
+        "Failed to load Core ML model: boom",
+        false,
+    );
+    assert_eq!(prepare, Some(ModelUnavailable::LoadFailed));
+    let decode = failure_reason(
+        true,
+        InstallState::Installed,
+        false,
+        "reference audio not found",
+        true,
+    );
+    assert_eq!(decode, None);
+}

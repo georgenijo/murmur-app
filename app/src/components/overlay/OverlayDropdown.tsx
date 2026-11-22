@@ -52,6 +52,8 @@ interface OverlayDropdownProps {
   status: DictationStatus;
   stillConnecting: boolean;
   showTapMissed: boolean;
+  /** Short model-problem label for the status line; null when the model is fine. */
+  modelLabel?: string | null;
   smartDestinationStatus?: SmartDestinationStatus | null;
   smartDestinationAppName?: string | null;
   disabled: boolean;
@@ -74,6 +76,7 @@ export function OverlayDropdown({
   status,
   stillConnecting,
   showTapMissed,
+  modelLabel = null,
   smartDestinationStatus = null,
   smartDestinationAppName = null,
   disabled,
@@ -134,8 +137,9 @@ export function OverlayDropdown({
     ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
     : null;
   const showStatus = status === 'recording' || (status === 'processing' && destinationLabel)
-    || status === 'starting' || status === 'recovering' || showTapMissed;
-  const statusQuiet = status === 'recording' && !showTapMissed;
+    || status === 'starting' || status === 'recovering' || showTapMissed
+    || (modelLabel !== null && !geometry.floating);
+  const statusQuiet = status === 'recording' && !showTapMissed && modelLabel === null;
   const reveal = {
     height: geometry.dropdownH,
     opacity: expanded ? 1 : 0,
@@ -240,9 +244,9 @@ export function OverlayDropdown({
           className="max-w-full truncate text-center leading-none pointer-events-none"
         >
           {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}
-          {showTapMissed ? (
+          {modelLabel || showTapMissed ? (
             <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
-              Tap missed
+              {modelLabel ?? 'Tap missed'}
             </span>
           ) : status === 'recording' ? (
             <span className="text-white/60" style={{ fontSize: 11 }}>

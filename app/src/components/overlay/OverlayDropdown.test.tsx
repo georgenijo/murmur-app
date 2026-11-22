@@ -191,3 +191,30 @@ it('keeps the floating strip monochrome in every toggle state', async () => {
   expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('false');
   await act(async () => root.unmount());
 });
+
+it.each([
+  [false, true],
+  [true, false],
+])('shows the model problem on the status line only for the notch (floating=%s)', async (floating, shown) => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  await act(async () => root.render(
+    <OverlayDropdown
+      geometry={{ dropdownH: 64, floating } as OverlayGeometry}
+      expanded
+      status="idle"
+      stillConnecting={false}
+      showTapMissed={false}
+      modelLabel="Incomplete"
+      disabled={false}
+      autoPaste={false}
+      fileOutputEnabled={false}
+      onToggleDisabled={vi.fn()}
+      onToggleAutoPaste={vi.fn()}
+      onOpenSettings={vi.fn()}
+    />,
+  ));
+  // The floating pill already carries the word itself.
+  expect(container.textContent?.includes('Incomplete')).toBe(shown);
+  await act(async () => root.unmount());
+});

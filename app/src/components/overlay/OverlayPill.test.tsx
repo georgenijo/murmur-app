@@ -7,6 +7,11 @@ import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import { OverlayPill, type OverlaySmartAutoSummary } from './OverlayPill';
 import type { OverlayIndicator } from './deriveVisual';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
+import {
+  MODEL_WORD_MAX_CHARS,
+  modelUnavailableWord,
+  type ModelUnavailableReason,
+} from '../../lib/modelUnavailable';
 
 const barRefs = { current: [] as (HTMLDivElement | null)[] };
 
@@ -293,5 +298,44 @@ describe('OverlayPill transient cues', () => {
     expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(count);
     expect(container.querySelector<HTMLElement>('.overlay-waveform')?.style.opacity).toBe('1');
     expect(container.querySelector('button')).toBeNull();
+  });
+
+  const reasons: ModelUnavailableReason[] = ['notInstalled', 'incomplete', 'downloading', 'unsupported', 'loadFailed'];
+
+  it.each(reasons)('shows the %s model problem on the floating pill as one glyph and one short word', async (reason) => {
+    const g = geometryFixture.pillProcessing as OverlayGeometry;
+    await act(async () => root.render(<OverlayPill
+      geometry={g}
+      barRefs={barRefs}
+      visual={{ indicator: { kind: 'modelUnavailable', reason }, showTapMissedLabel: false, waveformVisible: false }}
+      status="idle"
+    />));
+    const row = container.querySelector<HTMLElement>('.bezel-row')!;
+    const glyph = row.querySelector<HTMLElement>('.bezel-glyph')!;
+    const word = modelUnavailableWord(reason);
+    // The row keeps the capsule's inner height and carries exactly glyph + word.
+    expect(row.style.height).toBe(`${g.collapsedH - 2}px`);
+    expect(row.children).toHaveLength(2);
+    expect(row.children[1].textContent).toBe(word);
+    // A 120pt capsule leaves ~78px of text beside the glyph: the word must stay short.
+    expect(word.length).toBeLessThanOrEqual(MODEL_WORD_MAX_CHARS);
+    expect(g.island.pillW).toBe(120);
+    expect(glyph.querySelector('svg path[d^="M12 3.5"]')).not.toBeNull();
+    expect(glyph.getAttribute('role')).toBe('status');
+    expect(glyph.getAttribute('aria-live')).toBe('assertive');
+    expect(glyph.getAttribute('aria-label')).toMatch(/speech model/);
+    expect(container.querySelector('.overlay-waveform')).toBeNull();
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('mirrors the model problem in the notch left wing without a waveform', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'modelUnavailable', reason: 'notInstalled' }} />,
+    ));
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.getAttribute('aria-live')).toBe('assertive');
+    expect(status?.getAttribute('aria-label')).toContain('speech model is not ready');
+    expect(status?.querySelector('svg path[d^="M12 3.5"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('.overlay-waveform')?.style.opacity).toBe('0');
   });
 });

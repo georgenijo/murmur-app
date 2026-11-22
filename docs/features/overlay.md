@@ -36,6 +36,37 @@ App → General → **Recording overlay** chooses one of two renditions:
   hidden and rises above the revealed Dock, including magnified icons and
   their name label. A Dock-only change never collapses the notch island.
 
+### Speech model problems
+
+A dictation never records into a dead end. When the selected model is not
+installed, incomplete, still downloading or unsupported, `start_native_recording_inner`
+refuses the start and emits `dictation-model-unavailable` (`phase: "start"`).
+The gate runs last: only a start that already passed every other refusal (app
+disabled, busy, already recording or starting, Smart Auto) and would now create
+a generation reaches it, so the other refusals keep their own replies and the
+`idle` it reports is true. It runs before any id, status write or microphone
+owner exists. If preparation
+fails while transcribing (a model removed or broken mid-recording), the same
+event fires with `phase: "transcribe"`. Nothing is captured on a refused start,
+so no audio is lost, and pressing the hotkey again after the repair is the
+retry. The overlay shows the cue for 8 seconds, above Tap missed and below
+cancelled and microphone failures:
+
+- **Floating pill.** A warning triangle with one word: `No model`,
+  `Incomplete`, `Downloading`, `Unsupported` or `Load failed` (12 characters at
+  most; the capsule leaves about 78pt for text). The idle pill is click-through
+  and hidden, so the cue counts as activity and makes it visible.
+- **Notch island.** An amber triangle in the left wing, the amber inset line,
+  and the same word on the hover status line.
+
+The cue ends early when its model is repaired (a runtime snapshot reports it
+installed) or another model is selected, and a click re-checks the live runtime
+first, so a model fixed within the 8 seconds never sends the click to Settings.
+Clicking the pill or island while the cue shows opens Settings → AI & models →
+Speech-to-text (the model row, where Re-download lives) instead of starting or
+stopping a recording. The main window's error banner carries the same message
+for starts made from it. There is no persistent idle indicator.
+
 ### Dock tracking
 
 An auto-hidden bottom Dock reserves almost no work area, and a magnified Dock
@@ -470,7 +501,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
 - Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `set_overlay_material`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `retry_last_delivery`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `overlay-audio-level`, `settings-changed`.
+- Listens: `dictation-model-unavailable`, `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `overlay-audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 

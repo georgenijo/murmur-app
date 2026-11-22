@@ -123,4 +123,19 @@ describe('deriveVisual', () => {
     expect(visual.showTapMissedLabel).toBe(false);
     expect(visual.waveformVisible).toBe(false);
   });
+
+  it('shows a model-unavailable cue above a hotkey miss but below cancel and mic failure', () => {
+    const call = (cancelled: boolean, miss: boolean, mic: 'chooseMicrophone' | false) =>
+      deriveVisual('idle', cancelled, miss, false, mic, false, false, 'idle', false, 'incomplete');
+    expect(call(false, false, false).indicator).toEqual({ kind: 'modelUnavailable', reason: 'incomplete' });
+    expect(call(false, true, false).indicator).toEqual({ kind: 'modelUnavailable', reason: 'incomplete' });
+    expect(call(false, false, 'chooseMicrophone').indicator.kind).toBe('microphoneFailure');
+    expect(call(true, false, false).indicator.kind).toBe('cancelled');
+  });
+
+  it('the model cue owns the bar: no waveform, no tap-missed label', () => {
+    const visual = deriveVisual('idle', false, false, false, false, false, false, 'idle', false, 'notInstalled');
+    expect(visual.waveformVisible).toBe(false);
+    expect(visual.showTapMissedLabel).toBe(false);
+  });
 });
