@@ -74,7 +74,9 @@ command palette, or Settings, so the binding cannot collide with another one;
    lands before the hand-off or after it.
 5. The dispatcher (`agent_command.rs`) runs in the background and shows its
    replies through the notification plugin. A failure shows a short notification
-   without the spoken text.
+   without the spoken text. An absolute dispatch project path that is not a
+   folder fails up front, because `t3` would otherwise fall back to the home
+   project.
 
 `stop_native_recording` and the `transcription-complete` event carry an empty
 `text` for an agent command, and the event carries `purpose: "agent_command"`,

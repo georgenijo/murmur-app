@@ -371,6 +371,9 @@ enum Failure {
     TimedOut,
     Errored,
     BadOutput,
+    /// An absolute dispatch project path that isn't a directory. `t3` would
+    /// otherwise fall back silently to the home project and run there.
+    ProjectMissing,
 }
 
 impl Failure {
@@ -381,6 +384,9 @@ impl Failure {
             Failure::TimedOut => "Agent command failed: T3 took too long.",
             Failure::Errored => "Agent command failed: T3 reported an error.",
             Failure::BadOutput => "Agent command failed: T3 sent an unexpected reply.",
+            Failure::ProjectMissing => {
+                "Agent command failed: the dispatch project folder is missing."
+            }
         }
     }
 }
@@ -473,6 +479,12 @@ fn send_args(thread_id: &str) -> Vec<String> {
         .to_vec()
 }
 
+/// Project ids pass through; only an absolute path is checked on disk.
+fn dispatch_project_missing(project: &str, is_dir: impl Fn(&Path) -> bool) -> bool {
+    let path = Path::new(project);
+    path.is_absolute() && !is_dir(path)
+}
+
 fn run_dispatch(
     transcript: &str,
     config: &AgentCommandConfig,
@@ -481,6 +493,10 @@ fn run_dispatch(
 ) {
     let transcript = transcript.trim();
     if transcript.is_empty() {
+        return;
+    }
+    if dispatch_project_missing(&config.dispatch_project, |path| path.is_dir()) {
+        notifier.notify(NOTIFICATION_TITLE, Failure::ProjectMissing.message());
         return;
     }
     let home = home_dir();
@@ -602,7 +618,7 @@ mod tests {
     fn config() -> AgentCommandConfig {
         AgentCommandConfig {
             t3_bin: Some(PathBuf::from("/fake/t3")),
-            dispatch_project: "/work/agent-dispatch".into(),
+            dispatch_project: "agent-dispatch-project-id".into(),
             provider: "claude_cpa".into(),
             model: "claude-sonnet-5-5".into(),
         }
@@ -658,7 +674,7 @@ mod tests {
                 "claude-sonnet-5-5",
                 "--title",
                 "Voice: what's running?",
-                "/work/agent-dispatch",
+                "agent-dispatch-project-id",
                 "-",
             ]
         );
@@ -782,6 +798,13 @@ mod tests {
         let (runner, notifier) = run(vec![], "  \n\t ");
         assert!(runner.calls().is_empty());
         assert!(notifier.bodies().is_empty());
+    }
+
+    #[test]
+    fn dispatch_project_missing_checks_absolute_paths_only() {
+        assert!(dispatch_project_missing("/nope", |_| false));
+        assert!(!dispatch_project_missing("/yes", |_| true));
+        assert!(!dispatch_project_missing("ab8a3313-0640", |_| false));
     }
 
     #[test]
