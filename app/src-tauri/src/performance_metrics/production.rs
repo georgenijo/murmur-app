@@ -382,7 +382,10 @@ impl ProductionCaptureV1 {
                 CaptureSetupStep::StreamStart => self.stream_start_ms = Some(elapsed_ms),
                 // The legacy coarse bracket overlaps the split steps; the first
                 // callback wait is already firstCallbackWaitMs.
+                // The adoption marker is zero-duration evidence, logged as
+                // `audio.audio_unit_adopted`; `audioUnitNewMs` is its bracket.
                 CaptureSetupStep::AudioUnitCreation
+                | CaptureSetupStep::AudioUnitAdopted
                 | CaptureSetupStep::AwaitingFirstCallback
                 | CaptureSetupStep::SystemTapCreate
                 | CaptureSetupStep::AggregateDeviceCreate

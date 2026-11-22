@@ -1471,31 +1471,89 @@ fn start_cpal(
 /// device, opens a stream, or touches input. Retained only until the separate
 /// confirmed Start command, within the host's request TTL.
 ///
-/// It may also hold one component instance that was created but never
-/// initialized, bound to a device, or started (`prewarm_audio_unit`). Creating
-/// the HAL output component is the first Core Audio call of the process and
-/// costs 18-30 ms; it touches no hardware, no input, and cannot present a TCC
-/// prompt, so it is paid here instead of after the confirmed Start.
-struct PassiveInput {
+/// It may also hold one bare component instance (`prewarm_audio_unit`): created
+/// after the preparation ack, never initialized, configured, bound to input, or
+/// started. It is not hardware-free: an uninitialized HAL output unit reports
+/// the default OUTPUT device as its current device, with output IO enabled and
+/// input disabled, and that is the state it keeps while held. It opens no
+/// stream, runs no IO, and cannot present a TCC prompt. Creation costs
+/// 18-30 ms of Core Audio component load on the first call in a helper
+/// process; the lookup's HAL reads above run first, so the cost left to move
+/// may be smaller than that (measured on the real machine, not assumed).
+/// `U` is the held type: `AudioUnit` in production, a sentinel in tests.
+struct PassiveInput<U = AudioUnit> {
     devices: Vec<(AudioDeviceID, Option<String>)>,
     default_device: Option<AudioDeviceID>,
-    prewarmed_unit: Option<AudioUnit>,
+    prewarm: PrewarmSlot<U>,
 }
 
-/// Create the uninitialized HAL output instance a prepared Start will adopt.
-/// A failure is not reported here: the confirmed Start creates its own and
-/// reports `StreamOpenFailed` through the ordinary setup bracket.
+/// The one instance a prepared helper holds for its confirmed Start.
+struct PrewarmSlot<U> {
+    held: Option<U>,
+}
+
+impl<U> PrewarmSlot<U> {
+    const fn empty() -> Self {
+        Self { held: None }
+    }
+
+    /// Store the instance created after the ack. `None` (creation failed)
+    /// leaves nothing to adopt: Start creates its own and reports its own
+    /// failure through the ordinary setup bracket.
+    fn hold(&mut self, unit: Option<U>) {
+        self.held = unit;
+    }
+
+    /// Release a held instance that no Start will adopt (a prepared CPAL
+    /// Start never takes it).
+    fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// The instance Start builds on. A held instance is adopted exactly once
+    /// and `create` is not called; it is replaced by a fresh one when `usable`
+    /// rejects it (its default output device moved while it was held) or when
+    /// none is held. Returns whether the held instance was adopted.
+    fn adopt_or_create<E>(
+        slot: Option<&mut Self>,
+        usable: impl FnOnce(&U) -> bool,
+        create: impl FnOnce() -> Result<U, E>,
+    ) -> Result<(U, bool), E> {
+        if let Some(unit) = slot.and_then(|slot| slot.held.take()) {
+            if usable(&unit) {
+                return Ok((unit, true));
+            }
+        }
+        create().map(|unit| (unit, false))
+    }
+}
+
+/// Create the bare HAL output instance a prepared Start will adopt.
 fn prewarm_audio_unit() -> Option<AudioUnit> {
     AudioUnit::new_uninitialized(IOType::HalOutput).ok()
 }
 
-impl PassiveInput {
-    fn set_prewarmed_unit(&mut self, unit: Option<AudioUnit>) {
-        self.prewarmed_unit = unit;
-    }
-    fn take_prewarmed_unit(&mut self) -> Option<AudioUnit> {
-        self.prewarmed_unit.take()
-    }
+/// A bare unit follows the default output device at creation. Adopt it only
+/// while that is still the current default output; otherwise (AirPods dropped
+/// during the hold) Start creates a fresh one rather than initialize a unit
+/// bound to a device that has gone.
+fn prewarmed_unit_is_current(unit: &AudioUnit) -> bool {
+    let current: Result<AudioDeviceID, _> = unit.get_property(
+        kAudioOutputUnitProperty_CurrentDevice,
+        Scope::Global,
+        Element::Output,
+    );
+    unit_matches_default_output(current.ok(), get_default_device_id(false))
+}
+
+fn unit_matches_default_output(
+    unit_device: Option<AudioDeviceID>,
+    default_output: Option<AudioDeviceID>,
+) -> bool {
+    matches!((unit_device, default_output), (Some(unit), Some(default)) if unit == default)
+}
+
+impl<U> PassiveInput<U> {
     fn lookup() -> Result<Self, ()> {
         Self::lookup_with(
             microphone_authorization_granted(),
@@ -1527,7 +1585,7 @@ impl PassiveInput {
         Ok(Self {
             devices,
             default_device: default_device(),
-            prewarmed_unit: None,
+            prewarm: PrewarmSlot::empty(),
         })
     }
     fn resolve(
@@ -1663,17 +1721,33 @@ fn start_auhal_resolved(
     // format. Initialization and every later step run only after confirmed
     // Start, never in PrepareInput; only the bare instance may be prewarmed.
     // A prepared helper already paid for the instance while it waited for this
-    // Start, so this bracket is near zero there. The unit is device-independent:
-    // it is adopted even when the prepared device resolution was discarded.
-    let mut unit = match prepared.and_then(PassiveInput::take_prewarmed_unit) {
-        Some(unit) => unit,
-        None => AudioUnit::new_uninitialized(IOType::HalOutput)
-            .map_err(|_| FailureCode::StreamOpenFailed)?,
-    };
+    // Start, so this bracket is near zero there. The instance follows the
+    // default output device, not the input being opened, so it is adopted even
+    // when the prepared input resolution was discarded, but only while it
+    // still matches the current default output (`prewarmed_unit_is_current`).
+    let (mut unit, adopted) = PrewarmSlot::adopt_or_create(
+        prepared.map(|prepared| &mut prepared.prewarm),
+        prewarmed_unit_is_current,
+        || AudioUnit::new_uninitialized(IOType::HalOutput),
+    )
+    .map_err(|_| FailureCode::StreamOpenFailed)?;
     emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitNew,
         SetupTransition::Completed,
     ))?;
+    if adopted {
+        // Content-free evidence that this start used the held instance, so a
+        // log can tell "adopted" from "created here" without inferring it
+        // from a duration.
+        emit(MicrophoneSetupObservation::Step(
+            CaptureSetupStep::AudioUnitAdopted,
+            SetupTransition::Entered,
+        ))?;
+        emit(MicrophoneSetupObservation::Step(
+            CaptureSetupStep::AudioUnitAdopted,
+            SetupTransition::Completed,
+        ))?;
+    }
     emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitInit,
         SetupTransition::Entered,
@@ -2753,7 +2827,11 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn passive_fixture() -> PassiveInput {
+    fn passive_fixture() -> PassiveInput<()> {
+        fixture_with()
+    }
+
+    fn fixture_with<U>() -> PassiveInput<U> {
         PassiveInput::lookup_with(
             true,
             || Ok(vec![1, 2, 3]),
@@ -2766,7 +2844,7 @@ mod tests {
 
     #[test]
     fn passive_lookup_requires_existing_grant_and_bounds_inventory() {
-        assert!(PassiveInput::lookup_with(
+        assert!(PassiveInput::<()>::lookup_with(
             false,
             || panic!("no HAL read without existing grant"),
             |_| panic!(),
@@ -2774,7 +2852,7 @@ mod tests {
             || panic!()
         )
         .is_err());
-        assert!(PassiveInput::lookup_with(
+        assert!(PassiveInput::<()>::lookup_with(
             true,
             || Ok(vec![1; MAX_INPUT_DEVICE_COUNT + 1]),
             |_| panic!("must bound before per-device reads"),
@@ -2891,8 +2969,8 @@ mod tests {
             &mut output,
             5,
             nonce,
-            || Err(()),
-            || panic!("a failed lookup must not prewarm anything"),
+            || Err::<PassiveInput<()>, ()>(()),
+            || -> Option<()> { panic!("a failed lookup must not prewarm anything") },
         )
         .is_err());
         assert!(
@@ -2901,23 +2979,35 @@ mod tests {
         );
     }
 
-    /// Counts what the preparation wrote, so a hook can tell whether the ack
-    /// had already been published when it ran.
-    struct CountingWriter {
-        bytes: std::rc::Rc<std::cell::Cell<usize>>,
+    /// Counts bytes written and read through the preparation, so a hook can
+    /// tell whether the ack was already published and whether the Start
+    /// command had already been read when it ran.
+    #[derive(Clone, Default)]
+    struct IoCounts {
+        written: std::rc::Rc<std::cell::Cell<usize>>,
+        read: std::rc::Rc<std::cell::Cell<usize>>,
     }
+    struct CountingWriter(IoCounts);
     impl Write for CountingWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.bytes.set(self.bytes.get() + buf.len());
+            self.0.written.set(self.0.written.get() + buf.len());
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
+    struct CountingReader<'a>(&'a [u8], IoCounts);
+    impl Read for CountingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let read = self.0.read(buf)?;
+            self.1.read.set(self.1.read.get() + read);
+            Ok(read)
+        }
+    }
 
     #[test]
-    fn audio_unit_prewarm_runs_after_the_preparation_ack_and_before_start() {
+    fn prewarm_is_held_after_the_ack_and_before_start_is_read() {
         let nonce = [9; 16];
         let mut input = Vec::new();
         write_production_control(
@@ -2930,35 +3020,104 @@ mod tests {
             },
         )
         .unwrap();
-        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
-        let seen_at_prewarm = std::rc::Rc::new(std::cell::Cell::new(None));
-        let mut output = CountingWriter {
-            bytes: bytes.clone(),
-        };
-        let seen = seen_at_prewarm.clone();
-        let observed = bytes.clone();
-        let (_, prepared) = prepare_input_command(
+        let counts = IoCounts::default();
+        let mut reader = CountingReader(&input, counts.clone());
+        let mut writer = CountingWriter(counts.clone());
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (seen_in_hook, counts_in_hook) = (seen.clone(), counts.clone());
+        let (command, prepared) = prepare_input_command(
             ProductionHostMessage::PrepareInput,
-            &mut input.as_slice(),
-            &mut output,
+            &mut reader,
+            &mut writer,
             5,
             nonce,
-            || Ok(passive_fixture()),
+            || Ok(fixture_with::<&'static str>()),
             move || {
-                seen.set(Some(observed.get()));
-                None
+                seen_in_hook.set(Some((
+                    counts_in_hook.written.get(),
+                    counts_in_hook.read.get(),
+                )));
+                Some("prewarmed")
             },
         )
         .unwrap();
-        assert!(
-            seen_at_prewarm.get().is_some_and(|written| written > 0),
-            "the ack must be published before the instance is created"
-        );
+        let (written, read) = seen.get().expect("prewarm must run");
+        assert!(written > 0, "the ack must be published before the prewarm");
+        assert_eq!(read, 0, "the prewarm must run before Start is read");
+        assert!(counts.read.get() > 0, "Start is read after the prewarm");
+        assert!(matches!(command, ProductionHostMessage::Start { .. }));
         let mut prepared = prepared.unwrap();
-        assert!(
-            prepared.take_prewarmed_unit().is_none(),
-            "a failed prewarm leaves nothing to adopt; Start creates its own"
+        // Held exactly once: Start adopts it and never creates another.
+        let (unit, adopted) = PrewarmSlot::adopt_or_create(
+            Some(&mut prepared.prewarm),
+            |_| true,
+            || -> Result<&'static str, ()> { panic!("a held instance must not be re-created") },
+        )
+        .unwrap();
+        assert_eq!((unit, adopted), ("prewarmed", true));
+        let (fresh, adopted) = PrewarmSlot::adopt_or_create(
+            Some(&mut prepared.prewarm),
+            |_| true,
+            || -> Result<&'static str, ()> { Ok("created") },
+        )
+        .unwrap();
+        assert_eq!((fresh, adopted), ("created", false), "taken exactly once");
+    }
+
+    #[test]
+    fn adoption_creates_only_when_nothing_usable_is_held() {
+        let create = std::cell::Cell::new(0);
+        let make = || -> Result<u8, ()> {
+            create.set(create.get() + 1);
+            Ok(9)
+        };
+        // Nothing held and no prepared helper at all: ordinary cold create.
+        assert_eq!(
+            PrewarmSlot::adopt_or_create(None, |_: &u8| true, make).unwrap(),
+            (9, false)
         );
+        let mut slot = PrewarmSlot::empty();
+        assert_eq!(
+            PrewarmSlot::adopt_or_create(Some(&mut slot), |_: &u8| true, make).unwrap(),
+            (9, false),
+            "a failed prewarm leaves Start to create its own"
+        );
+        assert_eq!(create.get(), 2);
+        // Held and usable: adopted, create not called.
+        slot.hold(Some(7));
+        assert_eq!(
+            PrewarmSlot::adopt_or_create(Some(&mut slot), |_| true, make).unwrap(),
+            (7, true)
+        );
+        assert_eq!(create.get(), 2);
+        // Held but its output device went away: replaced by a fresh instance.
+        slot.hold(Some(7));
+        assert_eq!(
+            PrewarmSlot::adopt_or_create(Some(&mut slot), |_| false, make).unwrap(),
+            (9, false)
+        );
+        assert_eq!(create.get(), 3);
+        // A CPAL start releases it rather than keeping it for the recording.
+        slot.hold(Some(7));
+        slot.release();
+        assert_eq!(
+            PrewarmSlot::adopt_or_create(Some(&mut slot), |_| true, make).unwrap(),
+            (9, false)
+        );
+        // A creation failure surfaces to Start, never swallowed here.
+        let failing = || -> Result<u8, &'static str> { Err("no component") };
+        assert_eq!(
+            PrewarmSlot::adopt_or_create(None, |_: &u8| true, failing),
+            Err("no component")
+        );
+    }
+
+    #[test]
+    fn a_held_unit_is_adopted_only_while_it_matches_the_default_output() {
+        assert!(unit_matches_default_output(Some(90), Some(90)));
+        assert!(!unit_matches_default_output(Some(90), Some(91)));
+        assert!(!unit_matches_default_output(Some(90), None));
+        assert!(!unit_matches_default_output(None, Some(90)));
     }
 
     fn anchor(
@@ -3657,15 +3816,15 @@ mod tests {
     }
 }
 
-fn prepare_input_command(
+fn prepare_input_command<U>(
     command: ProductionHostMessage,
     input: &mut impl Read,
     output: &mut impl Write,
     capture_id: u64,
     nonce: SessionNonce,
-    lookup: impl FnOnce() -> Result<PassiveInput, ()>,
-    prewarm: impl FnOnce() -> Option<AudioUnit>,
-) -> Result<(ProductionHostMessage, Option<PassiveInput>), ()> {
+    lookup: impl FnOnce() -> Result<PassiveInput<U>, ()>,
+    prewarm: impl FnOnce() -> Option<U>,
+) -> Result<(ProductionHostMessage, Option<PassiveInput<U>>), ()> {
     if command != ProductionHostMessage::PrepareInput {
         return Ok((command, None));
     }
@@ -3678,8 +3837,11 @@ fn prepare_input_command(
     )
     .map_err(|_| ())?;
     // After the ack, so the host's preparation is never delayed by it. A Start
-    // that arrives meanwhile waits in the pipe and finds the unit ready.
-    prepared.set_prewarmed_unit(prewarm());
+    // that arrives meanwhile waits in the pipe and finds the unit ready. A hang
+    // inside `prewarm` is invisible to the host's setup-step attribution: it
+    // happens before Start is read, so a timeout there reports
+    // `last_setup_step = none`, the same as a helper that never reached Start.
+    prepared.prewarm.hold(prewarm());
     // Only a separate confirmed Start can open capture. EOF, cancel, and all
     // other feature commands exit without any Audio Unit or production run.
     let command = read_control(input, capture_id, nonce)?;
@@ -3937,6 +4099,11 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 },
             )
             .map_err(|_| ())?;
+            // A prepared CPAL Start never adopts the bare instance; do not keep
+            // it alive beside the running stream for the whole recording.
+            if let Some(prepared) = prepared_input.as_mut() {
+                prepared.prewarm.release();
+            }
             let mut sequence = 0_u64;
             let mut retained = 0_u64;
             let mut scratch = [0_f32; 4096];

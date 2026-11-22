@@ -467,6 +467,10 @@ fn startup_setup_step(value: CaptureSetupStep) -> StartupSetupStep {
         CaptureSetupStep::DeviceResolution => StartupSetupStep::DeviceResolution,
         CaptureSetupStep::AudioUnitCreation => StartupSetupStep::AudioUnitCreation,
         CaptureSetupStep::AudioUnitNew => StartupSetupStep::AudioUnitNew,
+        // Only a prepared dictation start adopts a held instance, and the
+        // benchmark never prepares a helper, so this is never emitted here; it
+        // folds into its bracket rather than widening the report schema.
+        CaptureSetupStep::AudioUnitAdopted => StartupSetupStep::AudioUnitNew,
         CaptureSetupStep::AudioUnitInit => StartupSetupStep::AudioUnitInit,
         CaptureSetupStep::EnableInputIo => StartupSetupStep::EnableInputIo,
         CaptureSetupStep::DisableOutputIo => StartupSetupStep::DisableOutputIo,
