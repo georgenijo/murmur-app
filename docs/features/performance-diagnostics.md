@@ -559,10 +559,12 @@ and `helperPreparation`. A missing value is unavailable, never zero.
 All AUHAL brackets run after confirmed Start. For an adopted prepared helper the
 `AudioUnitNew` bracket only takes the held instance, so `audioUnitNewMs` is near
 zero there, and the helper emits a zero-duration `AudioUnitAdopted` step that
-the host logs as `audio.audio_unit_adopted` (file log, content-free: capture id,
-owner, backend, elapsed). No adoption log with `helperPreparation = adopted`
-means the held instance was missing or no longer current and the Start created
-its own, paying the creation inside `AudioUnitNew`. A hang while creating the
+the host logs as `audio.audio_unit_adopted` (an unregistered info event, so it
+also reaches the event ring and `events.jsonl`; content-free: capture id, owner,
+backend, elapsed). No adoption log with `helperPreparation = adopted` means the
+start used CPAL, or the held instance was missing or no longer current and the
+Start created its own, paying the creation (plus disposing a rejected instance)
+inside `AudioUnitNew`. A hang while creating the
 held instance happens before Start is read, so a timeout there reports
 `last_setup_step = none`. Creation uses the pinned safe
 owning `coreaudio-rs 0.14.2` uninitialized constructor; its separate `initialize`
