@@ -708,6 +708,20 @@ fn sanitize_stream_reuse_outcome_event(data: &mut serde_json::Map<String, serde_
         "piece_count" => value.as_u64().is_some_and(|value| value <= 10_000),
         "decoded_ms" => value.as_u64().is_some_and(|value| value <= 3_600_000),
         "overlap_words" => value.as_u64().is_some_and(|value| value <= 100_000),
+        "stitch_diff" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "none"
+                    | "empty"
+                    | "no_new_words"
+                    | "words"
+                    | "first_word"
+                    | "last_word"
+                    | "first_and_last_word"
+                    | "interior"
+                    | "whitespace"
+            )
+        }),
         "outcome" => value.as_str().is_some_and(|value| {
             matches!(
                 value,
@@ -4618,6 +4632,7 @@ mod tests {
                     "piece_count": 3,
                     "decoded_ms": 4_200,
                     "overlap_words": 12,
+                    "stitch_diff": "first_word",
                     "text": "SENTINEL_TRANSCRIPT",
                     "path": "/Users/private/project"
                 });
@@ -4626,16 +4641,19 @@ mod tests {
                 assert_eq!(data["piece_count"], 3);
                 assert_eq!(data["decoded_ms"], 4_200);
                 assert_eq!(data["overlap_words"], 12);
-                assert_eq!(data.as_object().unwrap().len(), 6);
+                assert_eq!(data["stitch_diff"], "first_word");
+                assert_eq!(data.as_object().unwrap().len(), 7);
                 assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
             }
             let mut free_outcome = serde_json::json!({
                 "event_code": "pipeline.stream_reuse_outcome",
                 "recording_id": 9,
                 "outcome": "SENTINEL",
+                "stitch_diff": "SENTINEL",
             });
             sanitize_event_data("pipeline", &mut free_outcome, debug_build);
             assert!(free_outcome.get("outcome").is_none());
+            assert!(free_outcome.get("stitch_diff").is_none());
         }
     }
 

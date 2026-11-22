@@ -4207,13 +4207,42 @@ fn transcribe_with_coreml_vad_retry_report(
         prompt,
         smart_punctuation,
     )?;
+    whole_clip_attempt_from_first_decode(
+        backend,
+        text,
+        model_name,
+        samples_for_transcription.len(),
+        original_samples,
+        vad_trimmed,
+        language,
+        prompt,
+        smart_punctuation,
+    )
+}
+
+/// Everything [`transcribe_with_coreml_vad_retry_report`] does after its first
+/// decode: `text` is that decode of the `filtered_sample_count` kept samples.
+/// Split out so a caller that already holds exactly that decode (the reuse
+/// tail when it starts at the first kept sample) does not run it again.
+#[allow(clippy::too_many_arguments)]
+fn whole_clip_attempt_from_first_decode(
+    backend: &mut dyn transcriber::TranscriptionBackend,
+    text: String,
+    model_name: &str,
+    filtered_sample_count: usize,
+    original_samples: &[f32],
+    vad_trimmed: bool,
+    language: &str,
+    prompt: Option<&str>,
+    smart_punctuation: bool,
+) -> Result<BackendTranscriptionAttempt, String> {
     if model_runtime::model_definition(model_name)?.retry_unfiltered_on_empty
         && vad_trimmed
         && text.trim().is_empty()
     {
         tracing::warn!(
             target: "pipeline",
-            filtered_sample_count = samples_for_transcription.len(),
+            filtered_sample_count,
             original_sample_count = original_samples.len(),
             "coreml_empty_after_vad_retry_original"
         );
@@ -4248,9 +4277,14 @@ struct FinalDecode {
 /// With one, the stitched result is used only when every proof in
 /// [`crate::stream_reuse::StreamReuse::take_final`] passed and the decoded tail
 /// starts with the committed overlap text. Any doubt, a decode error, or a
-/// failed stitch runs the unchanged whole-clip decode on `filtered`. The
+/// failed stitch gives the unchanged whole-clip decode of `filtered`. The
 /// stitched text is raw ASR text: the one ordered transform pipeline runs over
 /// it once, afterwards.
+///
+/// With a single committed piece the tail starts at the first kept sample, so
+/// the tail decode is the whole-clip decode (same samples, same call). If it
+/// fails the stitch, that text is the result, finished with the whole-clip
+/// retry policy; the same audio is not decoded a second time.
 fn decode_final_transcript(
     backend: &mut dyn transcriber::TranscriptionBackend,
     transcription: &dictation_context::TranscriptionSettings,
@@ -4276,7 +4310,8 @@ fn decode_final_transcript(
                     reason: Reason,
                     pieces: u32,
                     overlap_words: u64,
-                    tail_samples: usize| {
+                    tail_samples: usize,
+                    stitch_diff: &'static str| {
         whole_clip(backend).map(|attempt| FinalDecode {
             attempt,
             reuse: Some(Outcome {
@@ -4286,6 +4321,7 @@ fn decode_final_transcript(
                 // plus the whole-clip decode that replaced it.
                 decoded_ms: samples_to_ms(tail_samples + filtered.len()),
                 overlap_words,
+                stitch_diff,
             }),
         })
     };
@@ -4296,48 +4332,81 @@ fn decode_final_transcript(
                 reuse: None,
             })
         }
-        Err(reason) => return fallback(backend, reason, 0, 0, 0),
+        Err(reason) => return fallback(backend, reason, 0, 0, 0, "none"),
         Ok(Some(plan)) => plan,
+    };
+    let outcome = |code: &'static str, decoded_samples: usize, stitch_diff: &'static str| Outcome {
+        code,
+        pieces: plan.pieces,
+        decoded_ms: samples_to_ms(decoded_samples),
+        overlap_words: plan.overlap_words as u64,
+        stitch_diff,
     };
     let reused = |text: String, decoded_samples: usize| FinalDecode {
         attempt: BackendTranscriptionAttempt {
             text,
             empty_error: None,
         },
-        reuse: Some(Outcome {
-            code: "reused",
-            pieces: plan.pieces,
-            decoded_ms: samples_to_ms(decoded_samples),
-            overlap_words: plan.overlap_words as u64,
-        }),
+        reuse: Some(outcome("reused", decoded_samples, "none")),
     };
     if let Some(text) = plan.complete_text() {
         // The committed pieces already cover every kept sample.
         return Ok(reused(text, 0));
     }
     let tail = &filtered[plan.start..];
-    let stitched = match backend.transcribe(
+    let decoded = match backend.transcribe(
         tail,
         &transcription.language,
         transcription.prompt.as_deref(),
         transcription.smart_punctuation,
     ) {
-        Ok(decoded) => plan
-            .stitch(&decoded)
-            .ok_or(Reason::StitchMismatch)
-            .map(|text| reused(text, tail.len())),
-        Err(_) => Err(Reason::TailDecodeError),
+        Ok(decoded) => decoded,
+        Err(_) => {
+            return fallback(
+                backend,
+                Reason::TailDecodeError,
+                plan.pieces,
+                plan.overlap_words as u64,
+                tail.len(),
+                "none",
+            )
+        }
     };
-    match stitched {
-        Ok(decode) => Ok(decode),
-        Err(reason) => fallback(
-            backend,
-            reason,
-            plan.pieces,
-            plan.overlap_words as u64,
-            tail.len(),
-        ),
+    if let Some(text) = plan.stitch(&decoded) {
+        return Ok(reused(text, tail.len()));
     }
+    let stitch_diff = plan.stitch_diff(&decoded);
+    if plan.tail_is_whole_clip() {
+        // `tail` is all of `filtered`, so `decoded` is what the whole-clip
+        // decode's first call returns. Finish it as that decode, once.
+        return whole_clip_attempt_from_first_decode(
+            backend,
+            decoded,
+            &transcription.model_name,
+            filtered.len(),
+            original,
+            vad_trimmed,
+            &transcription.language,
+            transcription.prompt.as_deref(),
+            transcription.smart_punctuation,
+        )
+        .map(|attempt| FinalDecode {
+            attempt,
+            reuse: Some(outcome(
+                Reason::StitchMismatch.as_str(),
+                tail.len(),
+                stitch_diff,
+            )),
+        });
+    }
+    fallback(
+        backend,
+        Reason::StitchMismatch,
+        plan.pieces,
+        plan.overlap_words as u64,
+        tail.len(),
+        stitch_diff,
+    )
 }
 
 fn samples_to_ms(samples: usize) -> u64 {
@@ -11737,18 +11806,214 @@ pub(crate) mod tests {
                 assert_eq!(outcome.code, "reused");
                 assert_eq!(outcome.decoded_ms, (tail_len / 16) as u64);
             } else {
+                // Two pieces: the tail is shorter than the kept clip, so a
+                // refused stitch still needs the whole-clip decode.
+                assert!(tail_len < filtered.len());
                 assert_eq!(result.attempt.text, "Whole clip authoritative result.");
                 assert_eq!(backend.sample_counts, [tail_len, filtered.len()]);
+                let (code, stitch_diff) = match tail {
+                    "__test_decode_failure__" => ("tail_decode_error", "none"),
+                    "" => ("stitch_mismatch", "empty"),
+                    "Next stable segment." => ("stitch_mismatch", "no_new_words"),
+                    _ => ("stitch_mismatch", "last_word"),
+                };
+                assert_eq!(outcome.code, code);
+                assert_eq!(outcome.stitch_diff, stitch_diff);
                 assert_eq!(
-                    outcome.code,
-                    if tail == "__test_decode_failure__" {
-                        "tail_decode_error"
-                    } else {
-                        "stitch_mismatch"
-                    }
+                    outcome.decoded_ms,
+                    ((tail_len + filtered.len()) / 16) as u64
                 );
             }
         }
+    }
+
+    /// A reuse session with one committed piece (A) and the final VAD's kept
+    /// audio (A, C): the tail decode starts at the first kept sample.
+    fn one_piece_reuse() -> (crate::stream_reuse::FinalPlan, Vec<f32>) {
+        use crate::stream_reuse::{Committed, Plan, StreamReuse};
+        use crate::vad_stream::StreamSnapshot;
+        const A: (usize, usize) = (8_000, 72_000);
+        const C: (usize, usize) = (168_000, 184_000);
+        let raw: Vec<f32> = (0..16_000 * 14).map(|i| (i as f32 * 0.37).sin()).collect();
+        let mut reuse = StreamReuse::default();
+        reuse.begin(1);
+        let Plan::Commit(plan) = reuse.plan(
+            1,
+            &StreamSnapshot {
+                segments: vec![A],
+                scored_samples: A.1 + 9_600,
+            },
+        ) else {
+            panic!("expected a piece");
+        };
+        let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+        assert_eq!(
+            reuse.commit(1, plan, piece, "First stable segment."),
+            Committed::Stored
+        );
+        let bounds = [A, C];
+        let filtered: Vec<f32> = bounds
+            .iter()
+            .flat_map(|&(start, end)| raw[start..end].iter().copied())
+            .collect();
+        (
+            reuse.take_final(1, Some(&bounds), &filtered).unwrap(),
+            filtered,
+        )
+    }
+
+    /// One committed piece: the tail is the whole kept clip, so `filtered` is
+    /// decoded exactly once whatever the stitch says, and a refused stitch
+    /// returns byte for byte what the whole-clip decode of that audio returns.
+    #[test]
+    fn a_whole_clip_tail_is_decoded_once_and_equals_the_whole_clip_decode() {
+        let settings = dictation_context::TranscriptionSettings {
+            model_name: transcriber::COREML_MODEL_NAME.into(),
+            language: "auto".into(),
+            vad_sensitivity: 50,
+            prompt: None,
+            smart_punctuation: true,
+            streaming_pipeline_enabled: true,
+        };
+        for (decoded, code, stitch_diff) in [
+            ("First stable segment. Tail words.", "reused", "none"),
+            (
+                "First stable segment, tail words.",
+                "stitch_mismatch",
+                "last_word",
+            ),
+            (
+                "first stable segment. Tail words.",
+                "stitch_mismatch",
+                "first_word",
+            ),
+            ("First stable segment.", "stitch_mismatch", "no_new_words"),
+            ("Another reading of it all.", "stitch_mismatch", "words"),
+            ("  Padded reading of it all. ", "stitch_mismatch", "words"),
+        ] {
+            let (plan, filtered) = one_piece_reuse();
+            assert!(plan.tail_is_whole_clip());
+            let mut backend = RetryTestBackend::new(&[decoded]);
+            let result = decode_final_transcript(
+                &mut backend,
+                &settings,
+                &filtered,
+                &filtered,
+                true,
+                Ok(Some(plan)),
+            )
+            .unwrap();
+            // The reference: the unchanged whole-clip decoder over the same
+            // audio, given the same backend answer.
+            let mut reference_backend = RetryTestBackend::new(&[decoded]);
+            let reference = transcribe_with_coreml_vad_retry_report(
+                &mut reference_backend,
+                &settings.model_name,
+                &filtered,
+                &filtered,
+                true,
+                &settings.language,
+                None,
+                true,
+            )
+            .unwrap();
+            assert_eq!(backend.sample_counts, [filtered.len()], "{code}");
+            assert_eq!(backend.sample_counts, reference_backend.sample_counts);
+            if code == "stitch_mismatch" {
+                assert_eq!(result.attempt.text.as_bytes(), reference.text.as_bytes());
+            } else {
+                // A stitch onto no earlier piece: the same decode, trimmed as
+                // before this change.
+                assert_eq!(result.attempt.text, reference.text.trim());
+            }
+            assert_eq!(result.attempt.empty_error, reference.empty_error);
+            let outcome = result.reuse.expect("a decision was taken");
+            assert_eq!(outcome.code, code);
+            assert_eq!(outcome.stitch_diff, stitch_diff);
+            assert_eq!(outcome.pieces, 1);
+            assert_eq!(outcome.decoded_ms, (filtered.len() / 16) as u64);
+        }
+    }
+
+    /// The whole-clip retry policy still applies to a whole-clip tail: an
+    /// empty decode of VAD-trimmed audio retries the untrimmed recording once,
+    /// exactly as the whole-clip decoder does, without decoding `filtered`
+    /// again first.
+    #[test]
+    fn an_empty_whole_clip_tail_keeps_the_unfiltered_retry_and_its_error_codes() {
+        let settings = dictation_context::TranscriptionSettings {
+            model_name: transcriber::COREML_MODEL_NAME.into(),
+            language: "auto".into(),
+            vad_sensitivity: 50,
+            prompt: None,
+            smart_punctuation: true,
+            streaming_pipeline_enabled: true,
+        };
+        for (vad_trimmed, retried) in [
+            (true, Some("recovered words")),
+            (true, Some("")),
+            (false, None),
+        ] {
+            let (plan, filtered) = one_piece_reuse();
+            let original = vec![0.0; filtered.len() + 16_000];
+            let responses: Vec<&str> = std::iter::once("").chain(retried).collect();
+            let mut backend = RetryTestBackend::new(&responses);
+            let result = decode_final_transcript(
+                &mut backend,
+                &settings,
+                &filtered,
+                &original,
+                vad_trimmed,
+                Ok(Some(plan)),
+            )
+            .unwrap();
+            let mut reference_backend = RetryTestBackend::new(&responses);
+            let reference = transcribe_with_coreml_vad_retry_report(
+                &mut reference_backend,
+                &settings.model_name,
+                &filtered,
+                &original,
+                vad_trimmed,
+                &settings.language,
+                None,
+                true,
+            )
+            .unwrap();
+            assert_eq!(backend.sample_counts, reference_backend.sample_counts);
+            assert_eq!(result.attempt.text.as_bytes(), reference.text.as_bytes());
+            assert_eq!(result.attempt.empty_error, reference.empty_error);
+            let outcome = result.reuse.unwrap();
+            assert_eq!(outcome.code, "stitch_mismatch");
+            assert_eq!(outcome.stitch_diff, "empty");
+        }
+    }
+
+    /// A tail decode that fails outright is not the whole-clip decode: the
+    /// whole clip is still decoded, as before.
+    #[test]
+    fn a_failed_whole_clip_tail_decode_still_runs_the_whole_clip_decode() {
+        let settings = dictation_context::TranscriptionSettings {
+            model_name: transcriber::COREML_MODEL_NAME.into(),
+            language: "auto".into(),
+            vad_sensitivity: 50,
+            prompt: None,
+            smart_punctuation: true,
+            streaming_pipeline_enabled: true,
+        };
+        let (plan, filtered) = one_piece_reuse();
+        let mut backend = RetryTestBackend::new(&["__test_decode_failure__", "Whole clip result."]);
+        let result = decode_final_transcript(
+            &mut backend,
+            &settings,
+            &filtered,
+            &filtered,
+            true,
+            Ok(Some(plan)),
+        )
+        .unwrap();
+        assert_eq!(result.attempt.text, "Whole clip result.");
+        assert_eq!(backend.sample_counts, [filtered.len(), filtered.len()]);
+        assert_eq!(result.reuse.unwrap().code, "tail_decode_error");
     }
 
     #[test]

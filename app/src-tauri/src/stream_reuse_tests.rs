@@ -438,3 +438,65 @@ fn committed_bounds_at_any_cut_equal_the_final_bounds() {
     }
     assert!(commits_seen > 0, "the generator never produced a commit");
 }
+
+/// One committed piece (A), with C still to decode at Stop.
+fn one_piece_plan(raw: &[f32]) -> (FinalPlan, Vec<f32>) {
+    let mut reuse = StreamReuse::default();
+    reuse.begin(1);
+    let plan = commit_plan(&mut reuse, &snapshot(&[A], A.1 + EDGE_MARGIN));
+    let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+    assert_eq!(
+        reuse.commit(1, plan, piece, "First complete sentence."),
+        Committed::Stored
+    );
+    let bounds = [A, C];
+    let filtered = concat(raw, &bounds);
+    (
+        reuse.take_final(1, Some(&bounds), &filtered).unwrap(),
+        filtered,
+    )
+}
+
+#[test]
+fn with_one_committed_piece_the_tail_is_the_whole_kept_clip() {
+    let raw = raw();
+    let (plan, filtered) = one_piece_plan(&raw);
+    assert!(plan.tail_is_whole_clip());
+    assert_eq!(filtered[plan.start..].len(), filtered.len());
+
+    // With two pieces the tail starts at the second one: a real tail.
+    let mut reuse = two_pieces(&raw);
+    let bounds = [A, B, C];
+    let plan = reuse
+        .take_final(1, Some(&bounds), &concat(&raw, &bounds))
+        .unwrap();
+    assert!(!plan.tail_is_whole_clip());
+    assert_eq!(plan.start, 64_000);
+}
+
+#[test]
+fn a_refused_stitch_is_labelled_by_where_it_differs_without_any_text() {
+    let raw = raw();
+    let (plan, _) = one_piece_plan(&raw);
+    // The committed overlap is "First complete sentence."
+    for (decoded, label) in [
+        ("First complete sentence. Then more.", "none"),
+        ("", "empty"),
+        ("   ", "empty"),
+        ("First complete sentence.", "no_new_words"),
+        ("first complete sentence. Then more.", "first_word"),
+        ("First complete sentence, then more.", "last_word"),
+        ("First complete sentence", "last_word"),
+        ("first complete sentence, then more.", "first_and_last_word"),
+        ("First Complete sentence. Then more.", "interior"),
+        ("first Complete sentence, then more.", "interior"),
+        ("First  complete sentence. Then more.", "whitespace"),
+        ("First completed sentence. Then more.", "words"),
+        ("First complete.", "words"),
+        ("Something else entirely was said.", "words"),
+    ] {
+        assert_eq!(plan.stitch_diff(decoded), label, "decoded variant {label}");
+        // The label is `none` exactly when the tail stitches.
+        assert_eq!(plan.stitch(decoded).is_some(), label == "none");
+    }
+}

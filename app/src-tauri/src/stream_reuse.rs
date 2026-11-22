@@ -26,7 +26,9 @@
 //!   (same case, punctuation and word boundary). The overlap is re-decoded
 //!   with the audio that follows it, so this shows the stitch point reads the
 //!   same with and without the right context, the second biggest accuracy risk.
-//!   Any difference means whole-clip decode.
+//!   Any difference means whole-clip decode. When only one piece was committed
+//!   the tail starts at the first kept sample, so the tail decode already is
+//!   the whole-clip decode and is used as such, never decoded a second time.
 //! - Recording generation, model and settings come from the recording-start
 //!   snapshot, and every method is keyed by recording id: a stopped, cancelled
 //!   or superseded recording never reads or writes another one's state.
@@ -249,6 +251,64 @@ impl FinalPlan {
         }
         Some(join(&self.prefix, decoded.trim()))
     }
+
+    /// The tail decode starts at the first kept sample, so it is the
+    /// whole-clip decode: there is no earlier piece to stitch it onto.
+    pub fn tail_is_whole_clip(&self) -> bool {
+        self.start == 0
+    }
+
+    /// Where a tail decode that [`Self::stitch`] refused differs from the
+    /// committed overlap text. A label only, never a word of either text:
+    ///
+    /// - `none`: it stitches.
+    /// - `empty`: nothing was decoded.
+    /// - `no_new_words`: the overlap reads the same, with nothing after it.
+    /// - `words`: a word of the overlap differs (or is missing).
+    /// - `first_word`, `last_word`, `first_and_last_word`, `interior`: the
+    ///   words are the same and only case or punctuation differs, on the
+    ///   overlap's first word, its last word, both, or anywhere else.
+    /// - `whitespace`: the same words, spaced differently.
+    pub fn stitch_diff(&self, decoded: &str) -> &'static str {
+        let decoded = decoded.trim();
+        if decoded.is_empty() {
+            return "empty";
+        }
+        if let Some(rest) = split_overlap(decoded, &self.overlap) {
+            return if rest.is_empty() {
+                "no_new_words"
+            } else {
+                "none"
+            };
+        }
+        let letters = |word: &str| -> String {
+            word.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        let overlap: Vec<&str> = self.overlap.split_whitespace().collect();
+        let decoded: Vec<&str> = decoded.split_whitespace().take(overlap.len()).collect();
+        if decoded.len() < overlap.len()
+            || overlap
+                .iter()
+                .zip(&decoded)
+                .any(|(a, b)| letters(a) != letters(b))
+        {
+            return "words";
+        }
+        let last = overlap.len() - 1;
+        let differing: Vec<usize> = (0..overlap.len())
+            .filter(|&index| overlap[index] != decoded[index])
+            .collect();
+        match differing[..] {
+            [] => "whitespace",
+            [0] => "first_word",
+            [index] if index == last => "last_word",
+            [0, index] if index == last => "first_and_last_word",
+            _ => "interior",
+        }
+    }
 }
 
 impl StreamReuse {
@@ -470,9 +530,13 @@ pub(crate) struct Outcome {
     pub pieces: u32,
     /// Audio decoded at Stop, in milliseconds: the tail when reused, zero when
     /// the committed pieces covered everything, and on a fallback the whole
-    /// clip plus any tail decode that was discarded first.
+    /// clip plus any tail decode that was discarded first. A tail that was the
+    /// whole clip is never discarded, so it counts once.
     pub decoded_ms: u64,
     pub overlap_words: u64,
+    /// [`FinalPlan::stitch_diff`] of the tail decode; `none` when no tail was
+    /// decoded or it stitched.
+    pub stitch_diff: &'static str,
 }
 
 pub(crate) fn emit_outcome(recording_id: u64, outcome: &Outcome) {
@@ -484,6 +548,7 @@ pub(crate) fn emit_outcome(recording_id: u64, outcome: &Outcome) {
         piece_count = u64::from(outcome.pieces),
         decoded_ms = outcome.decoded_ms,
         overlap_words = outcome.overlap_words,
+        stitch_diff = outcome.stitch_diff,
         "streaming decode outcome"
     );
 }
