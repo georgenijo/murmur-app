@@ -681,13 +681,22 @@ pub fn run() {
 
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
-            let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
+            // The bundle's own name ("Murmur" in production), so an experiment
+            // variant is recognisable in the menu bar and cannot be mistaken for it.
+            let product_name = app
+                .config()
+                .product_name
+                .clone()
+                .unwrap_or_else(|| "Murmur".to_string());
+            let show_item =
+                MenuItemBuilder::with_id("show", format!("Show {product_name}")).build(app)?;
             let paste_last_item =
                 MenuItemBuilder::with_id("paste_last", "Paste Last / Retry Delivery").build(app)?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
                 .checked(keyboard::is_app_disabled())
                 .build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
+            let quit_item =
+                MenuItemBuilder::with_id("quit", format!("Quit {product_name}")).build(app)?;
             let tray_menu = MenuBuilder::new(app).item(&show_item);
             #[cfg(not(feature = "internal-benchmark"))]
             let (tray_menu, update_item) = {
@@ -709,7 +718,7 @@ pub fn run() {
             TrayIconBuilder::with_id("main-tray")
                 .icon(tauri::image::Image::new(&idle_icon_data, 66, 66))
                 .icon_as_template(true)
-                .tooltip("Murmur")
+                .tooltip(product_name.as_str())
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app_handle, event| {

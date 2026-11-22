@@ -13,9 +13,11 @@ pub(crate) use key_identity::sanitize_persisted_line;
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
 const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
+const SPEED_TEST_IDENTIFIER: &str = "com.localdictation.speedtest";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
 const REFACTOR_TEST_LOG_DIRECTORY: &str = "local-dictation-refactor-test";
 const BENCH_LOG_DIRECTORY: &str = "local-dictation-bench";
+const SPEED_TEST_LOG_DIRECTORY: &str = "local-dictation-speed-test";
 
 /// Target of [`hunt!`] events.
 pub(crate) const HUNT_STREAM: &str = "hunt";
@@ -108,6 +110,7 @@ fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
     let directory = match identifier {
         REFACTOR_TEST_IDENTIFIER => REFACTOR_TEST_LOG_DIRECTORY,
         BENCH_IDENTIFIER => BENCH_LOG_DIRECTORY,
+        SPEED_TEST_IDENTIFIER => SPEED_TEST_LOG_DIRECTORY,
         _ => PRODUCTION_LOG_DIRECTORY,
     };
     data_root.join(directory).join("logs")
@@ -123,7 +126,7 @@ pub(crate) fn logs_dir() -> Option<PathBuf> {
 pub(crate) fn is_internal_bundle(app_handle: &tauri::AppHandle) -> bool {
     matches!(
         app_handle.config().identifier.as_str(),
-        REFACTOR_TEST_IDENTIFIER | BENCH_IDENTIFIER
+        REFACTOR_TEST_IDENTIFIER | BENCH_IDENTIFIER | SPEED_TEST_IDENTIFIER
     )
 }
 
@@ -3042,6 +3045,7 @@ pub fn init(app_handle: tauri::AppHandle) {
         log_namespace = match identifier.as_str() {
             REFACTOR_TEST_IDENTIFIER => "refactor-test",
             BENCH_IDENTIFIER => "bench",
+            SPEED_TEST_IDENTIFIER => "speed-test",
             _ => "production",
         },
         debug_logging = debug_on,
@@ -3765,6 +3769,10 @@ mod tests {
         assert_eq!(
             log_directory_for(root, BENCH_IDENTIFIER),
             root.join("local-dictation-bench/logs")
+        );
+        assert_eq!(
+            log_directory_for(root, SPEED_TEST_IDENTIFIER),
+            root.join("local-dictation-speed-test/logs")
         );
     }
 

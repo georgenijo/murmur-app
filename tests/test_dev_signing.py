@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 from pathlib import Path
 import plistlib
 import subprocess
@@ -126,6 +127,32 @@ class BundleSettingsTests(unittest.TestCase):
         self.assertEqual(
             dev.bundle_settings(tauri / "tauri.refactor-test.conf.json"),
             ("com.localdictation.refactor-test", "Murmur Refactor Test"),
+        )
+
+    def test_speed_test_variant_is_isolated_and_never_self_updates(self) -> None:
+        tauri = ROOT / "app" / "src-tauri"
+        config = tauri / "tauri.speed-test.conf.json"
+        self.assertEqual(
+            dev.bundle_settings(config),
+            ("com.localdictation.speedtest", "Murmur Speed Test"),
+        )
+        overlay = json.loads(config.read_text(encoding="utf-8"))
+        base = json.loads((tauri / "tauri.conf.json").read_text(encoding="utf-8"))
+        # No updater artifacts, and an endpoint that cannot reach a production release.
+        self.assertIs(overlay["bundle"]["createUpdaterArtifacts"], False)
+        endpoints = overlay["plugins"]["updater"]["endpoints"]
+        self.assertEqual(len(endpoints), 1)
+        # Tauri only accepts https; `.invalid` never resolves, so no feed is reachable.
+        self.assertTrue(endpoints[0].startswith("https://"))
+        self.assertIn(".invalid/", endpoints[0])
+        for endpoint in base["plugins"]["updater"]["endpoints"]:
+            self.assertNotIn(endpoint, endpoints)
+        # Its own icon, not production's.
+        self.assertEqual(overlay["bundle"]["icon"], ["icons/speed-test/icon.icns"])
+        self.assertTrue((tauri / "icons" / "speed-test" / "icon.icns").is_file())
+        self.assertNotEqual(
+            (tauri / "icons" / "speed-test" / "icon.icns").read_bytes(),
+            (tauri / "icons" / "icon.icns").read_bytes(),
         )
 
     def test_production_identifier_is_refused(self) -> None:
