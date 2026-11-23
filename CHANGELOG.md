@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.67.2] - 2026-11-23
+
+<!-- Release notes generated using configuration in .github/release.yml at bc07c11e5715403c7659a39862a756d80c52ba27 -->
+
+## What's Changed
+### Other Changes
+* feat(overlay): show a missing or broken speech model on the pill and notch by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1200
+* feat(overlay): slim floating pill with one line of live words by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1201
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.67.1...v0.67.2
+
 ## [0.67.1] - 2026-11-22
 
 <!-- Release notes generated using configuration in .github/release.yml at 2dfa74e934d1b0e813621d2e2ebce99a1b02371b -->
