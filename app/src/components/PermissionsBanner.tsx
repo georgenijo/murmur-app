@@ -38,7 +38,7 @@ function isMicHardDenied(status: MicPermissionStatus): boolean {
   return status === 'denied';
 }
 
-function PermissionsBannerComponent({ microphoneInHome = false }: { microphoneInHome?: boolean }) {
+function PermissionsBanner({ microphoneInHome = false }: { microphoneInHome?: boolean }) {
   const [permissions, setPermissions] = useState<PermissionStatus>({
     microphone: 'unknown',
     accessibility: 'unknown',
@@ -349,4 +349,5 @@ function PermissionsBannerComponent({ microphoneInHome = false }: { microphoneIn
 
 // Its only prop is a boolean, so skip the ~47/s App re-renders that the
 // recording audio level causes while the main window is visible.
-export const PermissionsBanner = memo(PermissionsBannerComponent);
+const MemoPermissionsBanner = memo(PermissionsBanner);
+export { MemoPermissionsBanner as PermissionsBanner };
