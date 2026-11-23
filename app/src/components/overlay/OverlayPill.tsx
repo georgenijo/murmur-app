@@ -123,8 +123,16 @@ function LiveWordsLine({ text }: { text: string }) {
   useLayoutEffect(() => {
     const el = line.current;
     if (!el) return;
-    el.dataset.overflow = String(el.scrollWidth > el.clientWidth + 1);
-    el.scrollLeft = el.scrollWidth;
+    const fit = () => {
+      el.dataset.overflow = String(el.scrollWidth > el.clientWidth + 1);
+      el.scrollLeft = el.scrollWidth;
+    };
+    fit();
+    // The pill can resize (a warning widens it) without the words changing.
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [tail]);
   return (
     <div className="bezel-words" ref={line}>

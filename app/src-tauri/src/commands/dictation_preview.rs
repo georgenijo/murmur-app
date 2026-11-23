@@ -340,10 +340,20 @@ pub async fn show_dictation_preview(
         return Err("dictation preview show is restricted to its own window".to_string());
     }
     let app = window.app_handle().clone();
-    if super::overlay::floating_pill_placed(&app) {
+    if let Some(reason) = declined_for_pill(super::overlay::floating_pill_placed(&app)) {
         // The floating pill shows the words on its own surface; a window left
-        // over from the notch placement must stay hidden.
-        return Err("the floating pill shows live words itself".to_string());
+        // over from the notch placement must stay hidden, so hide it now
+        // instead of letting every partial tick find it still presented.
+        if POPOVER.is_presented() {
+            let hide_app = app.clone();
+            let _ = app.run_on_main_thread(crate::main_thread_watch::job(
+                "preview.hide_for_pill",
+                move || {
+                    let _ = POPOVER.hide(&hide_app);
+                },
+            ));
+        }
+        return Err(reason.to_string());
     }
     let dispatch_app = app.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -408,6 +418,18 @@ fn live_words_enabled(blob: Option<&str>) -> bool {
         .unwrap_or(true)
 }
 
+/// Why the separate Live Words window must not present: the floating pill
+/// carries its own line of words.
+fn declined_for_pill(pill_placed: bool) -> Option<&'static str> {
+    pill_placed.then_some("the floating pill shows live words itself")
+}
+
+/// Whether the separate Live Words window should be built: Live Words is on
+/// and the notch island, not the floating pill, is placed.
+fn live_words_window_wanted(blob: Option<&str>, pill_placed: bool) -> bool {
+    live_words_enabled(blob) && !pill_placed
+}
+
 /// Serializes every attempt to build the Live Words window (the ticker's start
 /// and a consent commit). Tauri validates a label and registers the window in
 /// separate steps, so two builders can both pass validation and create two
@@ -455,7 +477,7 @@ pub(crate) fn ensure_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, record
                 .flatten();
             // The floating pill carries its own line of words, so it never
             // pays for a second webview.
-            live_words_enabled(blob.as_deref()) && !super::overlay::floating_pill_placed(app)
+            live_words_window_wanted(blob.as_deref(), super::overlay::floating_pill_placed(app))
         },
         || build_window(app, label),
     );
@@ -526,6 +548,42 @@ pub(crate) fn ensure_window_after_consent(app: &tauri::AppHandle) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    #[test]
+    fn the_floating_pill_declines_the_separate_words_window() {
+        // show_dictation_preview refuses while the pill is placed.
+        assert!(declined_for_pill(true).is_some());
+        assert!(declined_for_pill(false).is_none());
+        // ensure_window never builds the window for the pill, even with Live
+        // Words on or no setting stored, and still builds it for the notch.
+        assert!(!live_words_window_wanted(None, true));
+        assert!(!live_words_window_wanted(
+            Some(r#"{"overlayLiveWords":true}"#),
+            true
+        ));
+        assert!(live_words_window_wanted(None, false));
+        assert!(!live_words_window_wanted(
+            Some(r#"{"overlayLiveWords":false}"#),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_pill_placement_stops_the_build_through_create_once() {
+        let gate = std::sync::Mutex::new(());
+        let builds = AtomicUsize::new(0);
+        let built = create_once(
+            &gate,
+            || false,
+            || true,
+            || live_words_window_wanted(None, true),
+            || {
+                builds.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert!(!built);
+        assert_eq!(builds.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn overlapping_creation_attempts_build_exactly_one_window() {

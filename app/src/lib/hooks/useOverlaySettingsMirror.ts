@@ -123,6 +123,17 @@ export function useOverlaySettingsMirror({
     return () => { cancelled = true; revision++; refreshDurableRef.current = async () => null; unlisten?.(); };
   }, [applySettingsSnapshot]);
 
+  // An opt-out clears the pill's words at once instead of waiting for the
+  // asynchronous settings read. Only the durable read ever switches words on.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>('live-words-consent-persisted', ({ payload }) => {
+      if (payload !== true) setOverlayLiveWords(false);
+    }).then(fn => { if (cancelled) fn(); else unlisten = fn; }).catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Persist only the owned field; the host merges into the latest durable
   // document under its writer lock. Never write a retained settings snapshot.
   const commitOwnedField = useCallback(async (field: 'autoPaste' | 'disabled', value: boolean) => {

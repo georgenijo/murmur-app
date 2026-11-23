@@ -17,7 +17,19 @@ export type OverlayPlacement = 'notch' | 'floating_pill';
  * dot and waveform alone (Live Words off), `words` adds one line of words and
  * is fixed for a whole dictation, `warning` is the only width change. */
 export type OverlayPillSize = 'compact' | 'words' | 'warning';
-export type OverlayContent = 'controls' | 'meeting_suggestion';
+/** The pill width the overlay asks for. The notch has none. A speech-model
+ * warning beats words, which beat compact. `liveWordsConsented` is false until
+ * the durable settings read completes, so the pill stays compact until then. */
+export function overlayPillSize(
+  placement: OverlayPlacement,
+  modelWarning: boolean,
+  liveWordsConsented: boolean,
+): OverlayPillSize | undefined {
+  if (placement !== 'floating_pill') return undefined;
+  if (modelWarning) return 'warning';
+  return liveWordsConsented ? 'words' : 'compact';
+}
+export type OverlayContent ='controls' | 'meeting_suggestion';
 const NUMBER_KEYS = ['windowW', 'collapsedH', 'expandedH', 'pillIdleW', 'pillActiveW',
   'pillMarginIdle', 'pillMarginActive', 'dropdownH', 'wingW'] as const;
 const ISLAND_KEYS = ['notchW', 'notchH', 'cornerIdle', 'cornerActive', 'pillW', 'pillH'] as const;

@@ -22,4 +22,12 @@ describe('liveWordsTail', () => {
     const long = 'a'.repeat(500);
     expect(liveWordsTail(long)).toHaveLength(LIVE_WORDS_LINE_MAX_CHARS);
   });
+
+  it('never splits an emoji or other surrogate pair when it cuts', () => {
+    const emoji = '\u{1F600}'.repeat(200);
+    const tail = liveWordsTail(emoji, 10);
+    expect(Array.from(tail)).toHaveLength(10);
+    expect(tail).toBe('\u{1F600}'.repeat(10));
+    expect(tail).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
 });

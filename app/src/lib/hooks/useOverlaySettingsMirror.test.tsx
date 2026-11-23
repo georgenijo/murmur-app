@@ -37,6 +37,7 @@ describe('overlay settings write ownership', () => {
     });
     return <>
       <output>{mirror.overlayPlacement}</output>
+      <output data-testid="words">{String(mirror.overlayLiveWords)}</output>
       <button onClick={mirror.handleToggleAutoPaste}>Paste</button>
       <button onClick={mirror.handleToggleDisabled}>Disable</button>
       <button onClick={mirror.refresh}>Refresh</button>
@@ -183,4 +184,26 @@ describe('overlay settings write ownership', () => {
     expect(container.querySelector('output')?.textContent).toBe('floating_pill');
   });
 
+  const words = () => container.querySelector('[data-testid="words"]')?.textContent;
+
+  it('keeps Live Words off until the durable read completes, then follows it', async () => {
+    expect(words()).toBe('false');
+    mocks.invoke.mockResolvedValue(JSON.stringify({ ...stored, overlayLiveWords: true }));
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    expect(words()).toBe('true');
+  });
+
+  it('clears Live Words at once on a consent opt-out, before any settings read', async () => {
+    mocks.invoke.mockResolvedValue(JSON.stringify({ ...stored, overlayLiveWords: true }));
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    expect(words()).toBe('true');
+    mocks.invoke.mockImplementation(() => new Promise(() => {}));
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: false }));
+    expect(words()).toBe('false');
+  });
+
+  it('never switches words on from a consent event alone', async () => {
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: true }));
+    expect(words()).toBe('false');
+  });
 });

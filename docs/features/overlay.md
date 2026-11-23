@@ -142,7 +142,11 @@ Hidden WKWebViews can receive a generic settings event before their storage
 cache changes. Host persistence therefore sends targeted commit notifications:
 preview consent is re-read from disk (a true notification alone cannot enable
 words), and overlay controls read a validated snapshot without overwriting a
-shared cache. Generation guards discard older responses. Hover refresh and
+shared cache. The consent notification also goes to the overlay window: an
+opt-out clears the floating pill's words at once, while only the durable read
+turns them on (the pill stays compact until it completes). The separate Live
+Words window declines to show, and is hidden if left over, while the floating
+pill is placed. Generation guards discard older responses. Hover refresh and
 quick-control writes retain the latest confirmed/optimistic snapshot.
 
 ## Notch Detection

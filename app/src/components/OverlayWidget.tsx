@@ -18,7 +18,8 @@ import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatu
 import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib/smartAutoMicrophone';
 import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
 import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
-import type { OverlayContent, OverlayPillSize } from '../lib/overlayGeometry';
+import { overlayPillSize } from '../lib/overlayGeometry';
+import type { OverlayContent } from '../lib/overlayGeometry';
 import { useDictationPartial } from '../lib/hooks/useDictationPartial';
 import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
 import { useWaveform } from '../lib/hooks/useWaveform';
@@ -111,9 +112,8 @@ export function OverlayWidget() {
   // The pill rests at one width per setting, so dictating never moves it; only
   // a speech-model warning widens it, and it narrows again when that clears.
   const modelCueActive = runtime.modelUnavailable !== null;
-  const pillSize: OverlayPillSize | undefined = !floatingPill ? undefined
-    : modelCueActive ? 'warning'
-      : settingsMirror.overlayLiveWords ? 'words' : 'compact';
+  const pillSize = overlayPillSize(
+    settingsMirror.overlayPlacement, modelCueActive, settingsMirror.overlayLiveWords);
   // The floating pill carries the words itself; the notch keeps its own window.
   const liveWordsText = useDictationPartial(floatingPill && settingsMirror.overlayLiveWords,
     { presentNatively: false });
