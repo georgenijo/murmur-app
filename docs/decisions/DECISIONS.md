@@ -1,5 +1,28 @@
 # Decisions Log
 
+## 2026-11-22: The floating pill is one object with one line of words
+
+**Decision:** The floating pill carries Live Words as a single line inside the
+capsule (dot, 12-bar waveform, newest words fading in from the left) and no
+longer opens a separate words window above it. Its width is fixed per setting
+(120pt with Live Words off, 224pt on); only a speech-model warning widens it
+(256pt, a phrase plus its action) and it narrows back when the cue clears. The
+width travels through the existing acknowledged `set_overlay_expanded` resize
+as `pillSize`, so Rust still owns every native pixel. The notch island keeps
+its own Live Words card. This supersedes the "fixed 120×34 capsule" and the
+"Live Words card above it" parts of the 2026-11-02 entry.
+
+**Why:** George moved to the floating pill and found two stacked surfaces
+heavy. One slim capsule is quieter, needs no second webview or native material,
+and a fixed width keeps long words, CJK and fast speech from jittering it.
+Warnings needed a readable phrase that 120pt could not hold.
+
+**Status:** active
+
+**References:** `docs/features/overlay.md`
+
+---
+
 ## 2026-11-11: Remove screenshot baselines
 
 **Decision:** Remove pixel screenshot comparisons and their platform-specific

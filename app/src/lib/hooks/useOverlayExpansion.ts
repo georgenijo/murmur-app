@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { OverlayActivity, OverlayContent, OverlayPlacement } from '../overlayGeometry';
+import type { OverlayActivity, OverlayContent, OverlayPillSize, OverlayPlacement } from '../overlayGeometry';
 import {
   COLLAPSE_DELAY_MS,
   HOVER_OPEN_DWELL_MS,
@@ -93,12 +93,16 @@ export function useOverlayExpansion({
   content = 'controls',
   activity,
   placement,
+  pillSize,
   hoverEnabled = true,
 }: {
   forcedOpen?: boolean;
   content?: OverlayContent;
   activity?: OverlayActivity;
   placement?: OverlayPlacement;
+  /** The floating pill's resting width. A change travels the same acknowledged,
+   * contraction-deferred native resize as an activity change. */
+  pillSize?: OverlayPillSize;
   /** False while the surface is invisible (the idle floating pill): hover may
    * not open a card nobody can see. An already-open card still closes normally. */
   hoverEnabled?: boolean;
@@ -124,8 +128,8 @@ export function useOverlayExpansion({
   const wasForcedOpenRef = useRef(false);
   contentRef.current = content;
   forcedOpenRef.current = forcedOpen;
-  const layoutRef = useRef({ activity, placement });
-  layoutRef.current = { activity, placement };
+  const layoutRef = useRef({ activity, placement, pillSize });
+  layoutRef.current = { activity, placement, pillSize };
   const hoverEnabledRef = useRef(hoverEnabled);
   hoverEnabledRef.current = hoverEnabled;
 
@@ -182,6 +186,7 @@ export function useOverlayExpansion({
           content: contentRef.current,
           ...(layoutRef.current.activity ? { activity: layoutRef.current.activity } : {}),
           ...(layoutRef.current.placement ? { placement: layoutRef.current.placement } : {}),
+          ...(layoutRef.current.pillSize ? { pillSize: layoutRef.current.pillSize } : {}),
           ...(deferShrink ? { deferShrink: true } : {}),
         }),
       );
@@ -217,7 +222,8 @@ export function useOverlayExpansion({
   // second effect issuing competing native resizes. Hidden changes are replayed
   // on show; they do not wake a hidden webview or grow an invisible hit target.
   useEffect(() => {
-    if (activity === undefined && placement === undefined || !visibleRef.current) return;
+    if (activity === undefined && placement === undefined && pillSize === undefined
+      || !visibleRef.current) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deferShrink = !reducedMotionRef.current;
@@ -235,7 +241,7 @@ export function useOverlayExpansion({
       }, SHRINK_DELAY_MS);
     });
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [activity, placement, pushSurface]);
+  }, [activity, placement, pillSize, pushSurface]);
 
   // --- Timer helpers --------------------------------------------------------
 

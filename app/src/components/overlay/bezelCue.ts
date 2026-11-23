@@ -1,6 +1,6 @@
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 import type { OverlayIndicator } from './deriveVisual';
-import { modelUnavailableWord } from '../../lib/modelUnavailable';
+import { modelUnavailablePhrase } from '../../lib/modelUnavailable';
 
 /** The floating pill pairs every state with one shape and one word: dot =
  * recording, ring = connecting, spinner = working, check = done, cross =
@@ -14,6 +14,9 @@ export interface BezelCue {
   word: string;
   /** Present when the word is a delivery retry button. */
   retry?: boolean;
+  /** A short chip after the word naming what a click does. The whole pill is
+   * the target; the chip is only its label. */
+  action?: string;
 }
 
 const MICROPHONE_WORDS = {
@@ -37,7 +40,10 @@ export function bezelCue(
           ? MICROPHONE_WORDS[indicator.failure as keyof typeof MICROPHONE_WORDS]
           : 'Mic failed',
       };
-    case 'modelUnavailable': return { glyph: 'warn', word: modelUnavailableWord(indicator.reason) };
+    case 'modelUnavailable': {
+      const { phrase, action } = modelUnavailablePhrase(indicator.reason);
+      return { glyph: 'warn', word: phrase, action };
+    }
     case 'hotkeyMiss': return { glyph: 'warn', word: 'Tap missed' };
     case 'meeting':
       return indicator.processing ? { glyph: 'spinner', word: 'Finishing' } : { glyph: 'dot', word: 'Meeting' };

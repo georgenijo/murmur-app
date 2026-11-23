@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bezelCue } from './bezelCue';
 import type { OverlayIndicator } from './deriveVisual';
+import type { ModelUnavailableReason } from '../../lib/modelUnavailable';
 
 describe('bezelCue', () => {
   it('pairs every visible state with one shape and one word', () => {
@@ -11,11 +12,6 @@ describe('bezelCue', () => {
       [{ kind: 'microphoneFailure', failure: 'openMicrophoneSettings' }, 'warn', 'Mic denied'],
       [{ kind: 'microphoneFailure', failure: 'waitForPartialTranscription' }, 'warn', 'Mic lost'],
       [{ kind: 'microphoneFailure', failure: 'retry' }, 'warn', 'Mic failed'],
-      [{ kind: 'modelUnavailable', reason: 'notInstalled' }, 'warn', 'No model'],
-      [{ kind: 'modelUnavailable', reason: 'incomplete' }, 'warn', 'Incomplete'],
-      [{ kind: 'modelUnavailable', reason: 'downloading' }, 'warn', 'Downloading'],
-      [{ kind: 'modelUnavailable', reason: 'unsupported' }, 'warn', 'Unsupported'],
-      [{ kind: 'modelUnavailable', reason: 'loadFailed' }, 'warn', 'Load failed'],
       [{ kind: 'hotkeyMiss' }, 'warn', 'Tap missed'],
       [{ kind: 'meeting', processing: false }, 'dot', 'Meeting'],
       [{ kind: 'meeting', processing: true }, 'spinner', 'Finishing'],
@@ -28,6 +24,19 @@ describe('bezelCue', () => {
     }
     // Recording pairs the dot with the waveform instead of a word.
     expect(bezelCue({ kind: 'recording' })).toEqual({ glyph: 'dot', word: '' });
+  });
+
+  it('names a speech-model problem with a phrase and the action a click takes', () => {
+    const cases: [ModelUnavailableReason, string, string][] = [
+      ['notInstalled', 'No speech model', 'Fix'],
+      ['incomplete', 'Model incomplete', 'Fix'],
+      ['downloading', 'Model downloading', 'View'],
+      ['unsupported', 'Model unsupported', 'Fix'],
+      ['loadFailed', 'Model failed to load', 'Fix'],
+    ];
+    for (const [reason, word, action] of cases) {
+      expect(bezelCue({ kind: 'modelUnavailable', reason })).toEqual({ glyph: 'warn', word, action });
+    }
   });
 
   it('checks a finish and offers the delivery retry as the word', () => {

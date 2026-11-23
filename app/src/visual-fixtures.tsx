@@ -885,11 +885,11 @@ function DictationPreviewFixture() {
   );
 }
 
-/** The real floating pill (production geometry, CSS and components) for every
- * model-problem word, so a browser can measure that each one fits the capsule. */
+/** The real widened floating pill (production geometry, CSS and components) for
+ * every model-problem phrase, so a browser can measure that each one fits. */
 function ModelPillFixture() {
   const reasons: ModelUnavailableReason[] = ['notInstalled', 'incomplete', 'downloading', 'unsupported', 'loadFailed'];
-  const geometry = overlayGeometryFixture.pillProcessing as OverlayGeometry;
+  const geometry = overlayGeometryFixture.pillWarning as OverlayGeometry;
   const barRefs = React.useRef<(HTMLDivElement | null)[]>([]);
   return <main data-visual-ready="true" style={{ padding: 16, display: 'grid', gap: 12, justifyItems: 'start' }}>
     {reasons.map((reason) => (

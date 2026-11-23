@@ -13,6 +13,10 @@ export interface OverlayGeometry {
 }
 export type OverlayActivity = 'idle' | 'recording' | 'processing';
 export type OverlayPlacement = 'notch' | 'floating_pill';
+/** How wide the floating pill rests; Rust owns the pixels. `compact` is the
+ * dot and waveform alone (Live Words off), `words` adds one line of words and
+ * is fixed for a whole dictation, `warning` is the only width change. */
+export type OverlayPillSize = 'compact' | 'words' | 'warning';
 export type OverlayContent = 'controls' | 'meeting_suggestion';
 const NUMBER_KEYS = ['windowW', 'collapsedH', 'expandedH', 'pillIdleW', 'pillActiveW',
   'pillMarginIdle', 'pillMarginActive', 'dropdownH', 'wingW'] as const;

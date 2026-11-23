@@ -53,11 +53,27 @@ pub enum OverlayPlacement {
     FloatingPill,
 }
 
+/// How wide the floating pill rests. The frontend picks it from state it owns
+/// (Live Words on, a speech-model warning showing) and Rust owns the pixels, so
+/// every width change goes through the one acknowledged native resize.
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPillSize {
+    /// Dot and waveform only (Live Words off).
+    #[default]
+    Compact,
+    /// Dot, waveform and one line of live words. Fixed for the whole dictation.
+    Words,
+    /// Wide enough for a warning phrase and its action. Only a warning widens it.
+    Warning,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OverlayLayout {
     activity: OverlayActivity,
     placement: OverlayPlacement,
     expanded: bool,
+    pill_size: OverlayPillSize,
 }
 
 /// The window frame `set_overlay_expanded` actually applied. Returned so the
@@ -151,6 +167,10 @@ impl NotchInfo {
 const WING: f64 = 28.0;
 const DROPDOWN_H: f64 = 64.0;
 const PILL_W: f64 = 120.0;
+/// Pill with one line of live words: dot, 12 bars and about 135pt of text.
+const PILL_WORDS_W: f64 = 224.0;
+/// Pill showing a warning phrase and its action ("Model incomplete  Fix").
+const PILL_WARNING_W: f64 = 256.0;
 const PILL_H: f64 = 34.0;
 #[cfg(target_os = "macos")]
 const OVERLAY_MATERIAL: &str = crate::commands::overlay_material::OVERLAY_LABEL;
@@ -232,10 +252,18 @@ fn geometry_for_layout(
         // the window click-through, so recording never waits on a native resize.
         g.floating = true;
         g.island.notch_h = 0.0;
+        let pill_w = match layout.pill_size {
+            OverlayPillSize::Compact => PILL_W,
+            OverlayPillSize::Words => PILL_WORDS_W,
+            OverlayPillSize::Warning => PILL_WARNING_W,
+        };
+        // The capsule's own width, which the webview and the native material
+        // both draw. Expanded, the window is at least as wide as the controls.
+        g.island.pill_w = pill_w;
         g.window_w = if layout.expanded {
-            g.window_w.max(PILL_EXPANDED_MIN_W)
+            g.window_w.max(PILL_EXPANDED_MIN_W).max(pill_w)
         } else {
-            PILL_W
+            pill_w
         };
         g.collapsed_h = PILL_H;
     } else if !active {
@@ -269,7 +297,7 @@ pub(crate) fn floating_pill_geometry(
 
 /// True while the stored layout places the overlay as the floating pill.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn floating_pill_placed(app: &tauri::AppHandle) -> bool {
+pub(crate) fn floating_pill_placed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     app.state::<State>()
         .overlay_layout
         .lock_or_recover()
@@ -1598,17 +1626,18 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn set_overlay_expanded(
     app: tauri::AppHandle,
-    _state: tauri::State<'_, State>,
     expanded: bool,
     content: Option<OverlayContent>,
     activity: Option<OverlayActivity>,
     placement: Option<OverlayPlacement>,
+    pill_size: Option<OverlayPillSize>,
     defer_shrink: Option<bool>,
 ) -> Result<AppliedSurface, String> {
     let content = content.unwrap_or_default();
     #[cfg(not(target_os = "macos"))]
     {
-        let mut layout = _state.overlay_layout.lock_or_recover();
+        let state = app.state::<State>();
+        let mut layout = state.overlay_layout.lock_or_recover();
         layout.expanded = expanded;
         if let Some(activity) = activity {
             layout.activity = activity;
@@ -1616,11 +1645,14 @@ pub async fn set_overlay_expanded(
         if let Some(placement) = placement {
             layout.placement = placement;
         }
+        if let Some(pill_size) = pill_size {
+            layout.pill_size = pill_size;
+        }
         let g = geometry_for_layout(None, content, *layout);
         let _ = app.emit("overlay-surface-changed", &g);
         return Ok(animation_surface(
             applied_surface_for(&g, expanded),
-            *_state.overlay_frame.lock_or_recover(),
+            *state.overlay_frame.lock_or_recover(),
             defer_shrink.unwrap_or(false),
         ));
     }
@@ -1649,6 +1681,9 @@ pub async fn set_overlay_expanded(
                     }
                     if let Some(placement) = placement {
                         layout.placement = placement;
+                    }
+                    if let Some(pill_size) = pill_size {
+                        layout.pill_size = pill_size;
                     }
                     let geometry = geometry_for_layout(notch, content, layout);
                     if tx.is_closed() {
@@ -2062,6 +2097,18 @@ mod tests {
             activity,
             placement: OverlayPlacement::FloatingPill,
             expanded,
+            ..OverlayLayout::default()
+        }
+    }
+
+    fn sized_pill(
+        activity: OverlayActivity,
+        expanded: bool,
+        pill_size: OverlayPillSize,
+    ) -> OverlayLayout {
+        OverlayLayout {
+            pill_size,
+            ..pill(activity, expanded)
         }
     }
 
@@ -2162,6 +2209,88 @@ mod tests {
                 window_h: PILL_H
             }
         );
+    }
+
+    #[test]
+    fn pill_width_follows_its_size_and_only_a_warning_widens_it() {
+        let notch = Some(notched(185.0, 32.0));
+        let fixtures: std::collections::HashMap<String, OverlayGeometry> = serde_json::from_str(
+            include_str!("../../../src/components/overlay/overlay-geometry.fixture.json"),
+        )
+        .unwrap();
+        for (name, size) in [
+            ("pillWords", OverlayPillSize::Words),
+            ("pillWarning", OverlayPillSize::Warning),
+        ] {
+            assert_eq!(
+                geometry_for_layout(
+                    notch,
+                    OverlayContent::Controls,
+                    sized_pill(OverlayActivity::Recording, false, size)
+                ),
+                fixtures[name]
+            );
+        }
+        let at = |activity, expanded, size| {
+            geometry_for_layout(
+                notch,
+                OverlayContent::Controls,
+                sized_pill(activity, expanded, size),
+            )
+        };
+        for activity in [
+            OverlayActivity::Idle,
+            OverlayActivity::Recording,
+            OverlayActivity::Processing,
+        ] {
+            // Dictating never changes the width: one size per setting.
+            let words = at(activity, false, OverlayPillSize::Words);
+            assert_eq!(words.window_w, PILL_WORDS_W);
+            assert_eq!(words.island.pill_w, PILL_WORDS_W);
+            assert_eq!(words.collapsed_h, PILL_H);
+            let compact = at(activity, false, OverlayPillSize::Compact);
+            assert_eq!(compact.window_w, PILL_W);
+            assert_eq!(compact.island.pill_w, PILL_W);
+            let warning = at(activity, false, OverlayPillSize::Warning);
+            assert_eq!(warning.window_w, PILL_WARNING_W);
+            assert_eq!(warning.island.pill_w, PILL_WARNING_W);
+        }
+        const { assert!(PILL_W < PILL_WORDS_W && PILL_WORDS_W < PILL_WARNING_W) };
+        // Hover controls never narrow the pill below its own width.
+        for size in [
+            OverlayPillSize::Compact,
+            OverlayPillSize::Words,
+            OverlayPillSize::Warning,
+        ] {
+            let g = at(OverlayActivity::Recording, true, size);
+            assert!(g.window_w >= PILL_EXPANDED_MIN_W);
+            assert!(g.window_w >= g.island.pill_w);
+            assert_eq!(g.expanded_h, PILL_H + DROPDOWN_H);
+        }
+        // The notch ignores the pill size.
+        let notch_layout = OverlayLayout {
+            pill_size: OverlayPillSize::Warning,
+            activity: OverlayActivity::Recording,
+            ..OverlayLayout::default()
+        };
+        let g = geometry_for_layout(notch, OverlayContent::Controls, notch_layout);
+        assert!(!g.floating);
+        assert_eq!(g.island.pill_w, PILL_W);
+        assert_eq!(g.window_w, 185.0 + 2.0 * WING);
+    }
+
+    #[test]
+    fn pill_sizes_deserialize_from_the_frontend_names() {
+        for (name, size) in [
+            ("compact", OverlayPillSize::Compact),
+            ("words", OverlayPillSize::Words),
+            ("warning", OverlayPillSize::Warning),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<OverlayPillSize>(&format!("\"{name}\"")).unwrap(),
+                size
+            );
+        }
     }
 
     #[test]

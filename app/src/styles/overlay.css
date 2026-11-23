@@ -162,6 +162,33 @@
   color: inherit;
 }
 .bezel-retry:hover { background: var(--bezel-sel-strong); }
+/* The action a click takes on a warning ("Fix"): a label only, the whole pill
+   is the target. */
+.bezel-chip {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--bezel-sel-strong);
+}
+/* One line of live words inside the pill. It never wraps and never sizes the
+   pill: the pill's width is set natively, the line fills what is left. Short
+   text sits next to the waveform; once it fills the line the newest words stay
+   in view (scrolled to the end) and the older ones fade out on the left. */
+.bezel-words {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: left;
+  scroll-behavior: smooth;
+}
+.bezel-words[data-overflow="true"] {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+  mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+}
+.bezel-words-hint { opacity: 0.5; }
 /* The hover strip: one segmented control above the capsule. */
 .bezel-strip {
   display: flex;
@@ -213,4 +240,5 @@
   .overlay-island { transition: opacity 160ms ease-out !important; }
   .live-words-card { transition: none !important; }
   .bezel-segment, .bezel-meeting-dismiss { transition: none; }
+  .bezel-words { scroll-behavior: auto; }
 }

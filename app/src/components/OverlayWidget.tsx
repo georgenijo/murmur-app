@@ -18,7 +18,8 @@ import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatu
 import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib/smartAutoMicrophone';
 import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
 import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
-import type { OverlayContent } from '../lib/overlayGeometry';
+import type { OverlayContent, OverlayPillSize } from '../lib/overlayGeometry';
+import { useDictationPartial } from '../lib/hooks/useDictationPartial';
 import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
 import { useWaveform } from '../lib/hooks/useWaveform';
 import { useLiveWordsLift } from '../lib/hooks/useLiveWordsLift';
@@ -105,15 +106,25 @@ export function OverlayWidget() {
     : status !== 'idle' || showDone || cueActive ? 'processing' : 'idle';
   // The idle floating pill is invisible and click-through, so hover must not
   // open a card over whatever sits above the Dock.
-  const pillHidden = settingsMirror.overlayPlacement === 'floating_pill' && activity === 'idle';
+  const floatingPill = settingsMirror.overlayPlacement === 'floating_pill';
+  const pillHidden = floatingPill && activity === 'idle';
+  // The pill rests at one width per setting, so dictating never moves it; only
+  // a speech-model warning widens it, and it narrows again when that clears.
+  const modelCueActive = runtime.modelUnavailable !== null;
+  const pillSize: OverlayPillSize | undefined = !floatingPill ? undefined
+    : modelCueActive ? 'warning'
+      : settingsMirror.overlayLiveWords ? 'words' : 'compact';
+  // The floating pill carries the words itself; the notch keeps its own window.
+  const liveWordsText = useDictationPartial(floatingPill && settingsMirror.overlayLiveWords,
+    { presentNatively: false });
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
     useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent,
-      activity, placement: settingsMirror.overlayPlacement, hoverEnabled: !pillHidden });
+      activity, placement: settingsMirror.overlayPlacement, pillSize, hoverEnabled: !pillHidden });
   const waveform = useWaveform(status);
   useLiveWordsLift(geometry, expanded);
   // Rust shapes the pill's native Bezel material from this same state.
   const material = useOverlayMaterial({
-    floating: settingsMirror.overlayPlacement === 'floating_pill',
+    floating: floatingPill,
     shown: activity !== 'idle', expanded, content: overlayContent,
   });
 
@@ -147,7 +158,6 @@ export function OverlayWidget() {
       else recordingClick();
     });
   }, [confirmModelUnavailable, openSettingsPage, recordingClick]);
-  const modelCueActive = runtime.modelUnavailable !== null;
 
   useEffect(() => {
     void invoke<MeetingRuntimeStatus>('get_meeting_status')
@@ -249,6 +259,7 @@ export function OverlayWidget() {
           smartAutoSummary={smartAutoSummary}
           deliveryCue={runtime.deliveryCue}
           done={showDone}
+          liveWords={floatingPill && settingsMirror.overlayLiveWords ? liveWordsText : null}
           onRetryDelivery={runtime.retryDelivery}
           onPauseDeliveryTimer={runtime.pauseDeliveryTimer}
           onResumeDeliveryTimer={runtime.resumeDeliveryTimer}

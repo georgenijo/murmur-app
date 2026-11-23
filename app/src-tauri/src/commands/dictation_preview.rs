@@ -340,6 +340,11 @@ pub async fn show_dictation_preview(
         return Err("dictation preview show is restricted to its own window".to_string());
     }
     let app = window.app_handle().clone();
+    if super::overlay::floating_pill_placed(&app) {
+        // The floating pill shows the words on its own surface; a window left
+        // over from the notch placement must stay hidden.
+        return Err("the floating pill shows live words itself".to_string());
+    }
     let dispatch_app = app.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(crate::main_thread_watch::job("preview.show", move || {
@@ -448,7 +453,9 @@ pub(crate) fn ensure_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, record
             let blob = super::settings_store::read_settings_blob(app)
                 .ok()
                 .flatten();
-            live_words_enabled(blob.as_deref())
+            // The floating pill carries its own line of words, so it never
+            // pays for a second webview.
+            live_words_enabled(blob.as_deref()) && !super::overlay::floating_pill_placed(app)
         },
         || build_window(app, label),
     );

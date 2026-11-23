@@ -40,7 +40,7 @@ function validRecordingId(value: unknown): value is number {
  * immediately, so a stopped recording never leaves provisional words on screen
  * while the native hide catches up.
  */
-export function useDictationPartial(enabled = true): string {
+export function useDictationPartial(enabled = true, { presentNatively = true } = {}): string {
   const [partial, setPartial] = useState<DictationPartialPayload | null>(null);
   const recordingIdRef = useRef(0);
   const shownRecordingIdRef = useRef(0);
@@ -115,7 +115,9 @@ export function useDictationPartial(enabled = true): string {
   // NSWindow. Showing first can commit an empty transparent frame that macOS
   // removes from the on-screen window list before the text event renders.
   useEffect(() => {
-    if (!enabled || !partial?.text || shownRecordingIdRef.current === partial.recordingId) return;
+    // The floating pill renders the words on its own surface: there is no
+    // native preview window to show.
+    if (!presentNatively || !enabled || !partial?.text || shownRecordingIdRef.current === partial.recordingId) return;
     shownRecordingIdRef.current = partial.recordingId;
     void invoke('show_dictation_preview', { recordingId: partial.recordingId }).catch(() => {
       if (shownRecordingIdRef.current === partial.recordingId) {
@@ -123,7 +125,7 @@ export function useDictationPartial(enabled = true): string {
         setPartial((current) => current?.recordingId === partial.recordingId ? null : current);
       }
     });
-  }, [partial, enabled]);
+  }, [partial, enabled, presentNatively]);
 
   return enabled ? partial?.text ?? '' : '';
 }

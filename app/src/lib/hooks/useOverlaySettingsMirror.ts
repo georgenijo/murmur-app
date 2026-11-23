@@ -20,6 +20,9 @@ export interface OverlaySettingsMirror {
   fileOutputEnabled: boolean;
   overlayVerticalOffset: number;
   overlayPlacement: Settings['overlayPlacement'];
+  /** Live Words consent. False until the durable file has been read: a stale
+   * cache or a default never switches words on. */
+  overlayLiveWords: boolean;
   smartAuto: SmartAutoMicrophoneRequest | null;
   /** Re-reads localStorage and applies the snapshot. Stable identity. */
   refresh: () => void;
@@ -53,6 +56,7 @@ export function useOverlaySettingsMirror({
     () => loadSettings().overlayVerticalOffset,
   );
   const [overlayPlacement, setOverlayPlacement] = useState(() => loadSettings().overlayPlacement);
+  const [overlayLiveWords, setOverlayLiveWords] = useState(false);
   const [smartAuto, setSmartAuto] = useState<SmartAutoMicrophoneRequest | null>(
     () => smartAutoMicrophoneRequest(loadSettings()),
   );
@@ -64,6 +68,8 @@ export function useOverlaySettingsMirror({
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
     setOverlayVerticalOffset(settings.overlayVerticalOffset);
     setOverlayPlacement(settings.overlayPlacement);
+    // Consent comes from the durable file only, like the Live Words window.
+    setOverlayLiveWords(durableSnapshot.current !== null && settings.overlayLiveWords);
     setSmartAuto(smartAutoMicrophoneRequest(settings));
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
@@ -197,6 +203,7 @@ export function useOverlaySettingsMirror({
     fileOutputEnabled,
     overlayVerticalOffset,
     overlayPlacement,
+    overlayLiveWords,
     smartAuto,
     refresh,
     handleToggleAutoPaste,
