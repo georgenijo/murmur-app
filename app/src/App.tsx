@@ -1,10 +1,12 @@
 import { dictationKeyLabel } from './lib/settings';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
-import { lazy, Suspense, useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
 import { listen } from '@tauri-apps/api/event';
 import { SettingsSurfaceActiveContext } from './components/settings/SettingsSurfaceContext';
+import type { MeetingsPanel as MeetingsPanelComponent } from './components/history/MeetingsPanel';
+import { deferredModule, useDeferredModule } from './lib/deferredModule';
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_TOOLS,
@@ -90,14 +92,19 @@ const PERFORMANCE_BUILD_BADGE = import.meta.env.VITE_MURMUR_BUILD_ID?.startsWith
   ? 'Use this · Phase 2 Perf'
   : undefined;
 
-// Settings is not on the first screen, so its code loads as a separate chunk
-// and is fetched in the background right after the first render. By the time
-// someone opens it the module is already evaluated; the fallback only covers a
-// request that beats the preload (e.g. a deep link at launch).
-const loadSettingsPanel = () => import('./components/settings/SettingsPanel');
-const loadMeetingsPanel = () => import('./components/history/MeetingsPanel');
-const MeetingsPanel = lazy(() => loadMeetingsPanel().then((module) => ({ default: module.MeetingsPanel })));
-const SettingsPanel = lazy(() => loadSettingsPanel().then((module) => ({ default: module.SettingsPanel })));
+// Settings and Meetings are not on the first screen, so their code loads as
+// separate chunks. Settings is always mounted (hidden), so its chunk is requested
+// on the first render; Meetings is preloaded once the window is idle. A loaded
+// module renders synchronously, so opening either after the preload shows no
+// fallback frame; the fallback only covers a request that beats the load (e.g.
+// a deep link at launch).
+const settingsPanelModule = deferredModule(() => import('./components/settings/SettingsPanel'));
+const meetingsPanelModule = deferredModule(() => import('./components/history/MeetingsPanel'));
+
+function MeetingsPanel(props: ComponentProps<typeof MeetingsPanelComponent>) {
+  const loaded = useDeferredModule(meetingsPanelModule);
+  return loaded ? <loaded.MeetingsPanel {...props} /> : null;
+}
 
 function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
@@ -108,10 +115,11 @@ function App() {
   const setupAdmittedRef = useRef(false);
   const canStartRecording = useCallback(() => mainAppReadyRef.current && !setupAdmittedRef.current, []);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // Opening Settings retries a chunk that failed to load.
+  const settingsPanel = useDeferredModule(settingsPanelModule, isSettingsOpen);
   useEffect(() => {
     const preload = () => {
-      void loadSettingsPanel().catch(() => {});
-      void loadMeetingsPanel().catch(() => {});
+      void meetingsPanelModule.preload().catch(() => {});
     };
     if (typeof window.requestIdleCallback === 'function') {
       const handle = window.requestIdleCallback(preload, { timeout: 1500 });
@@ -809,9 +817,7 @@ function App() {
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
-                  <Suspense fallback={null}>
-                    <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
-                  </Suspense>
+                  <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
                 </section>
               ) : (
                 <InsightsView
@@ -857,8 +863,8 @@ function App() {
         >
           <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
             {/* Same size and background as the panel, so nothing shows through or jumps. */}
-            <Suspense fallback={<div className="min-h-0 flex-1 bg-background" aria-hidden="true" />}>
-            <SettingsPanel
+            {settingsPanel ? (
+            <settingsPanel.SettingsPanel
               settings={settings}
               onUpdateSettings={updateSettings}
               initialized={initialized}
@@ -876,7 +882,9 @@ function App() {
               onLatencyViewChange={trackSettingsView}
               activeRef={settingsActiveRef}
             />
-            </Suspense>
+            ) : (
+              <div className="min-h-0 flex-1 bg-background" aria-hidden="true" />
+            )}
           </SettingsSurfaceActiveContext.Provider>
         </section>
       </div>

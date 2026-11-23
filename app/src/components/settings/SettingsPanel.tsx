@@ -414,7 +414,9 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [customizationDetail, setCustomizationDetail] = useState<CustomizationDestination | null>(() => (
     customizationDestinationForRequest(pageRequest)
   ));
-  const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
+  const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(() => (
+    customizationDestinationForRequest(pageRequest)
+  ));
   const [shortcutReturnFocus, setShortcutReturnFocus] = useState<GlobalShortcutId | null>(null);
   const latencyView = editorTab
     ? `settings.${activeCat}.editor.${editorTab}`
