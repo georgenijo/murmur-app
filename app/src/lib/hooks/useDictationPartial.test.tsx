@@ -12,6 +12,10 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import { useDictationPartial } from './useDictationPartial';
 
+function useDictationPartialNoWindow() {
+  return useDictationPartial(true, { presentNatively: false });
+}
+
 describe('useDictationPartial', () => {
   let root: Root;
   let container: HTMLDivElement;
@@ -57,6 +61,19 @@ describe('useDictationPartial', () => {
 
     expect(container.textContent).toBe('rendered first');
     expect(mocks.invoke).toHaveBeenCalledWith('show_dictation_preview', { recordingId: 7 });
+  });
+
+  it('renders words without asking Rust to show a native window when the pill carries them', async () => {
+    function PillHarness() {
+      return <span>{useDictationPartialNoWindow()}</span>;
+    }
+    await act(async () => root.render(<PillHarness />));
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 9 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 9, text: 'on the pill' } });
+    });
+    expect(container.textContent).toBe('on the pill');
+    expect(mocks.invoke).not.toHaveBeenCalledWith('show_dictation_preview', expect.anything());
   });
 
   it('clears the card when a new recording starts', async () => {

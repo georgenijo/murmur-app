@@ -31,9 +31,23 @@ export function modelUnavailableFromPayload(value: unknown): ModelUnavailableCue
   return { reason: reason as ModelUnavailableReason, model: typeof model === 'string' ? model : null };
 }
 
-/** The floating pill is 120pt wide: about 78px of text beside its glyph at
- * 11px semibold, so every word stays within `MODEL_WORD_MAX_CHARS`. */
+/** The notch status line has room for one short word, so every word stays
+ * within `MODEL_WORD_MAX_CHARS`. The floating pill widens for a full phrase
+ * instead (`modelUnavailablePhrase`). */
 export const MODEL_WORD_MAX_CHARS = 12;
+
+/** What the widened floating pill says: a clear phrase and the action a click
+ * takes. A click always opens Speech-to-text settings, which is where each of
+ * these is repaired or watched. */
+export function modelUnavailablePhrase(reason: ModelUnavailableReason): { phrase: string; action: string } {
+  switch (reason) {
+    case 'notInstalled': return { phrase: 'No speech model', action: 'Fix' };
+    case 'incomplete': return { phrase: 'Model incomplete', action: 'Fix' };
+    case 'downloading': return { phrase: 'Model downloading', action: 'View' };
+    case 'unsupported': return { phrase: 'Model unsupported', action: 'Fix' };
+    case 'loadFailed': return { phrase: 'Model failed to load', action: 'Fix' };
+  }
+}
 
 /** One short word for the floating pill and the notch status line. */
 export function modelUnavailableWord(reason: ModelUnavailableReason): string {

@@ -23,7 +23,7 @@ import { useOverlayExpansion, type OverlayExpansion } from './useOverlayExpansio
 
 // A pending set_overlay_expanded invocation the test controls.
 interface SurfaceCall {
-  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion'; activity?: 'idle' | 'recording' | 'processing'; placement?: 'notch' | 'floating_pill'; deferShrink?: boolean };
+  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion'; activity?: 'idle' | 'recording' | 'processing'; placement?: 'notch' | 'floating_pill'; pillSize?: 'compact' | 'words' | 'warning'; deferShrink?: boolean };
   resolve: (v: { windowW: number; windowH: number }) => void;
   reject: (e: unknown) => void;
 }
@@ -49,9 +49,10 @@ describe('useOverlayExpansion', () => {
     content?: 'controls' | 'meeting_suggestion';
     activity?: 'idle' | 'recording' | 'processing';
     placement?: 'notch' | 'floating_pill';
+    pillSize?: 'compact' | 'words' | 'warning';
     hoverEnabled?: boolean;
   }) {
-    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content, activity: props.activity, placement: props.placement, hoverEnabled: props.hoverEnabled });
+    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content, activity: props.activity, placement: props.placement, pillSize: props.pillSize, hoverEnabled: props.hoverEnabled });
     return props.withIsland ? <div ref={current.islandRef} /> : null;
   }
 
@@ -73,6 +74,7 @@ describe('useOverlayExpansion', () => {
     content?: 'controls' | 'meeting_suggestion';
     activity?: 'idle' | 'recording' | 'processing';
     placement?: 'notch' | 'floating_pill';
+    pillSize?: 'compact' | 'words' | 'warning';
     hoverEnabled?: boolean;
   } = {}) {
     // mount owns the root's whole lifecycle so beforeEach never leaks an empty
@@ -152,6 +154,32 @@ describe('useOverlayExpansion', () => {
     expect(surfaceCalls).toHaveLength(2);
     await act(async () => vi.advanceTimersByTime(1));
     expect(surfaceCalls[2].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'floating_pill' });
+  });
+
+  it('sends the pill width through the same acknowledged writer, widening for a warning and narrowing back after the animation', async () => {
+    await mount({ activity: 'recording', placement: 'floating_pill', pillSize: 'words' });
+    expect(surfaceCalls[0].args).toEqual({ expanded: false, content: 'controls', activity: 'recording', placement: 'floating_pill', pillSize: 'words', deferShrink: true });
+    await act(async () => surfaceCalls[0].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    await act(async () => surfaceCalls[1].resolve(APPLIED));
+    expect(surfaceCalls[1].args.pillSize).toBe('words'); // the settled release of the first resize
+    // A warning widens it: one resize, retained bounds only while contracting.
+    await act(async () => root!.render(<Harness activity="idle" placement="floating_pill" pillSize="warning" />));
+    expect(surfaceCalls[2].args).toEqual({ expanded: false, content: 'controls', activity: 'idle', placement: 'floating_pill', pillSize: 'warning', deferShrink: true });
+    await act(async () => surfaceCalls[2].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    await act(async () => surfaceCalls[3].resolve(APPLIED));
+    // The cue clears: the pill returns to its normal width.
+    await act(async () => root!.render(<Harness activity="idle" placement="floating_pill" pillSize="words" />));
+    expect(surfaceCalls[4].args).toMatchObject({ pillSize: 'words', deferShrink: true });
+    await act(async () => surfaceCalls[4].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls[5].args).toEqual({ expanded: false, content: 'controls', activity: 'idle', placement: 'floating_pill', pillSize: 'words' });
+  });
+
+  it('never sends a pill size for the notch', async () => {
+    await mount({ activity: 'recording', placement: 'notch' });
+    expect(surfaceCalls[0].args).not.toHaveProperty('pillSize');
   });
 
   it('does not replay hidden layout changes until show, then applies only the latest placement', async () => {

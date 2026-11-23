@@ -95,7 +95,9 @@ export function DictationPreviewApp() {
         // Same migrations and defaults as Settings, without persisting them.
         const settings = parseSettingsBlob(blob);
         if (!disposed && request === revision) {
-          setEnabled(settings.overlayLiveWords);
+          // The floating pill shows its words on its own surface, so this
+          // window only serves the notch island.
+          setEnabled(settings.overlayLiveWords && settings.overlayPlacement !== 'floating_pill');
           setAbove(settings.overlayPlacement === 'floating_pill');
         }
       } catch { if (!disposed && request === revision) setEnabled(false); }

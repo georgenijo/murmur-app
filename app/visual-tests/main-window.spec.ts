@@ -390,26 +390,33 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
 });
 
-test('every model-problem word fits inside the 120pt floating pill', async ({ page }) => {
+test('every model-problem phrase and its action fit unclipped inside the widened floating pill', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 320 });
   await page.goto('/visual-fixtures.html?state=overlay-model-pill&appearance=dark');
-  for (const [reason, word] of [
-    ['notInstalled', 'No model'], ['incomplete', 'Incomplete'], ['downloading', 'Downloading'],
-    ['unsupported', 'Unsupported'], ['loadFailed', 'Load failed'],
+  for (const [reason, phrase, action] of [
+    ['notInstalled', 'No speech model', 'Fix'], ['incomplete', 'Model incomplete', 'Fix'],
+    ['downloading', 'Model downloading', 'View'], ['unsupported', 'Model unsupported', 'Fix'],
+    ['loadFailed', 'Model failed to load', 'Fix'],
   ]) {
     const pill = page.locator(`[data-model-pill="${reason}"] .overlay-island`);
-    const text = pill.getByText(word, { exact: true });
+    const text = pill.getByText(phrase, { exact: true });
+    const chip = pill.locator('.bezel-chip');
     await expect(text).toBeVisible();
-    const [capsule, label, glyph] = await Promise.all([
-      pill.boundingBox(), text.boundingBox(), pill.locator('.bezel-glyph').boundingBox(),
+    await expect(chip).toHaveText(action);
+    const [capsule, label, glyph, chipBox] = await Promise.all([
+      pill.boundingBox(), text.boundingBox(), pill.locator('.bezel-glyph').boundingBox(), chip.boundingBox(),
     ]);
-    expect(capsule && label && glyph).toBeTruthy();
-    expect(capsule!.width).toBe(120);
-    // The glyph and the word sit inside the capsule with room to spare, side by side.
+    expect(capsule && label && glyph && chipBox).toBeTruthy();
+    // Wider than the normal 120pt pill, but still one slim 34pt capsule.
+    expect(capsule!.width).toBe(256);
+    expect(capsule!.height).toBe(34);
+    // Glyph, phrase and action sit side by side, fully inside the capsule.
     expect(glyph!.x).toBeGreaterThanOrEqual(capsule!.x + 1);
     expect(label!.x).toBeGreaterThanOrEqual(glyph!.x + glyph!.width);
-    expect(label!.x + label!.width).toBeLessThanOrEqual(capsule!.x + capsule!.width - 1);
-    // One line: no wrapping.
+    expect(chipBox!.x).toBeGreaterThanOrEqual(label!.x + label!.width);
+    expect(chipBox!.x + chipBox!.width).toBeLessThanOrEqual(capsule!.x + capsule!.width - 1);
+    // Nothing is clipped: the row neither scrolls nor overflows, and nothing wraps.
+    expect(await pill.locator('.bezel-row').evaluate(row => row.scrollWidth <= row.clientWidth)).toBe(true);
     expect(label!.height).toBeLessThan(16);
   }
 });

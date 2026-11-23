@@ -4,8 +4,8 @@ import type { DictationStatus } from '../types';
 
 /** Bars in the notch's right wing. */
 export const NOTCH_BAR_COUNT = 7;
-/** Bars in the floating pill. */
-export const PILL_BAR_COUNT = 18;
+/** Bars in the floating pill: few enough to leave the line of words its room. */
+export const PILL_BAR_COUNT = 12;
 /** Resting bar scale: a short tick rather than an empty slot. */
 const REST_SCALE = 0.14;
 

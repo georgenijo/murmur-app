@@ -21,16 +21,20 @@ App → General → **Recording overlay** chooses one of two renditions:
   any activity widens it to `notchW + 56` without growing taller. The status
   indicator sits in the left wing and a 7-bar waveform in the right wing.
   External and unmeasured displays use a 185pt pretend notch.
-- **Floating pill** ("Bezel"). A 120×34 capsule of the macOS HUD material,
-  bottom-centred 14pt above the Dock (work area). It follows the system
-  light/dark appearance and is monochrome except the red recording dot. Every
-  state pairs one shape with one word: a dot with the 18-bar waveform while
-  recording, a ring while connecting, a spinner while transcribing, a check
-  when done, a cross when cancelled, a triangle for errors. A delivery retry
-  is the word itself (`Paste`, `Try again`). It is fully hidden and
-  click-through while idle, and fades in when recording starts. The native
-  window never resizes between activities, so recording never waits on a
-  native resize. Hover controls grow it upward as one segmented strip (Power,
+- **Floating pill** ("Bezel"). One slim 34pt capsule of the macOS HUD
+  material, bottom-centred 14pt above the Dock (work area). It follows the
+  system light/dark appearance and is monochrome except the red recording dot.
+  While recording it is the dot, a 12-bar waveform and, with Live Words on,
+  one line of the newest words (see [Live words](#live-words)): one object, no
+  separate words box. Every other state pairs one shape with one word: a ring
+  while connecting, a spinner while transcribing, a check when done, a cross
+  when cancelled, a triangle for errors. A delivery retry is the word itself
+  (`Paste`, `Try again`). It is fully hidden and click-through while idle, and
+  fades in when recording starts. Its width is fixed per setting: 120pt with
+  Live Words off, 224pt with it on, so dictating never moves it. Only a
+  speech-model warning widens it (256pt, see
+  [Speech model problems](#speech-model-problems)); it narrows again when the
+  cue clears. Hover controls grow it upward as one segmented strip (Power,
   Paste, Settings) above a one-line status. The pill follows the Dock live (see
   [Dock tracking](#dock-tracking)): it rests low while an auto-hidden Dock is
   hidden and rises above the revealed Dock, including magnified icons and
@@ -52,9 +56,15 @@ so no audio is lost, and pressing the hotkey again after the repair is the
 retry. The overlay shows the cue for 8 seconds, above Tap missed and below
 cancelled and microphone failures:
 
-- **Floating pill.** A warning triangle with one word: `No model`,
-  `Incomplete`, `Downloading`, `Unsupported` or `Load failed` (12 characters at
-  most; the capsule leaves about 78pt for text). The idle pill is click-through
+- **Floating pill.** The capsule widens to 256pt for a warning triangle, a
+  clear phrase and the action a click takes: `No speech model · Fix`,
+  `Model incomplete · Fix`, `Model downloading · View`,
+  `Model unsupported · Fix` or `Model failed to load · Fix`. The whole pill is
+  the click target; the action is only its label, hidden from assistive
+  technology, which hears the cue's full spoken description. The width change
+  goes through the same acknowledged native resize as every other pill change
+  (`set_overlay_expanded` with `pillSize: "warning"`), so Rust alone moves the
+  window and the material, on the main thread. The idle pill is click-through
   and hidden, so the cue counts as activity and makes it visible.
 - **Notch island.** An amber triangle in the left wing, the amber inset line,
   and the same word on the hover status line.
@@ -132,7 +142,11 @@ Hidden WKWebViews can receive a generic settings event before their storage
 cache changes. Host persistence therefore sends targeted commit notifications:
 preview consent is re-read from disk (a true notification alone cannot enable
 words), and overlay controls read a validated snapshot without overwriting a
-shared cache. Generation guards discard older responses. Hover refresh and
+shared cache. The consent notification also goes to the overlay window: an
+opt-out clears the floating pill's words at once, while only the durable read
+turns them on (the pill stays compact until it completes). The separate Live
+Words window declines to show, and is hidden if left over, while the floating
+pill is placed. Generation guards discard older responses. Hover refresh and
 quick-control writes retain the latest confirmed/optimistic snapshot.
 
 ## Notch Detection
@@ -228,11 +242,19 @@ feed `useOverlayGeometry`; successful native resize transactions separately emit
 Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
 
 - Island metrics: notch width/height, idle/active corners 8/12pt, and the
-  120×34 floating pill.
+  floating pill, 34pt tall and 120, 224 or 256pt wide (`pillW`).
 - Notch mode is `notchH` tall for every activity. A measured 185×32 notch uses
   idle 185×32 and active 241×32. An external 30pt bar uses active 241×30.
-- The floating pill keeps one 120×34 window for idle, recording and
-  processing. Expanded controls reserve at least 241pt width and 64pt dropdown
+- The floating pill keeps one window per `pillSize` for idle, recording and
+  processing: `compact` 120×34 (Live Words off), `words` 224×34 (Live Words
+  on, the default) and `warning` 256×34 (a speech-model cue). The frontend
+  picks the size from state it owns and sends it with `set_overlay_expanded`;
+  Rust resolves the pixels, centres the window on its previous centre, and
+  refits the material in the same main-thread turn. Only a cue changes the
+  size, never dictation. A widening applies at once; a narrowing retains the
+  larger native bounds while the capsule contracts (`deferShrink`), then
+  releases them. Expanded controls reserve at least 241pt width (or the pill's
+  own width, if wider) and 64pt dropdown
   height. Meeting suggestions reserve 320pt width and a 136pt dropdown; their
   text/actions use the production component, not a stand-in.
 - Status/refusal/delivery cues hide the waveform while they flash. Quick
@@ -240,8 +262,8 @@ Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
 - Logical points are resolved on the selected menu-bar display, including
   nonzero monitor origins and 1×/2× scale transitions. Rust alone mutates native
   geometry on the main thread.
-- Click-through live words follow the actual applied overlay frame: below the
-  notch island, above the floating pill, centered and clamped to the work area,
+- With the notch island, click-through live words follow the actual applied
+  overlay frame below it, centered and clamped to the work area,
   with a 6pt gap. They anchor to the collapsed surface, never the hover
   dropdown, so the native window does not move on hover. Instead it reserves
   `dropdownH` of transparent room, and the card slides by `translateY` on the
@@ -340,8 +362,9 @@ ignores hover until recording starts. Neither keeps an idle animation loop.
 
 ### Recording
 The waveform occupies the right wing (notch) or the pill row. The `m:ss` timer
-remains in the expanded dropdown. No transcript appears inside the island;
-Live words use the separate click-through window.
+remains in the expanded dropdown. No transcript appears inside the notch
+island; its live words use the separate click-through window. The floating
+pill shows them on its own line (see [Live words](#live-words)).
 
 ### Starting and Recovering
 
@@ -395,8 +418,8 @@ and hotkey-miss feedback use the separate status row.
 
 **Styling:** The notch island is intentionally dark in every theme:
 `rgba(20,20,20,0.92)` with rounded bottom corners, and its Live Words card
-matches. The floating pill and the Live Words card above it use the Bezel
-material instead (see [Placements](#placements)), which follows the system
+matches. The floating pill uses the Bezel material instead (see
+[Placements](#placements)), which follows the system
 appearance rather than the app theme; the meeting suggestion inside the pill
 uses the Bezel ink with an inverted Accept.
 
@@ -430,11 +453,29 @@ acceptance.
 
 App → General → **Live words** is on by default. Settings version 7 turns it on
 once for earlier installs, where it had shipped off; an explicit opt-out after
-that is kept. A dark card wraps up to three lines and
+that is kept.
+
+**Floating pill.** The words are one line inside the pill, after the dot and
+the waveform, in the Bezel ink. The line never wraps and never sizes the
+pill: the pill's width is native and fixed (224pt), and the line fills what is
+left. Short text sits next to the waveform; once it reaches the edge, the line
+follows the newest word and the older ones fade out on the left (a 26pt mask
+gradient). It shows at most the last 160 characters, cut at a word boundary
+when there is one, so a very long word or unspaced CJK text is clipped by the
+line, never by the pill. Under Reduce Motion the line snaps instead of
+scrolling. The pill's overlay webview receives the partials itself
+(`useDictationPartial` with `presentNatively: false`): no Live Words window is
+built or shown for the pill (`ensure_window` and `show_dictation_preview`
+decline while the pill is placed), so there is no second webview, no native
+card and no card material. The line is a polite live region named `Words
+recognized so far`. With Live Words off the pill is just the dot and the
+waveform at 120pt. Consent comes from the durable settings file only, as for
+the window below.
+
+**Notch island.** A dark card wraps up to three lines and
 keeps the newest words in view. It has no recording dot of its own: the island
 already shows one. The card shrink-wraps short text and stays centred on the
-island. It sits in a click-through window, below the notch island or above the
-floating pill. The window stays ordered in between dictations, fully
+island. It sits in a click-through window below the notch island. The window stays ordered in between dictations, fully
 transparent (`NSWindow` alpha 0) and click-through, like the overlay itself, so
 a show only reveals it and a hide never orders it out. The first show of a
 session orders it in. Frame setters are skipped when the frame is unchanged. Existing APIs provide only whole

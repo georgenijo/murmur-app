@@ -20,6 +20,9 @@ export interface OverlaySettingsMirror {
   fileOutputEnabled: boolean;
   overlayVerticalOffset: number;
   overlayPlacement: Settings['overlayPlacement'];
+  /** Live Words consent. False until the durable file has been read: a stale
+   * cache or a default never switches words on. */
+  overlayLiveWords: boolean;
   smartAuto: SmartAutoMicrophoneRequest | null;
   /** Re-reads localStorage and applies the snapshot. Stable identity. */
   refresh: () => void;
@@ -53,6 +56,7 @@ export function useOverlaySettingsMirror({
     () => loadSettings().overlayVerticalOffset,
   );
   const [overlayPlacement, setOverlayPlacement] = useState(() => loadSettings().overlayPlacement);
+  const [overlayLiveWords, setOverlayLiveWords] = useState(false);
   const [smartAuto, setSmartAuto] = useState<SmartAutoMicrophoneRequest | null>(
     () => smartAutoMicrophoneRequest(loadSettings()),
   );
@@ -64,6 +68,8 @@ export function useOverlaySettingsMirror({
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
     setOverlayVerticalOffset(settings.overlayVerticalOffset);
     setOverlayPlacement(settings.overlayPlacement);
+    // Consent comes from the durable file only, like the Live Words window.
+    setOverlayLiveWords(durableSnapshot.current !== null && settings.overlayLiveWords);
     setSmartAuto(smartAutoMicrophoneRequest(settings));
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
@@ -116,6 +122,17 @@ export function useOverlaySettingsMirror({
     }).catch(() => {});
     return () => { cancelled = true; revision++; refreshDurableRef.current = async () => null; unlisten?.(); };
   }, [applySettingsSnapshot]);
+
+  // An opt-out clears the pill's words at once instead of waiting for the
+  // asynchronous settings read. Only the durable read ever switches words on.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>('live-words-consent-persisted', ({ payload }) => {
+      if (payload !== true) setOverlayLiveWords(false);
+    }).then(fn => { if (cancelled) fn(); else unlisten = fn; }).catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // Persist only the owned field; the host merges into the latest durable
   // document under its writer lock. Never write a retained settings snapshot.
@@ -197,6 +214,7 @@ export function useOverlaySettingsMirror({
     fileOutputEnabled,
     overlayVerticalOffset,
     overlayPlacement,
+    overlayLiveWords,
     smartAuto,
     refresh,
     handleToggleAutoPaste,

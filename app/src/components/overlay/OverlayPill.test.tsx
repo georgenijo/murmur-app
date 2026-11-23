@@ -9,6 +9,7 @@ import type { OverlayIndicator } from './deriveVisual';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 import {
   MODEL_WORD_MAX_CHARS,
+  modelUnavailablePhrase,
   modelUnavailableWord,
   type ModelUnavailableReason,
 } from '../../lib/modelUnavailable';
@@ -302,8 +303,8 @@ describe('OverlayPill transient cues', () => {
 
   const reasons: ModelUnavailableReason[] = ['notInstalled', 'incomplete', 'downloading', 'unsupported', 'loadFailed'];
 
-  it.each(reasons)('shows the %s model problem on the floating pill as one glyph and one short word', async (reason) => {
-    const g = geometryFixture.pillProcessing as OverlayGeometry;
+  it.each(reasons)('shows the %s model problem on the widened floating pill as a glyph, a phrase and its action', async (reason) => {
+    const g = geometryFixture.pillWarning as OverlayGeometry;
     await act(async () => root.render(<OverlayPill
       geometry={g}
       barRefs={barRefs}
@@ -312,20 +313,66 @@ describe('OverlayPill transient cues', () => {
     />));
     const row = container.querySelector<HTMLElement>('.bezel-row')!;
     const glyph = row.querySelector<HTMLElement>('.bezel-glyph')!;
-    const word = modelUnavailableWord(reason);
-    // The row keeps the capsule's inner height and carries exactly glyph + word.
+    const { phrase, action } = modelUnavailablePhrase(reason);
+    // The row keeps the capsule's inner height and is as wide as the widened
+    // capsule; it carries exactly glyph, phrase and the action chip.
     expect(row.style.height).toBe(`${g.collapsedH - 2}px`);
-    expect(row.children).toHaveLength(2);
-    expect(row.children[1].textContent).toBe(word);
-    // A 120pt capsule leaves ~78px of text beside the glyph: the word must stay short.
-    expect(word.length).toBeLessThanOrEqual(MODEL_WORD_MAX_CHARS);
-    expect(g.island.pillW).toBe(120);
+    expect(row.style.width).toBe(`${g.island.pillW - 2}px`);
+    expect(row.children).toHaveLength(3);
+    expect(row.children[1].textContent).toBe(phrase);
+    expect(row.children[2].textContent).toBe(action);
+    expect(row.children[2].getAttribute('aria-hidden')).toBe('true');
+    expect(g.island.pillW).toBe(256);
+    // The notch status line still has one short word.
+    expect(modelUnavailableWord(reason).length).toBeLessThanOrEqual(MODEL_WORD_MAX_CHARS);
     expect(glyph.querySelector('svg path[d^="M12 3.5"]')).not.toBeNull();
     expect(glyph.getAttribute('role')).toBe('status');
     expect(glyph.getAttribute('aria-live')).toBe('assertive');
     expect(glyph.getAttribute('aria-label')).toMatch(/speech model/);
     expect(container.querySelector('.overlay-waveform')).toBeNull();
     expect(container.querySelector('button')).toBeNull();
+  });
+
+  const recordingPill = (liveWords: string | null) => (
+    <OverlayPill
+      geometry={geometryFixture.pillWords as OverlayGeometry}
+      barRefs={barRefs}
+      visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
+      status="recording"
+      liveWords={liveWords}
+    />
+  );
+
+  it('puts the newest words on one line inside the recording pill, after the dot and waveform', async () => {
+    await act(async () => root.render(recordingPill('and then we can make it more minimal')));
+    const row = container.querySelector<HTMLElement>('.bezel-row')!;
+    expect(row.style.width).toBe(`${geometryFixture.pillWords.island.pillW - 2}px`);
+    expect([...row.children].map((child) => child.className.split(' ')[0]))
+      .toEqual(['bezel-glyph', 'overlay-waveform', 'bezel-words']);
+    expect(row.querySelector('.bezel-words')?.textContent).toBe('and then we can make it more minimal');
+    expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(PILL_BAR_COUNT);
+    // One object: no second words surface is mounted anywhere.
+    expect(container.querySelector('.live-words-card, .live-words-window')).toBeNull();
+    // Words are announced politely and never act as a control.
+    const status = container.querySelector('.bezel-words [role="status"]');
+    expect(status?.getAttribute('aria-live')).toBe('polite');
+    expect(status?.getAttribute('aria-label')).toBe('Words recognized so far');
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('shows only the dot and the waveform when Live Words is off', async () => {
+    await act(async () => root.render(recordingPill(null)));
+    expect(container.querySelector('.bezel-words')).toBeNull();
+    expect(container.querySelectorAll('.bezel-row > *')).toHaveLength(2);
+  });
+
+  it('keeps the line to the tail of a very long dictation, cutting only at a word boundary', async () => {
+    const long = 'synthetic words '.repeat(60);
+    await act(async () => root.render(recordingPill(long)));
+    const shown = container.querySelector('.bezel-words')!.textContent!;
+    expect(shown.length).toBeLessThanOrEqual(160);
+    expect(shown.startsWith('synthetic') || shown.startsWith('words')).toBe(true);
+    expect(shown).not.toMatch(/\s{2}/);
   });
 
   it('mirrors the model problem in the notch left wing without a waveform', async () => {
