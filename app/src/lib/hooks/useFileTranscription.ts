@@ -11,7 +11,7 @@ import {
   hasAnyTranscribableFile,
 } from '../fileQueue';
 
-export type { QueueItem, QueueItemStatus } from '../fileQueue';
+export type { QueueItem } from '../fileQueue';
 
 interface UseFileTranscriptionProps {
   /** Persist completed transcriptions to shared history (no WPM stats). */
