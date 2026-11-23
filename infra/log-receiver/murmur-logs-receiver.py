@@ -88,7 +88,6 @@ from event_store import (  # noqa: E402
     iter_source_lines,
     normalize_state_snapshot,
     open_raw_snapshot,
-    open_raw_source,
     parse_event_line,
     parse_local_datetime,
     raw_source_disk_bytes,

@@ -371,7 +371,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         lint_run = "        run: cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings\n"
         goldens = "          -E 'kind(lib) & test(/golden_tests::golden_/)'\n"
-        tests_run = "-test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/)'\n"
         for label, old, new in (
             ("continue-on-error on the lint", lint_run, "        continue-on-error: true\n" + lint_run),
             ("clippy commented out", lint_run, "        # " + lint_run.strip() + "\n"),
