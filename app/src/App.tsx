@@ -1,18 +1,16 @@
 import { dictationKeyLabel } from './lib/settings';
-import { MeetingsPanel } from './components/history';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
-import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { lazy, Suspense, useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
 import { listen } from '@tauri-apps/api/event';
+import { SettingsSurfaceActiveContext } from './components/settings/SettingsSurfaceContext';
 import {
-  SettingsPanel,
-  SettingsSurfaceActiveContext,
   SETTINGS_CATEGORIES,
   SETTINGS_TOOLS,
   settingsLatencyView,
   type SettingsPageRequest,
-} from './components/settings';
+} from './components/settings/settingsPages';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
 import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
@@ -92,6 +90,15 @@ const PERFORMANCE_BUILD_BADGE = import.meta.env.VITE_MURMUR_BUILD_ID?.startsWith
   ? 'Use this · Phase 2 Perf'
   : undefined;
 
+// Settings is not on the first screen, so its code loads as a separate chunk
+// and is fetched in the background right after the first render. By the time
+// someone opens it the module is already evaluated; the fallback only covers a
+// request that beats the preload (e.g. a deep link at launch).
+const loadSettingsPanel = () => import('./components/settings/SettingsPanel');
+const loadMeetingsPanel = () => import('./components/history/MeetingsPanel');
+const MeetingsPanel = lazy(() => loadMeetingsPanel().then((module) => ({ default: module.MeetingsPanel })));
+const SettingsPanel = lazy(() => loadSettingsPanel().then((module) => ({ default: module.SettingsPanel })));
+
 function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
@@ -101,6 +108,18 @@ function App() {
   const setupAdmittedRef = useRef(false);
   const canStartRecording = useCallback(() => mainAppReadyRef.current && !setupAdmittedRef.current, []);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  useEffect(() => {
+    const preload = () => {
+      void loadSettingsPanel().catch(() => {});
+      void loadMeetingsPanel().catch(() => {});
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      const handle = window.requestIdleCallback(preload, { timeout: 1500 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(preload, 300);
+    return () => window.clearTimeout(handle);
+  }, []);
   const homeSidebar = useHomeSidebar(false, isSettingsOpen);
   const homeNavId = useId();
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
@@ -790,7 +809,9 @@ function App() {
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
-                  <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
+                  <Suspense fallback={null}>
+                    <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
+                  </Suspense>
                 </section>
               ) : (
                 <InsightsView
@@ -835,6 +856,8 @@ function App() {
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         >
           <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
+            {/* Same size and background as the panel, so nothing shows through or jumps. */}
+            <Suspense fallback={<div className="min-h-0 flex-1 bg-background" aria-hidden="true" />}>
             <SettingsPanel
               settings={settings}
               onUpdateSettings={updateSettings}
@@ -853,6 +876,7 @@ function App() {
               onLatencyViewChange={trackSettingsView}
               activeRef={settingsActiveRef}
             />
+            </Suspense>
           </SettingsSurfaceActiveContext.Provider>
         </section>
       </div>

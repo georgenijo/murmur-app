@@ -77,7 +77,7 @@ function response(command: string): unknown {
 async function settle() {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
-async function mount({ setup = false, modelInstalled = true, recordingMode = 'double_tap' } = {}) {
+async function mount({ setup = false, modelInstalled = true, recordingMode = 'double_tap', preloadSettings = true } = {}) {
   native.modelInstalled = modelInstalled;
   if (!setup) localStorage.setItem(ONBOARDING_KEY, 'true');
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -86,6 +86,9 @@ async function mount({ setup = false, modelInstalled = true, recordingMode = 'do
   // A missing model prevents grandfathering for the initial setup fixture.
   if (setup) native.modelInstalled = false;
   await act(async () => root.render(<App />));
+  // The app preloads its lazy Settings chunk after first render; wait for the
+  // same module so these tests exercise the warmed path users normally see.
+  if (preloadSettings) await act(async () => { await import('./components/settings/SettingsPanel'); });
   await settle();
 }
 async function emit(name: string, payload: unknown) {
@@ -152,6 +155,19 @@ afterEach(async () => {
 });
 
 describe('App setup capture safety', () => {
+  // Keep this first: the lazy Settings module is cached once loaded, so only
+  // the first render in this file can see the cold (not yet preloaded) path.
+  it('lands a settings deep link on the requested page even before the chunk has loaded', async () => {
+    await mount({ preloadSettings: false });
+    await emit('open-settings', { page: 'delivery' });
+    await act(async () => { await import('./components/settings/SettingsPanel'); });
+    await settle();
+    expect(container.querySelector('main')?.getAttribute('aria-hidden')).toBe('true');
+    const nav = container.querySelector('nav[aria-label="Settings pages"]');
+    const current = nav?.querySelector('[aria-current="page"]');
+    expect(current?.getAttribute('aria-label')).toBe('Delivery');
+  });
+
   it.each([
     ['hold_down', 'idle', 'Start dictation', 'Hold'],
     ['hold_down', 'starting', 'Cancel microphone connection', undefined],
