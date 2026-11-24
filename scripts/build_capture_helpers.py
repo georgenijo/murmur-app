@@ -147,25 +147,31 @@ def main() -> int:
     # Cargo tracks this variable, so a checkout-relative path would rerun every
     # native build script whenever the target directory is copied or relocated.
     capture_env["PKG_CONFIG_LIBDIR"] = EMPTY_PKG_CONFIG_DIR
-    subprocess.run(capture_command, cwd=TAURI_ROOT, env=capture_env, check=True)
-    worker_target = TAURI_ROOT / "target" / "capture-worker-build"
-    worker_env = capture_env.copy()
-    worker_env.update(
-        {
-            "MURMUR_CAPTURE_ROLE": "worker",
-            "CARGO_TARGET_DIR": str(worker_target),
-        }
+    # The helper and the worker are the same crate. Only the Info.plist that its
+    # build script links in differs (MURMUR_CAPTURE_ROLE), so both builds share
+    # one target directory: the dependency graph (webrtc/abseil alone is ~25 s)
+    # compiles once and the second build only rebuilds this crate. The worker is
+    # published before the helper rebuilds over it, and the helper is built last
+    # so target/<profile>/murmur-capture-helper keeps the helper Info.plist.
+    built_capture = TAURI_ROOT / "target" / profile / CAPTURE_HELPER_NAME
+    subprocess.run(
+        capture_command,
+        cwd=TAURI_ROOT,
+        env={**capture_env, "MURMUR_CAPTURE_ROLE": "worker"},
+        check=True,
     )
-    subprocess.run(capture_command, cwd=TAURI_ROOT, env=worker_env, check=True)
-    build_capture_agent(profile, env)
-
-    capture_destination = publish_binary(CAPTURE_HELPER_NAME, profile)
-    capture_agent_destination = publish_binary(CAPTURE_AGENT_NAME, profile)
     capture_worker_destination = publish_binary(
-        CAPTURE_WORKER_NAME,
-        profile,
-        built_path=worker_target / profile / CAPTURE_HELPER_NAME,
+        CAPTURE_WORKER_NAME, profile, built_path=built_capture
     )
+    subprocess.run(
+        capture_command,
+        cwd=TAURI_ROOT,
+        env={**capture_env, "MURMUR_CAPTURE_ROLE": "helper"},
+        check=True,
+    )
+    capture_destination = publish_binary(CAPTURE_HELPER_NAME, profile)
+    build_capture_agent(profile, env)
+    capture_agent_destination = publish_binary(CAPTURE_AGENT_NAME, profile)
     if args.print_output:
         print(capture_destination)
         print(capture_agent_destination)
