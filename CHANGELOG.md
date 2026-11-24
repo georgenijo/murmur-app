@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.68.2] - 2026-11-24
+
+<!-- Release notes generated using configuration in .github/release.yml at 1a9437749a040d5eaee9acc59d1a74792cb629ff -->
+
+## What's Changed
+### Other Changes
+* perf(build): add tauri:build:local for ~3.5x faster local release builds by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1214
+* perf(appearance): faster colour math (2,000-theme test 9.0 s to 4.9 s, suite -8%) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1210
+* test(app): fix App.renderCounts flake ("expected 101 to be 100") by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1211
+* build: sync vite output into dist so an unchanged frontend skips the ui recompile by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1212
+* perf(build): build capture worker and helper in one target dir (-52% cold) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1208
+* perf(test): cut Rust test time 3x (optimize syn in dev, parse sources once) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1209
+* feat(overlay): fit the word wheel pill to its words and stop the back-and-forth roll by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1215
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.68.1...v0.68.2
+
 ## [0.68.1] - 2026-11-24
 
 <!-- Release notes generated using configuration in .github/release.yml at 8ca60ab270ef1601b34fc4213a3b5047d946e53f -->
