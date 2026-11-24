@@ -414,18 +414,19 @@ def validate_ci(ci: str) -> int:
     validation = named_step_block(policy, "Validate workflow policy", 6)
     for marker in (
         "python3 -m pip install -r requirements-test.txt",
-        "python3 scripts/validate_workflow_policy.py",
-        "python3 scripts/validate_reference_docs.py",
-        "tests/test_reference_docs.py",
-        "tests/test_release_artifacts.py",
-        "tests/test_release_version.py",
-        "tests/test_workflow_policy.py",
-        "tests/test_ci_rust_library.py",
-        "tests/test_capture_agent_matrix.py",
-        "tests/test_event_store.py",
-        "tests/test_dev_signing.py",
+        "| xargs -P 6 -I{} python3 scripts/{}.py",
+        "            validate_workflow_policy \\\n",
+        "            validate_capture_boundary \\\n",
+        "            validate_reference_docs \\\n",
+        "            validate_markdown_links \\\n",
+        "            check_hunt_sites \\\n",
+        "            check_shadow_sites \\\n",
+        # Every test under tests/ runs, in parallel; a hand-kept list of test files could
+        # silently drop a new one.
+        "python3 -m pytest tests -q -n auto --dist worksteal\n",
     ):
         assert marker in validation, marker
+    assert "python3 -m unittest" not in validation, "the Python tests run through pytest"
     capture_build = named_step_block(
         rust_macos, "Build capture isolation helpers", 6
     )

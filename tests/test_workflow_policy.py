@@ -212,8 +212,8 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
     def test_ci_runs_reference_doc_drift_check(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for marker in (
-            "python3 scripts/validate_reference_docs.py\n",
-            "            tests/test_reference_docs.py \\\n",
+            "            validate_reference_docs \\\n",
+            "          python3 -m pytest tests -q -n auto --dist worksteal\n",
         ):
             with self.subTest(marker=marker.strip()):
                 mutated = workflow.replace(marker, "", 1)
@@ -223,7 +223,9 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_ci_runs_dev_signing_tests(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace("            tests/test_dev_signing.py \\\n", "", 1)
+        # The dev-signing tests run as part of `pytest tests`: the file must stay in tests/.
+        self.assertTrue((ROOT / "tests/test_dev_signing.py").is_file())
+        mutated = workflow.replace("          python3 -m pytest tests -q -n auto --dist worksteal\n", "", 1)
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
@@ -255,6 +257,51 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
+
+    def test_ci_runs_every_python_test_in_parallel_through_pytest(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for marker in (
+            "          python3 -m pytest tests -q -n auto --dist worksteal\n",
+            "            | xargs -P 6 -I{} python3 scripts/{}.py\n",
+            "            check_shadow_sites \\\n",
+            "            validate_markdown_links \\\n",
+        ):
+            with self.subTest(marker=marker.strip()):
+                mutated = workflow.replace(marker, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+        # A hand-kept file list is how a new test file gets dropped from CI.
+        with self.assertRaises(AssertionError):
+            validate_ci(
+                workflow.replace(
+                    "          python3 -m pytest tests -q -n auto --dist worksteal\n",
+                    "          python3 -m pytest tests -q -n auto --dist worksteal\n"
+                    "          python3 -m unittest tests/test_workflow_policy.py\n",
+                    1,
+                )
+            )
+
+    def test_the_parallel_runner_is_a_pinned_test_dependency(self) -> None:
+        pins = {
+            line.split("==")[0]: line.split("==")[1]
+            for line in (ROOT / "requirements-test.txt").read_text().split()
+            if "==" in line
+        }
+        # pytest-xdist drives the parallel run; execnet is its one transport dependency.
+        for name in ("pytest", "pytest-xdist", "execnet"):
+            self.assertIn(name, pins)
+
+    def test_every_python_test_file_is_collected_by_the_one_pytest_run(self) -> None:
+        # The CI command is `pytest tests`: a test module outside tests/ or named off-pattern
+        # would never run.
+        self.assertEqual(
+            sorted(p.name for p in ROOT.glob("tests/*.py") if not p.name.startswith("test_")),
+            [],
+        )
+        self.assertEqual(
+            sorted(str(p.relative_to(ROOT)) for p in ROOT.glob("scripts/test_*.py")), []
+        )
 
     def test_ci_pins_and_enforces_clippy_and_rustfmt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

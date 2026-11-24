@@ -120,44 +120,18 @@ jobs:
       - name: Validate workflow policy
         run: |
           python3 -m pip install -r requirements-test.txt
-          python3 scripts/validate_workflow_policy.py
-          python3 scripts/validate_capture_boundary.py
-          python3 scripts/validate_reference_docs.py
-          python3 scripts/validate_markdown_links.py
-          python3 scripts/check_hunt_sites.py
-          python3 scripts/check_shadow_sites.py
-          # This is the full set of self-contained Python unittest-style tests.
-          # tests/test_murmur_canary.py is pytest-based and runs separately below.
-          python3 -m unittest \
-            tests/test_reference_docs.py \
-            tests/test_markdown_links.py \
-            tests/test_hunt_sites.py \
-            tests/test_shadow_sites.py \
-            tests/test_shadow_diff.py \
-            tests/test_shadow_diff_scoped.py \
-            tests/test_shadow_soak_verdict.py \
-            tests/test_release_artifacts.py \
-            tests/test_release_version.py \
-            tests/test_release_start.py \
-            tests/test_workflow_policy.py \
-            tests/test_ci_rust_library.py \
-            tests/test_dev_signing.py \
-            tests/test_capture_agent_matrix.py \
-            tests/test_capture_worker_smoke.py \
-            tests/test_capture_first_pcm.py \
-            tests/test_native_capture_ci.py \
-            tests/test_event_store.py \
-            tests/test_log_receiver.py \
-            tests/test_murmur_bench.py \
-            tests/test_murmur_accuracy.py \
-            tests/test_murmur_bench_remote.py \
-            tests/test_capture_regression_watch.py \
-            tests/test_dictation_lifecycle.py \
-            tests/test_receiver_hang_diagnostics.py \
-            tests/test_receiver_key_scrub.py \
-            tests/test_reliability_slo.py \
-            tests/test_c13_3_mutations.py
-          python3 -m pytest tests/test_murmur_canary.py -q
+          # The six repository checks are independent: run them side by side.
+          printf '%s\n' \
+            validate_workflow_policy \
+            validate_capture_boundary \
+            validate_reference_docs \
+            validate_markdown_links \
+            check_hunt_sites \
+            check_shadow_sites \
+            | xargs -P 6 -I{} python3 scripts/{}.py
+          # Every Python test under tests/ (unittest-style and pytest), one test per
+          # worker slot. The tests use ephemeral ports and their own temp dirs.
+          python3 -m pytest tests -q -n auto --dist worksteal
 
   typecheck:
     needs: changes
