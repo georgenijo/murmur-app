@@ -376,12 +376,9 @@ jobs:
         if: matrix.suite == 'default'
         run: >-
           cd app/src-tauri &&
-          cargo test --no-run --workspace
-          --lib --bin murmur-capture-helper --test topology_watch
-          --test c13_3_bug_replays --example murmur-eval &&
           cargo nextest list --workspace
           --lib --bin murmur-capture-helper --test topology_watch
-          --test c13_3_bug_replays
+          --test c13_3_bug_replays --example murmur-eval
           --message-format json --list-type binaries-only > target/ci-test-binaries.json &&
           cargo metadata --format-version 1 > target/ci-cargo-metadata.json
 

@@ -607,18 +607,13 @@ def validate_ci(ci: str) -> int:
     )
     # The prebuild must use the run steps' package selection, and builds the example the
     # evaluation step runs in the same cargo invocation as every test target: Cargo then compiles
-    # the app crate's example build and test build side by side instead of back to back. The
-    # listing after it only reads that build (same profile and targets, so nothing recompiles).
+    # the app crate's example build and test build side by side instead of back to back.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
-    targets = (
-        "--lib --bin murmur-capture-helper --test topology_watch"
-        " --test c13_3_bug_replays"
+    test_prebuild = (
+        "cargo nextest list --workspace --lib --bin murmur-capture-helper"
+        " --test topology_watch --test c13_3_bug_replays --example murmur-eval"
     )
-    test_prebuild = f"cargo nextest list --workspace {targets} --message-format json"
-    example_build = f"cargo test --no-run --workspace {targets} --example murmur-eval &&"
-    assert example_build in test_build, "build the example with every test target in one invocation"
-    assert test_prebuild in test_build
-    assert test_build.index(example_build) < test_build.index(test_prebuild)
+    assert test_prebuild in test_build, "build the example and every test target in one invocation"
     assert "cargo build --workspace" not in test_build, "a separate example build compiles the app crate again"
     assert (
         "--message-format json --list-type binaries-only > target/ci-test-binaries.json"
