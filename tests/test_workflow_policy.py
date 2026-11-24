@@ -264,7 +264,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings\n",
             "          -E 'kind(lib) | binary(c13_3_bug_replays)'\n",
-            "          --test c13_3_bug_replays --example murmur-eval\n",
+            "          --test c13_3_bug_replays\n",
             "          tool: cargo-nextest@0.9.150\n",
         ):
             with self.subTest(policy=old.strip()):
@@ -724,26 +724,21 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
-    def test_rust_test_prebuild_builds_the_example_with_the_test_targets(self) -> None:
+    def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        together = "          --test c13_3_bug_replays --example murmur-eval\n"
-        # The example dropped from the prebuild: the evaluation step would have no binary.
-        mutated = workflow.replace(together, "          --test c13_3_bug_replays\n", 1)
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
-        # The example built on its own again: a second compile of the app crate.
-        separate = (
-            "          cd app/src-tauri &&\n"
-            "          cargo build --workspace --example murmur-eval &&\n"
+        examples = (
+            "          cargo build --workspace\n"
+            "          --example murmur-eval &&\n"
+        )
+        tests = (
             "          cargo nextest list --workspace\n"
+            "          --lib --bin murmur-capture-helper --test topology_watch\n"
+            "          --test c13_3_bug_replays\n"
+            "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
+            "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
         )
-        mutated = workflow.replace(
-            "          cd app/src-tauri &&\n          cargo nextest list --workspace\n"
-            "          --lib --bin murmur-capture-helper",
-            separate + "          --lib --bin murmur-capture-helper",
-            1,
-        )
+        swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
+        mutated = workflow.replace(examples + tests, swapped, 1)
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
