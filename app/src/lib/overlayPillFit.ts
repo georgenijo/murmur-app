@@ -22,6 +22,10 @@ export function waveWidth(bars: number): number {
 export const PILL_FIT_PAD = 6;
 export const PILL_FIT_GAP = 6;
 export const PILL_FIT_CHROME = 2 + 2 * PILL_FIT_PAD + 12 + PILL_FIT_GAP + waveWidth(PILL_WAVE_BARS_MINI) + PILL_FIT_GAP;
+/** Where the words start inside the capsule's hairline: the row padding,
+ * the dot, the four-bar waveform and their gaps. The unrolled lines above
+ * the front line start at the same x. */
+export const PILL_FIT_TEXT_X = PILL_FIT_CHROME - 2 - PILL_FIT_PAD;
 /** Rounding slack, so subpixel text never touches the clip. */
 const FIT_SLACK = 1;
 /** Recording before the first words: the dot and the full waveform with the

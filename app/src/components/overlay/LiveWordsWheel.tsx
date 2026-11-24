@@ -43,10 +43,13 @@ function createMeasure(font: string): Measure {
  * is no roll, only a crossfade between lines. Without `hint` the wheel
  * takes no room before the first words (the fitted pill is then just the dot
  * and the waveform). */
-export function LiveWordsWheel({ text, maxWidth, onFrontWidth, hint = true }: {
+export function LiveWordsWheel({ text, maxWidth, onFrontWidth, onFinishedLines, hint = true }: {
   text: string;
   maxWidth: number;
   onFrontWidth?: (width: number | null) => void;
+  /** The lines already rolled away (oldest first), for the hover card's
+   * unrolled wheel. Empty before the first line finishes and on unmount. */
+  onFinishedLines?: (lines: string[]) => void;
   hint?: boolean;
 }) {
   const wheel = useRef<HTMLDivElement>(null);
@@ -83,6 +86,11 @@ export function LiveWordsWheel({ text, maxWidth, onFrontWidth, hint = true }: {
   const frontWidth = measure && front.length ? Math.round(wheelLineWidth(front, measure) * 2) / 2 : null;
   useLayoutEffect(() => { onFrontWidth?.(frontWidth); }, [onFrontWidth, frontWidth]);
   useLayoutEffect(() => () => { onFrontWidth?.(null); }, [onFrontWidth]);
+  // One string per line; the key keeps a partial that changes only the front
+  // line from re-rendering the parent.
+  const finishedKey = lines.slice(0, -1).map((line) => line.join(' ')).join('\n');
+  useLayoutEffect(() => { onFinishedLines?.(finishedKey ? finishedKey.split('\n') : []); }, [onFinishedLines, finishedKey]);
+  useLayoutEffect(() => () => { onFinishedLines?.([]); }, [onFinishedLines]);
   const first = Math.max(0, lines.length - WHEEL_RENDERED_LINES);
   const shown = lines.slice(first);
   const tail = liveWordsTail(text);

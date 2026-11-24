@@ -243,6 +243,20 @@ export function useOverlayExpansion({
     return () => { cancelled = true; clearTimeout(timer); };
   }, [activity, placement, pillSize, pushSurface]);
 
+  // The card's content can change while it is open (the floating pill's
+  // transcript replaces the controls once a line has rolled away, and gives
+  // way to them when the dictation ends). Resize to the new card through the
+  // same acknowledged writer; a collapsed surface is the same for every content.
+  // A meeting suggestion opens and closes through `forcedOpen` below.
+  const lastContentRef = useRef(content);
+  useEffect(() => {
+    const previous = lastContentRef.current;
+    lastContentRef.current = content;
+    if (previous === content || (previous !== 'transcript' && content !== 'transcript')) return;
+    if (!visibleRef.current) return;
+    if (phaseRef.current === 'open' || phaseRef.current === 'opening') void pushSurface(true);
+  }, [content, pushSurface]);
+
   // --- Timer helpers --------------------------------------------------------
 
   const clearOpenDwell = useCallback(() => {

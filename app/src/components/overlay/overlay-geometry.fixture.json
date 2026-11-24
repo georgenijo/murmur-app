@@ -299,6 +299,26 @@
     "windowW": 120.0,
     "wingW": 28.0
   },
+  "pillTranscript": {
+    "collapsedH": 34.0,
+    "dropdownH": 48.0,
+    "expandedH": 82.0,
+    "floating": true,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 0.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 224.0
+    },
+    "pillActiveW": 224.0,
+    "pillIdleW": 224.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 224.0,
+    "wingW": 28.0
+  },
   "pillWarning": {
     "collapsedH": 34.0,
     "dropdownH": 64.0,

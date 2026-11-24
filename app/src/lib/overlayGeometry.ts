@@ -30,7 +30,10 @@ export function overlayPillSize(
   if (modelWarning) return 'warning';
   return liveWordsConsented ? 'words' : 'compact';
 }
-export type OverlayContent ='controls' | 'meeting_suggestion';
+/** What the hover card shows. `transcript` is the floating pill's unrolled
+ * wheel while dictating with Live Words: the lines already said, flat above
+ * the front line. */
+export type OverlayContent = 'controls' | 'meeting_suggestion' | 'transcript';
 const NUMBER_KEYS = ['windowW', 'collapsedH', 'expandedH', 'pillIdleW', 'pillActiveW',
   'pillMarginIdle', 'pillMarginActive', 'dropdownH', 'wingW'] as const;
 const ISLAND_KEYS = ['notchW', 'notchH', 'cornerIdle', 'cornerActive', 'pillW', 'pillH'] as const;

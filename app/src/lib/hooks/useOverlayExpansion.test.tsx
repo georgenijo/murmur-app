@@ -46,7 +46,7 @@ describe('useOverlayExpansion', () => {
   function Harness(props: {
     withIsland?: boolean;
     forcedOpen?: boolean;
-    content?: 'controls' | 'meeting_suggestion';
+    content?: 'controls' | 'meeting_suggestion' | 'transcript';
     activity?: 'idle' | 'recording' | 'processing';
     placement?: 'notch' | 'floating_pill';
     pillSize?: 'compact' | 'words' | 'warning';
@@ -71,7 +71,7 @@ describe('useOverlayExpansion', () => {
   async function mount(props: {
     withIsland?: boolean;
     forcedOpen?: boolean;
-    content?: 'controls' | 'meeting_suggestion';
+    content?: 'controls' | 'meeting_suggestion' | 'transcript';
     activity?: 'idle' | 'recording' | 'processing';
     placement?: 'notch' | 'floating_pill';
     pillSize?: 'compact' | 'words' | 'warning';
@@ -283,6 +283,49 @@ describe('useOverlayExpansion', () => {
     await flush();
     const collapse = surfaceCalls.find((call) => !call.args.expanded);
     expect(collapse?.args).toEqual({ expanded: false, content: 'controls' });
+  });
+
+  it('resizes an open card when the transcript replaces the controls, and back', async () => {
+    await mount({ placement: 'floating_pill', activity: 'recording', pillSize: 'words' });
+    await flush();
+    surfaceCalls.forEach((call) => call.resolve(APPLIED));
+    await flush();
+    await act(async () => current.onHoverStart());
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    surfaceCalls.filter((call) => call.args.expanded).forEach((call) => call.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('open');
+    const before = surfaceCalls.length;
+
+    await act(async () => {
+      root?.render(<Harness placement="floating_pill" activity="recording" pillSize="words" content="transcript" />);
+    });
+    await flush();
+    expect(surfaceCalls.slice(before).map((call) => [call.args.expanded, call.args.content]))
+      .toEqual([[true, 'transcript']]);
+    surfaceCalls.slice(before).forEach((call) => call.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('open');
+
+    const after = surfaceCalls.length;
+    await act(async () => {
+      root?.render(<Harness placement="floating_pill" activity="recording" pillSize="words" content="controls" />);
+    });
+    await flush();
+    expect(surfaceCalls.slice(after).map((call) => [call.args.expanded, call.args.content]))
+      .toEqual([[true, 'controls']]);
+  });
+
+  it('does not resize a collapsed card when the transcript becomes available', async () => {
+    await mount({ placement: 'floating_pill', activity: 'recording', pillSize: 'words' });
+    await flush();
+    const before = surfaceCalls.length;
+    await act(async () => {
+      root?.render(<Harness placement="floating_pill" activity="recording" pillSize="words" content="transcript" />);
+    });
+    await flush();
+    expect(surfaceCalls.length).toBe(before);
   });
 
   it('reapplies an already-open controls surface before revealing suggestion content', async () => {

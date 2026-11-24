@@ -119,6 +119,9 @@ pub enum OverlayContent {
     #[default]
     Controls,
     MeetingSuggestion,
+    /// The floating pill's hover card while dictating with Live Words: the
+    /// lines already said, flat above the front line ("unrolled wheel").
+    Transcript,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +192,10 @@ const FLOATING_MIN_H: f64 = 24.0;
 const POPOVER_GAP: f64 = 6.0;
 const MEETING_SUGGESTION_MIN_W: f64 = 320.0;
 const MEETING_SUGGESTION_DROPDOWN_H: f64 = 136.0;
+/// The unrolled wheel's room above the pill: three 16pt lines and an 8pt top
+/// inset, less the 8pt the nearest line tucks into the pill's own row so the
+/// lines keep the wheel's 16pt pitch (OverlayTranscript.tsx).
+const TRANSCRIPT_DROPDOWN_H: f64 = 48.0;
 const FALLBACK_NOTCH_W: f64 = 185.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 const MAX_REASONABLE_MENU_BAR_H: f64 = 128.0;
@@ -261,7 +268,10 @@ fn geometry_for_layout(
         // The capsule's own width, which the webview and the native material
         // both draw. Expanded, the window is at least as wide as the controls.
         g.island.pill_w = pill_w;
-        g.window_w = if layout.expanded {
+        // The transcript keeps the pill's own width: it unrolls the wheel.
+        g.window_w = if layout.expanded && content == OverlayContent::Transcript {
+            pill_w
+        } else if layout.expanded {
             g.window_w.max(PILL_EXPANDED_MIN_W).max(pill_w)
         } else {
             pill_w
@@ -326,6 +336,9 @@ fn geometry_for_content(notch: Option<NotchInfo>, content: OverlayContent) -> Ov
         };
         geometry.pill_active_w = geometry.window_w;
         geometry.dropdown_h = MEETING_SUGGESTION_DROPDOWN_H;
+        geometry.expanded_h = geometry.collapsed_h + geometry.dropdown_h;
+    } else if content == OverlayContent::Transcript {
+        geometry.dropdown_h = TRANSCRIPT_DROPDOWN_H;
         geometry.expanded_h = geometry.collapsed_h + geometry.dropdown_h;
     }
     geometry
@@ -2895,6 +2908,47 @@ mod tests {
             OverlayContent::MeetingSuggestion,
         );
         assert!(serde_json::from_str::<OverlayContent>("\"meeting\"").is_err());
+    }
+
+    #[test]
+    fn transcript_unrolls_above_the_words_pill_at_its_own_width() {
+        let notch = Some(notched(185.0, 32.0));
+        let at = |content, expanded| {
+            geometry_for_layout(
+                notch,
+                content,
+                sized_pill(OverlayActivity::Recording, expanded, OverlayPillSize::Words),
+            )
+        };
+        assert_eq!(
+            serde_json::from_str::<OverlayContent>("\"transcript\"").unwrap(),
+            OverlayContent::Transcript,
+        );
+        let open = at(OverlayContent::Transcript, true);
+        let fixtures: std::collections::HashMap<String, OverlayGeometry> = serde_json::from_str(
+            include_str!("../../../src/components/overlay/overlay-geometry.fixture.json"),
+        )
+        .unwrap();
+        assert_eq!(open, fixtures["pillTranscript"]);
+        assert_eq!(open.window_w, PILL_WORDS_W);
+        assert_eq!(open.dropdown_h, TRANSCRIPT_DROPDOWN_H);
+        assert_eq!(
+            applied_surface_for(&open, true),
+            AppliedSurface {
+                window_w: PILL_WORDS_W,
+                window_h: PILL_H + TRANSCRIPT_DROPDOWN_H
+            }
+        );
+        // Collapsed, the transcript is the plain words pill.
+        assert_eq!(
+            at(OverlayContent::Transcript, false),
+            at(OverlayContent::Controls, false)
+        );
+        // The controls keep their own wider card.
+        assert_eq!(
+            at(OverlayContent::Controls, true).window_w,
+            PILL_EXPANDED_MIN_W
+        );
     }
 
     #[test]

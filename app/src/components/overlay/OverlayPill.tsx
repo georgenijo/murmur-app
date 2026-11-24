@@ -28,6 +28,8 @@ interface OverlayPillProps {
   fitW?: number;
   /** The words' front line width, for the parent to fit the pill. */
   onFrontWidth?: (width: number | null) => void;
+  /** The wheel's finished lines, for the hover card's unrolled transcript. */
+  onFinishedLines?: (lines: string[]) => void;
   onRetryDelivery?: () => void;
   onPauseDeliveryTimer?: () => void;
   onResumeDeliveryTimer?: () => void;
@@ -62,6 +64,7 @@ export function OverlayPill({
   liveWords = null,
   fitW,
   onFrontWidth,
+  onFinishedLines,
   onRetryDelivery,
   onPauseDeliveryTimer,
   onResumeDeliveryTimer,
@@ -92,7 +95,7 @@ export function OverlayPill({
             <Waveform barRefs={barRefs} count={PILL_BAR_COUNT} status={status} visible={visual.waveformVisible} height={16}
               shown={liveWords?.trim() ? PILL_WAVE_BARS_MINI : PILL_WAVE_BARS_FULL} />
             {liveWords !== null && <LiveWordsWheel text={liveWords} onFrontWidth={onFrontWidth}
-              maxWidth={pillWordsMaxText(geometry.island.pillW)} hint={fitW === undefined} />}
+              onFinishedLines={onFinishedLines} maxWidth={pillWordsMaxText(geometry.island.pillW)} hint={fitW === undefined} />}
           </>
         ) : cue.retry ? (
           <RetryButton {...retryProps} label={cue.word} />
