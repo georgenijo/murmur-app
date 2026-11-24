@@ -147,7 +147,7 @@ objc2-core-audio = "0.3"
 objc2-core-foundation = { version = "0.3", features = ["CFString", "CFArray"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-fluidaudio-rs = { git = "https://github.com/FluidInference/fluidaudio-rs", rev = "2d1083314104c812944b5150866d1e334db8eed7", default-features = false, features = ["asr"] }
+fluidaudio-rs = { git = "https://github.com/georgenijo/fluidaudio-rs", rev = "312a3c058e879ed01a0619715503dedd49129f34", default-features = false, features = ["asr"] }
 
 [profile.release]
 panic = "abort"

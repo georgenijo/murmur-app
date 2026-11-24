@@ -6,7 +6,7 @@ Murmur's optional/default Core ML transcription backend and its optional realtim
 
 Rust bindings from FluidInference, licensed under the MIT License.
 
-- Source: https://github.com/FluidInference/fluidaudio-rs
+- Source: https://github.com/FluidInference/fluidaudio-rs (built from the fork https://github.com/georgenijo/fluidaudio-rs, which only changes `build.rs` to share the SwiftPM build directory between Cargo target dirs)
 - License: https://github.com/FluidInference/fluidaudio-rs/blob/main/LICENSE
 
 ## FluidAudio 0.14.1

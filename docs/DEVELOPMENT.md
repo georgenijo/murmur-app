@@ -282,6 +282,25 @@ layout, so release CI keeps the non-incremental `tauri build` and every shipped
 artifact is unchanged. Switching between the two commands in one checkout
 recompiles `ui` once.
 
+### Shared Swift build cache (`fluidaudio-rs`)
+
+The Core ML backend's Swift package (`fluidaudio-rs`) is built by SwiftPM from
+its `build.rs`, always with `-c release`. Murmur depends on the
+`georgenijo/fluidaudio-rs` fork, whose only change is where SwiftPM writes its
+output: `~/Library/Caches/fluidaudio-rs/<key>/` instead of a copy inside every
+Cargo target dir. The first cold build on a machine still compiles the package
+(about 35-45 s); every later cold `cargo check`/`clippy`/`build`/`test` in any
+worktree reuses it (a no-op `swift build`, under a second). `<key>` hashes the
+package checkout path (which contains the pinned revision), `Package.swift`,
+`Package.resolved` and `swift --version`, so a new revision or toolchain gets a
+fresh directory; SwiftPM's own lock serialises concurrent cargo runs.
+
+- `FLUIDAUDIO_SWIFT_BUILD_DIR=/abs/dir` changes the base directory.
+- `FLUIDAUDIO_SWIFT_SHARED_CACHE=0` goes back to one copy per target dir.
+- CI (`CI` set) keeps the per-target-dir copy, because CI caches `target/`.
+- Each key is about 650 MB. After a Swift or `fluidaudio-rs` bump, delete the
+  old ones: `rm -rf ~/Library/Caches/fluidaudio-rs`.
+
 ### Shadow soak build (temporary, issue #1154)
 
 The `dictation-shadow` feature catches its own panics, which needs
