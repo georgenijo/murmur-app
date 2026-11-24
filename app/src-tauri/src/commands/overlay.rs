@@ -62,9 +62,9 @@ pub enum OverlayPillSize {
     /// Dot and waveform only (Live Words off).
     #[default]
     Compact,
-    /// Dot, waveform and the two-line word wheel. Fixed for the whole dictation.
+    /// Dot, waveform and the live words wheel. Fixed for the whole dictation.
     Words,
-    /// Wide enough for a warning phrase and its action, at the slim height.
+    /// Wide enough for a warning phrase and its action. Only a warning widens it.
     Warning,
 }
 
@@ -167,11 +167,9 @@ impl NotchInfo {
 const WING: f64 = 28.0;
 const DROPDOWN_H: f64 = 64.0;
 const PILL_W: f64 = 120.0;
-/// Pill with the Live Words wheel: dot, 12 bars and about 225pt of text on
-/// two lines (the line being spoken in front, the previous one rolled back).
-const PILL_WORDS_W: f64 = 340.0;
-/// The wheel pill is taller so the previous line has room above the front one.
-const PILL_WORDS_H: f64 = 58.0;
+/// Pill with the live words wheel: dot, 12 bars and about 135pt of text. It
+/// keeps the slim 34pt height; the wheel rolls finished lines out of the top.
+const PILL_WORDS_W: f64 = 224.0;
 /// Pill showing a warning phrase and its action ("Model incomplete  Fix").
 const PILL_WARNING_W: f64 = 256.0;
 const PILL_H: f64 = 34.0;
@@ -255,21 +253,20 @@ fn geometry_for_layout(
         // the window click-through, so recording never waits on a native resize.
         g.floating = true;
         g.island.notch_h = 0.0;
-        let (pill_w, pill_h) = match layout.pill_size {
-            OverlayPillSize::Compact => (PILL_W, PILL_H),
-            OverlayPillSize::Words => (PILL_WORDS_W, PILL_WORDS_H),
-            OverlayPillSize::Warning => (PILL_WARNING_W, PILL_H),
+        let pill_w = match layout.pill_size {
+            OverlayPillSize::Compact => PILL_W,
+            OverlayPillSize::Words => PILL_WORDS_W,
+            OverlayPillSize::Warning => PILL_WARNING_W,
         };
         // The capsule's own width, which the webview and the native material
         // both draw. Expanded, the window is at least as wide as the controls.
         g.island.pill_w = pill_w;
-        g.island.pill_h = pill_h;
         g.window_w = if layout.expanded {
             g.window_w.max(PILL_EXPANDED_MIN_W).max(pill_w)
         } else {
             pill_w
         };
-        g.collapsed_h = pill_h;
+        g.collapsed_h = PILL_H;
     } else if !active {
         g.window_w = g.island.notch_w;
         g.collapsed_h = g.island.notch_h;
@@ -2216,7 +2213,7 @@ mod tests {
     }
 
     #[test]
-    fn pill_size_sets_the_capsule_and_dictation_never_changes_it() {
+    fn pill_width_follows_its_size_and_only_a_warning_widens_it() {
         let notch = Some(notched(185.0, 32.0));
         let fixtures: std::collections::HashMap<String, OverlayGeometry> = serde_json::from_str(
             include_str!("../../../src/components/overlay/overlay-geometry.fixture.json"),
@@ -2247,87 +2244,48 @@ mod tests {
             OverlayActivity::Recording,
             OverlayActivity::Processing,
         ] {
-            // Dictating never changes the capsule: one size per setting. The
-            // word wheel pill is 340x58, room for the front line and the one
-            // rolled back above it.
+            // Dictating never changes the width: one size per setting.
             let words = at(activity, false, OverlayPillSize::Words);
-            assert_eq!((words.window_w, words.collapsed_h), (340.0, 58.0));
-            assert_eq!((words.island.pill_w, words.island.pill_h), (340.0, 58.0));
+            assert_eq!(words.window_w, PILL_WORDS_W);
+            assert_eq!(words.island.pill_w, PILL_WORDS_W);
+            assert_eq!(words.collapsed_h, PILL_H);
+            assert_eq!(words.island.pill_h, PILL_H);
             assert_eq!(
                 applied_surface_for(&words, false),
                 AppliedSurface {
-                    window_w: PILL_WORDS_W,
-                    window_h: PILL_WORDS_H
+                    window_w: 224.0,
+                    window_h: 34.0
                 }
             );
             let compact = at(activity, false, OverlayPillSize::Compact);
-            assert_eq!((compact.window_w, compact.collapsed_h), (PILL_W, PILL_H));
+            assert_eq!(compact.window_w, PILL_W);
             assert_eq!(compact.island.pill_w, PILL_W);
             let warning = at(activity, false, OverlayPillSize::Warning);
-            assert_eq!(
-                (warning.window_w, warning.collapsed_h),
-                (PILL_WARNING_W, PILL_H)
-            );
+            assert_eq!(warning.window_w, PILL_WARNING_W);
             assert_eq!(warning.island.pill_w, PILL_WARNING_W);
         }
-        const { assert!(PILL_W < PILL_WARNING_W && PILL_WARNING_W < PILL_WORDS_W) };
-        const { assert!(PILL_H < PILL_WORDS_H) };
-        // Hover controls never narrow the pill below its own width, and the
-        // dropdown grows above the capsule's own height.
-        for (size, h) in [
-            (OverlayPillSize::Compact, PILL_H),
-            (OverlayPillSize::Words, PILL_WORDS_H),
-            (OverlayPillSize::Warning, PILL_H),
+        const { assert!(PILL_W < PILL_WORDS_W && PILL_WORDS_W < PILL_WARNING_W) };
+        // Hover controls never narrow the pill below its own width.
+        for size in [
+            OverlayPillSize::Compact,
+            OverlayPillSize::Words,
+            OverlayPillSize::Warning,
         ] {
             let g = at(OverlayActivity::Recording, true, size);
             assert!(g.window_w >= PILL_EXPANDED_MIN_W);
             assert!(g.window_w >= g.island.pill_w);
-            assert_eq!(g.collapsed_h, h);
-            assert_eq!(g.expanded_h, h + DROPDOWN_H);
+            assert_eq!(g.expanded_h, PILL_H + DROPDOWN_H);
         }
-        // A narrowing to the warning retains the wheel pill's bounds while the
-        // capsule contracts, then releases them.
-        let words = applied_surface_for(
-            &at(OverlayActivity::Idle, false, OverlayPillSize::Words),
-            false,
-        );
-        let warning = applied_surface_for(
-            &at(OverlayActivity::Idle, false, OverlayPillSize::Warning),
-            false,
-        );
-        let held = OverlayFrame {
-            x: 0.0,
-            y: 0.0,
-            width: words.window_w,
-            height: words.window_h,
-        };
-        assert_eq!(animation_surface(warning.clone(), Some(held), true), words);
-        assert_eq!(
-            animation_surface(warning.clone(), Some(held), false),
-            warning
-        );
         // The notch ignores the pill size.
         let notch_layout = OverlayLayout {
-            pill_size: OverlayPillSize::Words,
+            pill_size: OverlayPillSize::Warning,
             activity: OverlayActivity::Recording,
             ..OverlayLayout::default()
         };
         let g = geometry_for_layout(notch, OverlayContent::Controls, notch_layout);
         assert!(!g.floating);
         assert_eq!(g.island.pill_w, PILL_W);
-        assert_eq!(g.island.pill_h, PILL_H);
-        assert_eq!(g.collapsed_h, 32.0);
         assert_eq!(g.window_w, 185.0 + 2.0 * WING);
-    }
-
-    #[test]
-    fn the_wheel_pill_stays_bottom_anchored_above_the_dock() {
-        let area = (0.0, 24.0, 2560.0, 1340.0);
-        let (x, y) = pill_logical_position(area, (PILL_WORDS_W, PILL_WORDS_H));
-        assert_eq!(x, (2560.0 - PILL_WORDS_W) / 2.0);
-        assert_eq!(y + PILL_WORDS_H, 1340.0 - PILL_BOTTOM_GAP);
-        let (_, compact_y) = pill_logical_position(area, (PILL_W, PILL_H));
-        assert_eq!(compact_y + PILL_H, y + PILL_WORDS_H);
     }
 
     #[test]

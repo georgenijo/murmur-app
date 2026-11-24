@@ -343,12 +343,16 @@ describe('OverlayPill transient cues', () => {
     />
   );
 
-  it('puts the live words on a wheel inside the recording pill, after the dot and waveform', async () => {
+  it('puts the live words on a wheel inside the slim recording pill, after the dot and waveform', async () => {
     await act(async () => root.render(recordingPill('and then we can make it more minimal')));
     const row = container.querySelector<HTMLElement>('.bezel-row')!;
     expect(row.style.width).toBe(`${geometryFixture.pillWords.island.pillW - 2}px`);
     expect(row.style.height).toBe(`${geometryFixture.pillWords.collapsedH - 2}px`);
-    expect(row.hasAttribute('data-words')).toBe(true);
+    expect(geometryFixture.pillWords.collapsedH).toBe(34);
+    // No selection band or any other box behind the words.
+    expect([...row.querySelector('.bezel-wheel')!.children]
+      .every((child) => child.matches('[role="status"], .bezel-wheel-line'))).toBe(true);
+    expect(row.querySelector('[class*="band"]')).toBeNull();
     expect([...row.children].map((child) => child.className.split(' ')[0]))
       .toEqual(['bezel-glyph', 'overlay-waveform', 'bezel-wheel']);
     const lines = [...row.querySelectorAll('.bezel-wheel-line')].map((line) => line.textContent);
@@ -368,7 +372,6 @@ describe('OverlayPill transient cues', () => {
   it('shows only the dot and the waveform when Live Words is off', async () => {
     await act(async () => root.render(recordingPill(null)));
     expect(container.querySelector('.bezel-wheel')).toBeNull();
-    expect(container.querySelector('.bezel-row')!.hasAttribute('data-words')).toBe(false);
     expect(container.querySelectorAll('.bezel-row > *')).toHaveLength(2);
   });
 
@@ -381,7 +384,7 @@ describe('OverlayPill transient cues', () => {
   it('keeps a long dictation to a few lines in the DOM and announces only its tail', async () => {
     const long = 'synthetic words '.repeat(60);
     await act(async () => root.render(recordingPill(long)));
-    expect(container.querySelectorAll('.bezel-wheel-line').length).toBeLessThanOrEqual(4);
+    expect(container.querySelectorAll('.bezel-wheel-line').length).toBeLessThanOrEqual(3);
     const announced = container.querySelector('.bezel-wheel [role="status"]')!.textContent!;
     expect(announced.length).toBeLessThanOrEqual(160);
     expect(announced).not.toMatch(/\s{2}/);
