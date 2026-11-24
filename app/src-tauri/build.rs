@@ -198,3 +198,4 @@ fn sdk_has_foundation_models() -> bool {
         })
         .unwrap_or(false)
 }
+// ci timing baseline probe (not for merge)
