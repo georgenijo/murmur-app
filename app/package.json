@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && node ../scripts/sync_dist.mjs",
     "build:timed": "time npm run tauri build",
     "preview": "vite preview",
     "tauri": "tauri",
