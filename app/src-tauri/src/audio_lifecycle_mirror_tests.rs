@@ -37,6 +37,7 @@ use crate::token_pin_tests::{find_fragments, flat_tokens, fragment_tokens, token
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 #[path = "../crates/dictation-core/src/property/mirror_table.rs"]
 mod mirror_table;
@@ -552,10 +553,16 @@ fn the_cited_functions_of_audio_rs_are_pinned() {
     assert!(problems.is_empty(), "{}\n\n{RE_PIN}", problems.join("\n"));
 }
 
-fn items_for(file: &str) -> Vec<Item> {
+/// The production items of the real sources, parsed once per test process: a test that
+/// resolves every mirror row would otherwise parse and hash the whole file once per row.
+static REAL_LIFECYCLE_ITEMS: LazyLock<Vec<Item>> =
+    LazyLock::new(|| production_items(LIFECYCLE_SOURCE));
+static REAL_AUDIO_ITEMS: LazyLock<Vec<Item>> = LazyLock::new(|| production_items(AUDIO_SOURCE));
+
+fn items_for(file: &str) -> &'static [Item] {
     match file {
-        "audio_lifecycle.rs" => production_items(LIFECYCLE_SOURCE),
-        "audio.rs" => production_items(AUDIO_SOURCE),
+        "audio_lifecycle.rs" => &REAL_LIFECYCLE_ITEMS,
+        "audio.rs" => &REAL_AUDIO_ITEMS,
         other => panic!("unknown source file {other}"),
     }
 }
@@ -566,7 +573,7 @@ fn cited_item(row: &Mirror) -> Result<Item, String> {
     cited_item_in(row, items_for(row.file))
 }
 
-fn cited_item_in(row: &Mirror, items: Vec<Item>) -> Result<Item, String> {
+fn cited_item_in(row: &Mirror, items: &[Item]) -> Result<Item, String> {
     let exact: Vec<&Item> = items.iter().filter(|i| i.key == row.function).collect();
     let found: Vec<&Item> = if exact.is_empty() {
         items.iter().filter(|i| i.name == row.function).collect()
@@ -720,15 +727,22 @@ fn citation_problems(lifecycle_source: &str, audio_source: &str) -> Vec<String> 
 fn citation_report(lifecycle_source: &str, audio_source: &str) -> (Vec<String>, Vec<String>) {
     let mut problems = Vec::new();
     let mut matched = Vec::new();
-    let tests: BTreeSet<String> = items_of(lifecycle_source)
-        .into_iter()
+    // Each source is parsed once for all the rows, not once per row.
+    let lifecycle_items = items_of(lifecycle_source);
+    let tests: BTreeSet<String> = lifecycle_items
+        .iter()
         .filter(|item| item.test_only)
-        .map(|item| item.name)
+        .map(|item| item.name.clone())
         .collect();
+    let lifecycle_production: Vec<Item> = lifecycle_items
+        .into_iter()
+        .filter(|item| !item.test_only)
+        .collect();
+    let audio_production = production_items(audio_source);
     for row in MIRROR {
-        let items = match row.file {
-            "audio_lifecycle.rs" => production_items(lifecycle_source),
-            "audio.rs" => production_items(audio_source),
+        let items: &[Item] = match row.file {
+            "audio_lifecycle.rs" => &lifecycle_production,
+            "audio.rs" => &audio_production,
             other => panic!("unknown source file {other}"),
         };
         let item = match cited_item_in(row, items) {
