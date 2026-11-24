@@ -605,19 +605,16 @@ def validate_ci(ci: str) -> int:
         nextest_reuse + " -E 'kind(lib) | binary(c13_3_bug_replays)'"
         in " ".join(macos_lib_tests.split())
     )
-    # The prebuild must use the run steps' package selection and build the
-    # examples before the test targets, or the run steps recompile the app crate.
+    # The prebuild must use the run steps' package selection, and builds the example the
+    # evaluation step runs in the same cargo invocation as every test target: Cargo then compiles
+    # the app crate's example build and test build side by side instead of back to back.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
-    example_build = test_build.find(
-        "cargo build --workspace"
-        " --example murmur-eval"
+    test_prebuild = (
+        "cargo nextest list --workspace --lib --bin murmur-capture-helper"
+        " --test topology_watch --test c13_3_bug_replays --example murmur-eval"
     )
-    test_prebuild = test_build.find(
-        "cargo nextest list --workspace --lib"
-        " --bin murmur-capture-helper --test topology_watch"
-        " --test c13_3_bug_replays"
-    )
-    assert 0 <= example_build < test_prebuild, "build examples, then every test target"
+    assert test_prebuild in test_build, "build the example and every test target in one invocation"
+    assert "cargo build --workspace" not in test_build, "a separate example build compiles the app crate again"
     assert (
         "--message-format json --list-type binaries-only > target/ci-test-binaries.json"
         in test_build
