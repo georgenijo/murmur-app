@@ -485,10 +485,11 @@ keeps at most three lines. Reduce Motion removes the roll: one flat line, and
 a 200ms opacity crossfade when a new line starts.
 
 The pill fits its words (`src/lib/overlayPillFit.ts`). Before the first words
-it is the dot and the full 12-bar waveform at the compact 120×34pt. Once words
+it is the dot and the full 12-bar waveform with the same tight 6pt edges, 74×34pt
+(outside recording it rests at the compact 120pt). Once words
 show, the waveform folds to four bars (380ms) and the capsule's width becomes
-the front line plus its chrome (1pt hairlines, 10pt padding, the 12pt dot, two
-8pt gaps and the 12.5pt four-bar waveform: 62.5pt), rounded up to whole points,
+the front line plus its chrome (1pt hairlines, 6pt padding, the 12pt dot, two
+6pt gaps and the 12.5pt four-bar waveform: 50.5pt), rounded up to whole points,
 at most 224pt. It animates on the fit curve (420ms,
 `cubic-bezier(0.22, 1, 0.36, 1)`), widening as words arrive and narrowing when
 a new line starts. The native window stays at the `words` size (224×34pt) for
