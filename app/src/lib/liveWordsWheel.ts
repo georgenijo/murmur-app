@@ -1,8 +1,9 @@
 // The floating pill's Live Words wheel: words wrap into lines, the line being
 // spoken sits in front and each finished line rolls up and back out of the
 // top of the slim 34pt pill, like a picker wheel turning; the next line fades
-// in where it left. Curvature 27°,
-// older line blur 1.1px and the "medium" roll speed are the approved settings.
+// in where it left. Curvature 27°, older line blur 1.1px and the "medium"
+// roll speed are the approved settings. The pill's width hugs the front line
+// (see overlayPillFit.ts).
 
 /** Height of one line of words (px). The cylinder's radius follows from it. */
 export const WHEEL_LINE_H = 16;
@@ -22,53 +23,116 @@ const WHEEL_OUTGOING_RANGE = 1;
  * pill): it waits in the front position and fades in once the outgoing line
  * is half way out of the top. */
 const WHEEL_INCOMING_RANGE = 0.5;
-/** Slack kept at the right edge of a line (px). */
-const LINE_SLACK = 4;
+/** A word that would start a new line only does so once it has existed this
+ * long. While paused the model keeps re-guessing its last word; a guess that
+ * crosses the line edge and is dropped again never rolls the wheel. */
+export const WHEEL_COMMIT_MS = 700;
+/** A word already shown on the front line keeps its place until it is this
+ * far past the edge (px), so a re-guess a pixel wider does not flip it. */
+export const WHEEL_EDGE_HYSTERESIS = 4;
+/** Slack kept at the right edge of a line (px), so a held word's hysteresis
+ * never takes the text past the line's width. */
+const LINE_SLACK = WHEEL_EDGE_HYSTERESIS;
 
 /** The words of one line, in order. */
 export type WheelLine = string[];
 
-/** Greedy word wrap. It is prefix-stable: appending words never moves a word
- * that is already placed, so a new line only ever arrives at the bottom. A
- * word wider than a whole line (one very long word, unspaced CJK text) is cut
- * between code points, never inside a surrogate pair. */
-export function wrapWheelLines(
-  text: string,
-  measure: (s: string) => number,
-  maxWidth: number,
-): WheelLine[] {
-  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
-  const lines: WheelLine[] = [];
-  if (!words.length) return lines;
+/** The partial transcript as wheel tokens: its words, with any word wider
+ * than a whole line (one very long word, unspaced CJK text) cut between code
+ * points, never inside a surrogate pair. Cutting is prefix-stable: a word
+ * that grows keeps its earlier pieces. */
+export function wheelTokens(text: string, measure: (s: string) => number, maxWidth: number): string[] {
   const max = Math.max(1, maxWidth - LINE_SLACK);
-  const space = measure(' ');
-  let line: WheelLine = [];
-  let width = 0;
-  const newLine = () => { if (line.length) lines.push(line); line = []; width = 0; };
-  for (const word of words) {
-    const w = measure(word);
-    if (w <= max) {
-      if (line.length && width + space + w > max) newLine();
-      width += (line.length ? space : 0) + w;
-      line.push(word);
-      continue;
-    }
-    // Too wide for any line: it starts its own line and fills whole lines.
-    newLine();
+  const tokens: string[] = [];
+  for (const word of text.replace(/\s+/g, ' ').trim().split(' ')) {
+    if (!word) continue;
+    if (measure(word) <= max) { tokens.push(word); continue; }
     let piece = '';
     for (const point of Array.from(word)) {
-      if (piece && measure(piece + point) > max) {
-        line.push(piece);
-        newLine();
-        piece = '';
-      }
+      if (piece && measure(piece + point) > max) { tokens.push(piece); piece = ''; }
       piece += point;
     }
-    line.push(piece);
-    width = measure(piece);
+    if (piece) tokens.push(piece);
   }
-  newLine();
-  return lines;
+  return tokens;
+}
+
+/** What the wheel has committed for one dictation. Kept across partials. */
+export interface WheelCommitState {
+  /** End token index (exclusive) of each finished line. Only ever grows. */
+  done: number[];
+  /** When each token index first appeared (ms). A word revised in place keeps
+   * its age. */
+  born: number[];
+  /** Tokens the front line showed last time, for the edge hysteresis. */
+  frontCount: number;
+}
+
+export function newWheelCommitState(): WheelCommitState {
+  return { done: [], born: [], frontCount: 0 };
+}
+
+export interface WheelView {
+  /** Finished lines, then the front line. Never fewer lines than before. */
+  lines: WheelLine[];
+  /** Words held back from the front line until they are old enough to start
+   * a new line (they do not fit yet). */
+  held: number;
+  /** Milliseconds until a held word may start a new line, or null. */
+  recheckInMs: number | null;
+}
+
+/** Lay the tokens out on the wheel. Finished lines are committed and never
+ * roll back. A word that does not fit on the front line is held back, and
+ * only starts a new line once it has existed for WHEEL_COMMIT_MS, so a pause
+ * spent re-guessing the last word never moves the wheel backwards. */
+export function advanceWheel(
+  state: WheelCommitState,
+  tokens: string[],
+  now: number,
+  measure: (s: string) => number,
+  maxWidth: number,
+): WheelView {
+  state.born.length = Math.min(state.born.length, tokens.length);
+  for (let i = state.born.length; i < tokens.length; i++) state.born[i] = now;
+  const max = Math.max(1, maxWidth - LINE_SLACK);
+  const space = measure(' ');
+  for (;;) {
+    const start = state.done.length ? state.done[state.done.length - 1] : 0;
+    let width = 0;
+    let k = 0;
+    for (let i = start; i < tokens.length; i++) {
+      const w = measure(tokens[i]);
+      const edge = k < state.frontCount ? max + WHEEL_EDGE_HYSTERESIS : max;
+      if (k > 0 && width + space + w > edge) break;
+      width += (k > 0 ? space : 0) + w;
+      k++;
+    }
+    const firstHeld = start + k;
+    if (firstHeld < tokens.length && k > 0 && now - state.born[firstHeld] >= WHEEL_COMMIT_MS) {
+      state.done.push(firstHeld);
+      state.frontCount = 0;
+      continue;
+    }
+    state.frontCount = k;
+    const lines: WheelLine[] = [];
+    let from = 0;
+    for (const end of state.done) { lines.push(tokens.slice(from, end)); from = end; }
+    lines.push(tokens.slice(start, firstHeld));
+    const held = Math.max(0, tokens.length - firstHeld);
+    return {
+      lines,
+      held,
+      recheckInMs: held ? Math.max(0, WHEEL_COMMIT_MS - (now - state.born[firstHeld])) : null,
+    };
+  }
+}
+
+/** The width (px) of one line as the wheel renders it: words with one space
+ * between them. */
+export function wheelLineWidth(line: WheelLine, measure: (s: string) => number): number {
+  if (!line.length) return 0;
+  return line.reduce((sum, word) => sum + measure(word), 0) + measure(' ') * (line.length - 1);
 }
 
 /** The pose of the line `offset` lines from the wheel's position (negative:

@@ -7,6 +7,7 @@ import { DictationPreviewCard } from '../components/dictation-preview/DictationP
 import { deriveVisual } from '../components/overlay/deriveVisual';
 import geometry from '../components/overlay/overlay-geometry.fixture.json';
 import type { OverlayGeometry } from '../lib/overlayGeometry';
+import { overlayPillFitWidth } from '../lib/overlayPillFit';
 import type { DictationStatus } from '../lib/types';
 
 const noop = () => {};
@@ -18,19 +19,29 @@ const PILL_ONLY: readonly Variant[] = ['words', 'warning'];
 const SYNTHETIC_WORDS = 'And it did not show up on the pill, so I think we can make it more minimal';
 
 /** `?stream=<ms>` reveals the words one at a time, like partials arriving, so
- * the wheel can be watched rolling. `window.__wheelStream` reports progress. */
+ * the wheel can be watched rolling. `?revise=<word>` then imitates a pause:
+ * every 520ms the model re-guesses its tail, alternately adding `<word>` and
+ * dropping it again, six times. `window.__wheelStream` reports progress. */
 function useStreamedWords(text: string | null): string | null {
-  const ms = Number(new URLSearchParams(location.search).get('stream')) || 0;
+  const query = new URLSearchParams(location.search);
+  const ms = Number(query.get('stream')) || 0;
+  const revise = query.get('revise');
   const words = text?.split(' ') ?? [];
   const [count, setCount] = useState(ms ? 0 : words.length);
+  const [guess, setGuess] = useState(0);
   useEffect(() => {
-    const done = count >= words.length;
+    const streamed = count >= words.length;
+    const done = streamed && (!revise || guess >= 6);
     (window as unknown as { __wheelStream?: string }).__wheelStream = done ? 'done' : 'streaming';
-    if (!ms || done) return;
-    const timer = setTimeout(() => setCount((n) => n + 1), ms);
+    if (done || (!ms && !revise)) return;
+    const timer = streamed
+      ? setTimeout(() => setGuess((n) => n + 1), 520)
+      : setTimeout(() => setCount((n) => n + 1), ms);
     return () => clearTimeout(timer);
-  }, [ms, count, words.length]);
-  return text === null ? null : words.slice(0, count).join(' ');
+  }, [ms, revise, count, guess, words.length]);
+  if (text === null) return null;
+  const shown = words.slice(0, count);
+  return (revise && guess % 2 === 1 ? [...shown, revise] : shown).join(' ');
 }
 const controlsStates = ['idle', 'starting', 'still-connecting', 'recording', 'recovering'] as const;
 type ControlsState = typeof controlsStates[number];
@@ -66,6 +77,9 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
   const visual = deriveVisual(status, variant === 'cancelled', variant === 'miss', false, variant === 'microphone' ? 'chooseMicrophone' : null, false, false, 'idle', variant === 'delivery',
     variant === 'warning' ? 'incomplete' : null);
   const liveWords = useStreamedWords(variant === 'words' ? new URLSearchParams(location.search).get('text') ?? SYNTHETIC_WORDS : null);
+  // The words row hugs its front line, as OverlayWidget does.
+  const [frontW, setFrontW] = useState<number | null>(null);
+  const fitW = variant === 'words' ? overlayPillFitWidth(true, 'words', g.island.pillW, true, frontW) : undefined;
   useLayoutEffect(() => {
     if (status !== 'recording') return;
     barRefs.current.forEach((el, i) => {
@@ -78,8 +92,9 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
       display: 'flex', alignItems: g.floating ? 'flex-end' : undefined,
       width: g.windowW, height: expanded ? g.expandedH : g.collapsedH, marginInline: 'auto',
     }}>
-      <OverlayIsland geometry={g} active={!idle} expanded={expanded} tapMissed={visual.showTapMissedLabel}>
-        <OverlayPill geometry={g} visual={visual} status={status} barRefs={barRefs} liveWords={liveWords} />
+      <OverlayIsland geometry={g} active={!idle} expanded={expanded} tapMissed={visual.showTapMissedLabel} fitW={fitW}>
+        <OverlayPill geometry={g} visual={visual} status={status} barRefs={barRefs} liveWords={liveWords}
+          fitW={fitW} onFrontWidth={variant === 'words' ? setFrontW : undefined} />
         {meeting ? <OverlayMeetingSuggestion geometry={g} expanded suggestion={{
           token: '88888888-8888-4888-8888-888888888888', title: 'Synthetic calendar: Product review', startMs: 1, endMs: 2,
         }} busy={false} error={null} onAccept={noop} onDismiss={noop} />

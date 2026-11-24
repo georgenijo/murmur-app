@@ -24,14 +24,17 @@ App → General → **Recording overlay** chooses one of two renditions:
 - **Floating pill** ("Bezel"). One slim 34pt capsule of the macOS HUD
   material, bottom-centred 14pt above the Dock (work area). It follows the
   system light/dark appearance and is monochrome except the red recording dot.
-  While recording it is the dot, a 12-bar waveform and, with Live Words on,
-  the live words on a word wheel (see [Live words](#live-words)): one object, no
-  separate words box. Every other state pairs one shape with one word: a ring
+  While recording it is a still red dot, a 12-bar waveform and, with Live
+  Words on, the live words on a word wheel (see [Live words](#live-words)):
+  one object, no separate words box. Once words show, the waveform folds to
+  four bars and the capsule hugs the line being spoken. Every other state pairs one shape with one word: a ring
   while connecting, a spinner while transcribing, a check when done, a cross
   when cancelled, a triangle for errors. A delivery retry is the word itself
   (`Paste`, `Try again`). It is fully hidden and click-through while idle, and
-  fades in when recording starts. Its width is fixed per setting: 120pt with
-  Live Words off, 224pt with it on, so dictating never moves it. Only a
+  fades in when recording starts. Its window is fixed per setting: 120pt with
+  Live Words off, 224pt with it on, so dictating never resizes a window. With
+  Live Words on the drawn capsule inside that window is 120pt until the first
+  words and then fits them (see [Live words](#live-words)). Only a
   speech-model warning widens it (256pt, see
   [Speech model problems](#speech-model-problems)); it narrows again when the
   cue clears. Hover controls grow it upward as one segmented strip (Power,
@@ -118,10 +121,13 @@ appearance override. The native material and webview media query share this
 source. Reduce Transparency makes the tint opaque.
 
 The webview sends semantic state only (`set_overlay_material`: shown,
-expanded, content); Rust derives the capsule or card rect from the same
+expanded, content, and `pillW`, the collapsed capsule's width when it hugs
+Live Words); Rust clamps `pillW` between the pill's height and its window width
+and derives the capsule or card rect from the same
 geometry as the window and refits it in the same main-thread turn as every
 native resize and Dock move, so the material never lags the window. Shape
-changes animate on the island's 360ms curve, appearing and hiding fade in place
+changes animate on the island's 360ms curve (a width-only change of the shown
+capsule takes the 420ms fit curve instead), appearing and hiding fade in place
 (160ms under Reduce Motion), and Reduce Motion snaps the shape. Live Words
 reports its laid-out card size (`set_live_words_material`); Rust places and
 lifts it. Separate native lift and card layers let a wrapping partial resize
@@ -459,7 +465,13 @@ that is kept.
 after the dot and the waveform, in the Bezel ink at the row's 11px (weight
 500, 16px lines). Words wrap into lines greedily, so appending words never
 moves a placed word, and a word wider than a line (or unspaced CJK text) is
-cut between code points. The line being spoken is vertically centred. When a
+cut between code points. Finished lines are committed and never roll back
+(`advanceWheel`): a word that does not fit on the front line is held back
+until it has existed for 700ms (`WHEEL_COMMIT_MS`; a word the model revises in
+place keeps its age), and a word already on the front line may run 4px past
+the edge before it moves (`WHEEL_EDGE_HYSTERESIS`). A pause in which the model
+keeps adding and dropping its last word therefore never moves the wheel
+backwards. The line being spoken is vertically centred. When a
 line fills, it rolls up and back out of the top over a cylinder
 (`translateZ(-R) rotateX(-offset × 27°) translateZ(R)`, R = 16px / 27°, in a
 200px perspective), dimming (cos⁵ of its angle, fading linearly to nothing
@@ -470,8 +482,25 @@ A critically damped spring (k = 90/s², c = 2√k) drives the roll in
 `requestAnimationFrame`, so lines never jump; each new word fades in from a
 3px blur over 380ms. A vertical mask softens the top and bottom edges. The DOM
 keeps at most three lines. Reduce Motion removes the roll: one flat line, and
-a 200ms opacity crossfade when a new line starts. The pill's size is native
-and fixed (224×34pt), so long text becomes more lines, never a bigger pill.
+a 200ms opacity crossfade when a new line starts.
+
+The pill fits its words (`src/lib/overlayPillFit.ts`). Before the first words
+it is the dot and the full 12-bar waveform at the compact 120×34pt. Once words
+show, the waveform folds to four bars (380ms) and the capsule's width becomes
+the front line plus its chrome (1pt hairlines, 10pt padding, the 12pt dot, two
+8pt gaps and the 12.5pt four-bar waveform: 62.5pt), rounded up to whole points,
+at most 224pt. It animates on the fit curve (420ms,
+`cubic-bezier(0.22, 1, 0.36, 1)`), widening as words arrive and narrowing when
+a new line starts. The native window stays at the `words` size (224×34pt) for
+the whole dictation, so following the words never resizes a window: only the
+capsule the webview draws and its native material change width. The material
+width goes over `set_overlay_material` through the coalescing command queue
+(one call in flight, the latest value wins), and Rust animates a width-only
+change on the same fit curve. Hover is on the capsule, not the transparent
+margins of the window; a click in those margins still lands on the overlay
+window (the same 224pt footprint as before) and does nothing. Outside recording, the pill rests at 120pt. Reduce
+Motion applies each width at once. Long text becomes more lines, never a
+taller pill.
 The pill's overlay webview receives the partials itself
 (`useDictationPartial` with `presentNatively: false`): no Live Words window is
 built or shown for the pill (`ensure_window` and `show_dictation_preview`

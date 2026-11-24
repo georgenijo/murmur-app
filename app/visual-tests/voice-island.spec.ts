@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { surfaceCases } from './surface-matrix';
+import { PILL_FIT_CHROME } from '../src/lib/overlayPillFit';
 import geometry from '../src/components/overlay/overlay-geometry.fixture.json' with { type: 'json' };
 
 for (const placement of ['notch', 'pill'] as const) {
@@ -90,11 +91,48 @@ const WORDS = {
   fast: 'one two three four five six seven eight nine ten eleven twelve '.repeat(10),
 };
 
+/** Text whose tail word, re-guessed, falls just past the front line's edge
+ * (checked by the test itself). */
+const REVISE = { text: 'okay so this is a good state here', word: 'you' };
+
 type LineState = {
   top: number; bottom: number; left: number; right: number;
   opacity: number; visible: boolean; front: boolean; blur: string;
   transform: string; scrollWidth: number; clientWidth: number; text: string;
 };
+
+/** The front line's laid-out text width, from its words (not its box, which
+ * spans the wheel). */
+async function frontTextWidth(page: import('@playwright/test').Page) {
+  return page.locator('.bezel-wheel-line[data-front]').evaluate((line) => {
+    const range = document.createRange();
+    range.selectNodeContents(line);
+    return range.getBoundingClientRect().width;
+  });
+}
+
+/** Waits for the wheel to come to rest: the front line fully lit and no
+ * other line drawn, then the word fade-ins. */
+async function settleWheel(page: import('@playwright/test').Page) {
+  await page.waitForFunction(() => {
+    const lines = [...document.querySelectorAll<HTMLElement>('.bezel-wheel-line')];
+    const lit = (el: HTMLElement) => getComputedStyle(el).visibility === 'visible' && Number(getComputedStyle(el).opacity) > 0.02;
+    return lines.some(el => el.hasAttribute('data-front') && getComputedStyle(el).opacity === '1')
+      && lines.filter(el => !el.hasAttribute('data-front')).every(el => !lit(el));
+  }, undefined, { timeout: 4000 });
+  await page.waitForTimeout(450);
+}
+
+/** Waveform bars at least half inside the waveform's clip. */
+async function visibleBars(page: import('@playwright/test').Page) {
+  return page.locator('.overlay-island .overlay-waveform').first().evaluate((wave) => {
+    const clip = wave.getBoundingClientRect();
+    return [...wave.querySelectorAll('.overlay-waveform-bar')].filter((bar) => {
+      const r = bar.getBoundingClientRect();
+      return Math.min(r.right, clip.right) - Math.max(r.left, clip.left) >= r.width / 2;
+    }).length;
+  });
+}
 
 /** Every wheel line's projected box and effective visibility. */
 async function wheelLines(page: import('@playwright/test').Page) {
@@ -125,14 +163,23 @@ for (const motion of ['no-preference', 'reduce'] as const) {
         const wheel = pill.locator('.bezel-wheel');
         await expect(wheel).toBeVisible();
         await page.evaluate(() => document.fonts.ready);
-        // Let the word fade-ins finish so opacity and blur are at rest.
-        await page.waitForTimeout(motion === 'reduce' ? 300 : 600);
+        // Words past the first line are held for the commit time, then the
+        // wheel rolls to the last line; let that and the fade-ins settle.
+        await page.waitForTimeout(800);
+        await settleWheel(page);
         const [capsule, glyph, wave] = await Promise.all([
           pill.boundingBox(), pill.locator('.bezel-glyph').boundingBox(), pill.locator('.overlay-waveform').boundingBox(),
         ]);
-        // The capsule keeps its fixed slim size whatever the text.
-        expect(capsule!.width).toBe(geometry.pillWords.windowW);
+        // The capsule stays 34pt tall and hugs its front line, never past the
+        // words size: dot, four bars and the words, nothing to spare.
         expect(capsule!.height).toBe(geometry.pillWords.collapsedH);
+        expect(capsule!.width).toBeLessThanOrEqual(geometry.pillWords.island.pillW);
+        const frontText = await frontTextWidth(page);
+        expect(Math.abs(capsule!.width - Math.min(geometry.pillWords.island.pillW, PILL_FIT_CHROME + frontText)))
+          .toBeLessThanOrEqual(2);
+        expect(await visibleBars(page)).toBe(4);
+        await expect(pill.locator('[class*="ring"], [class*="pulse"]')).toHaveCount(0);
+        await expect(pill.locator('.bezel-dot')).toHaveCSS('animation-name', 'none');
         const { wheel: w, lines } = await wheelLines(page);
         // Dot, waveform and the wheel sit side by side, inside the capsule.
         expect(wave!.x).toBeGreaterThanOrEqual(glyph!.x + glyph!.width);
@@ -198,7 +245,8 @@ test('streamed words roll finished lines up and back over the wheel', async ({ p
   }
   expect(rolling).toBe(true);
   await page.waitForFunction(() => (window as unknown as { __wheelStream?: string }).__wheelStream === 'done');
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(800);
+  await settleWheel(page);
   const { wheel: w, lines } = await wheelLines(page);
   const front = lines.filter(l => l.front);
   expect(front).toHaveLength(1);
@@ -211,15 +259,86 @@ test('streamed words roll finished lines up and back over the wheel', async ({ p
   }
 });
 
+/** Records the wheel's newest line index and the capsule width on every
+ * frame until stopped. */
+async function recordWheel(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __wheelLog: { line: number; width: number; front: string; said: string }[]; __wheelStop?: boolean };
+    w.__wheelLog = [];
+    const tick = () => {
+      const wheel = document.querySelector<HTMLElement>('.bezel-wheel');
+      const island = document.querySelector<HTMLElement>('.overlay-island');
+      if (wheel && island) w.__wheelLog.push({
+        line: Number(wheel.dataset.line), width: island.getBoundingClientRect().width,
+        front: wheel.querySelector('[data-front]')?.textContent ?? '',
+        said: wheel.querySelector('[role="status"]')?.textContent ?? '',
+      });
+      if (!w.__wheelStop) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+test('before words the fitted pill is the dot and the full waveform at the compact width', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'dark' });
+  await page.setViewportSize({ width: 420, height: 200 });
+  // A very slow stream: no word has arrived yet.
+  await page.goto('/visual-fixtures.html?state=voice-island&placement=pill&variant=words&stream=600000');
+  const pill = page.locator('.overlay-island');
+  await expect(pill).toBeVisible();
+  const box = (await pill.boundingBox())!;
+  expect([box.width, box.height]).toEqual([geometry.pillRecording.island.pillW, 34]);
+  expect(await visibleBars(page)).toBe(12);
+  await expect(pill.locator('.bezel-wheel-hint')).toHaveCount(0);
+  await expect(pill.locator('[class*="ring"], [class*="pulse"]')).toHaveCount(0);
+  await expect(pill.locator('.bezel-dot')).toHaveCSS('animation-name', 'none');
+  // Dot and waveform centred in the capsule, and nothing overflows it.
+  const [glyph, wave] = await Promise.all([pill.locator('.bezel-glyph').boundingBox(), pill.locator('.overlay-waveform').boundingBox()]);
+  const left = glyph!.x - box.x;
+  const right = box.x + box.width - (wave!.x + wave!.width);
+  expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+});
+
+for (const motion of ['no-preference', 'reduce'] as const) {
+  test(`re-guessing the tail word across the line edge never rolls the wheel back (${motion})`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: motion, colorScheme: 'dark' });
+    await page.setViewportSize({ width: 420, height: 200 });
+    // The model keeps adding and dropping its last word during a pause; that
+    // word lands just past the front line's edge.
+    await page.goto(`/visual-fixtures.html?state=voice-island&placement=pill&variant=words&stream=40&revise=${REVISE.word}&text=${encodeURIComponent(REVISE.text)}`);
+    await expect(page.locator('.bezel-wheel')).toBeVisible();
+    await recordWheel(page);
+    await page.waitForFunction(() => (window as unknown as { __wheelStream?: string }).__wheelStream === 'done');
+    await page.waitForTimeout(800);
+    const log = await page.evaluate(() => {
+      const w = window as unknown as { __wheelLog: { line: number; width: number; front: string; said: string }[]; __wheelStop?: boolean };
+      w.__wheelStop = true;
+      return w.__wheelLog;
+    });
+    // The revised word was really past the edge: announced, but held back
+    // from the front line rather than starting a new one.
+    expect(log.some(f => f.said.endsWith(REVISE.word) && !f.front.includes(REVISE.word))).toBe(true);
+    for (let i = 1; i < log.length; i++) expect(log[i].line).toBeGreaterThanOrEqual(log[i - 1].line);
+    // The width follows the words, inside the words size, and under Reduce
+    // Motion it jumps straight to each new width.
+    expect(Math.max(...log.map(f => f.width))).toBeLessThanOrEqual(geometry.pillWords.island.pillW);
+    if (motion === 'reduce') {
+      await expect(page.locator('.overlay-island')).toHaveCSS('transition-duration', /^(0\.01ms|1e-05s|0s)/);
+    }
+  });
+}
+
 test('the warning widens the slim pill and its phrase fits; every pill size is 34pt tall', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 420, height: 320 });
   await page.goto('/visual-fixtures.html?state=voice-island&placement=pill&appearance=dark');
   const boxOf = async (variant: string) =>
     (await page.locator(`[data-variant="${variant}"] .overlay-island`).boundingBox())!;
-  const words = await boxOf('words');
+  // The words pill's window is 224×34; its capsule hugs the words inside it.
+  const words = (await page.locator('[data-variant="words"] [data-native-frame]').boundingBox())!;
   const warning = await boxOf('warning');
   const compact = await boxOf('recording');
+  expect((await boxOf('words')).width).toBeLessThanOrEqual(words.width);
   expect([compact.width, compact.height]).toEqual([geometry.pillRecording.windowW, geometry.pillRecording.collapsedH]);
   expect([words.width, words.height]).toEqual([geometry.pillWords.windowW, geometry.pillWords.collapsedH]);
   expect([warning.width, warning.height]).toEqual([geometry.pillWarning.windowW, geometry.pillWarning.collapsedH]);

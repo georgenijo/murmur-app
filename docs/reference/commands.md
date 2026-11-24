@@ -315,7 +315,7 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `set_overlay_material` | `shown: bool`, `expanded: bool`, `content?: OverlayContent`, `floating: bool` | `Result<bool, String>` | Places the floating pill's Bezel material (`NSVisualEffectView` HUD blur plus tint) behind the overlay webview, clipped to the capsule or expanded card that Rust derives from its own geometry, and lifts the Live Words material with it. Semantic state only; all view mutations run on the main thread. `floating: false` removes both materials. Returns whether the overlay material is installed (always `false` off macOS). |
+| `set_overlay_material` | `shown: bool`, `expanded: bool`, `content?: OverlayContent`, `floating: bool`, `pill_w?: f64` | `Result<bool, String>` | Places the floating pill's Bezel material (`NSVisualEffectView` HUD blur plus tint) behind the overlay webview, clipped to the capsule or expanded card that Rust derives from its own geometry (`pill_w` narrows the collapsed capsule to hug Live Words, clamped to the window width, and a width-only change animates on the 420ms fit curve), and lifts the Live Words material with it. Semantic state only; all view mutations run on the main thread. `floating: false` removes both materials. Returns whether the overlay material is installed (always `false` off macOS). |
 | `set_live_words_material` | `width: f64`, `height: f64` | `Result<bool, String>` | Clips the Live Words window's Bezel material to the card's laid-out size; Rust owns its position and lift. A zero size fades it out. Removes it unless the pill placement is active. Returns whether it is installed. |
 
 ## Dictation preview (`commands/dictation_preview.rs`)

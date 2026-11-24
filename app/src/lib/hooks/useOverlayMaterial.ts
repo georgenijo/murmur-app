@@ -9,6 +9,9 @@ export interface OverlayMaterialState {
   /** The hover card is open, as CSS renders it. */
   expanded: boolean;
   content: OverlayContent;
+  /** The collapsed capsule's drawn width when it hugs its words; null keeps
+   * the size's own width. */
+  pillW?: number | null;
 }
 
 /** Send `command` with the latest args, one request at a time: a burst
@@ -48,11 +51,11 @@ function useLatestMaterialCommand<T extends Record<string, unknown>>(command: st
  * behind the webview follows it on the island's own curve. Rust derives the
  * rect from its geometry contract; this sends only semantic state. Returns
  * true while a native material backs the pill. */
-export function useOverlayMaterial({ floating, shown, expanded, content }: OverlayMaterialState): boolean {
-  const [native, send] = useLatestMaterialCommand<{ floating: boolean; shown: boolean; expanded: boolean; content: OverlayContent }>('set_overlay_material');
+export function useOverlayMaterial({ floating, shown, expanded, content, pillW = null }: OverlayMaterialState): boolean {
+  const [native, send] = useLatestMaterialCommand<{ floating: boolean; shown: boolean; expanded: boolean; content: OverlayContent; pillW: number | null }>('set_overlay_material');
   useLayoutEffect(() => {
-    send({ floating, shown, expanded, content });
-  }, [send, floating, shown, expanded, content]);
+    send({ floating, shown, expanded, content, pillW });
+  }, [send, floating, shown, expanded, content, pillW]);
   return native && floating;
 }
 
