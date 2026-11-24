@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.68.4] - 2026-11-24
+
+<!-- Release notes generated using configuration in .github/release.yml at 62d9270dfc745d9bfd03c7333070c3d582509296 -->
+
+## What's Changed
+### Other Changes
+* perf(ci): run rust-macos as one job per feature set, build each once by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1217
+* perf(build): overlap an incremental type check with tauri:build:local by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1219
+* feat(overlay): hover the pill to unroll the wheel by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1222
+* perf(ci): run the Python tests in parallel (pytest-xdist) and cut shadow-diff git spawns by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1220
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.68.3...v0.68.4
+
 ## [0.68.3] - 2026-11-24
 
 <!-- Release notes generated using configuration in .github/release.yml at 89bbbe5a0c0210756b95828c2691b57ff3f755d2 -->
