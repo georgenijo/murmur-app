@@ -365,5 +365,3 @@ export const FluidTooltip = {
   Trigger: FluidTooltipTrigger,
   Content: FluidTooltipContent,
 };
-
-export default FluidTooltip;
