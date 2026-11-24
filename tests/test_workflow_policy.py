@@ -348,15 +348,45 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             # The feature test step dropped, or built without the feature.
             ("      - name: Run dictation shadow tests\n", "      - name: Unrelated\n"),
             (
-                "          cargo nextest run --lib --features dictation-shadow\n"
-                "          -E 'test(/dictation_shadow::/)",
-                "          cargo nextest run --lib\n          -E 'test(/dictation_shadow::/)",
+                "          cargo nextest list --lib --features dictation-shadow\n",
+                "          cargo nextest list --lib\n",
             ),
-            # The goldens no longer repeated, or run without the feature.
+            # The build step dropped, so the run steps reuse nothing.
+            ("      - name: Build dictation shadow test binaries\n", "      - name: Unrelated build\n"),
+            # The tests run against another build's binaries (the default suite's).
+            (
+                "          --binaries-metadata target/ci-shadow-binaries.json\n"
+                "          -E 'test(/dictation_shadow::/)",
+                "          --binaries-metadata target/ci-test-binaries.json\n"
+                "          -E 'test(/dictation_shadow::/)",
+            ),
+            # The goldens no longer repeated, or run without the feature's build.
             ('          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
-             "          cargo nextest run --lib --features dictation-shadow\n",
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-shadow-binaries.json\n",
              '          MURMUR_GOLDEN_REPEAT: "1"\n        run: >-\n          cd app/src-tauri &&\n'
-             "          cargo nextest run --lib --features dictation-shadow\n"),
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-shadow-binaries.json\n"),
+            ('          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-shadow-binaries.json\n",
+             '          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-test-binaries.json\n"),
+            # The benchmark build lost its feature, or the shadow joined it (one build, both features).
+            ("          cargo nextest list --lib --features internal-benchmark\n",
+             "          cargo nextest list --lib\n"),
+            ("          cargo nextest list --lib --features internal-benchmark\n",
+             "          cargo nextest list --lib --features internal-benchmark,dictation-shadow\n"),
+            # A suite's step moved to another suite, so it would run with the wrong features.
+            ("      - name: Run admission tests with internal-benchmark\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'\n",
+             "      - name: Run admission tests with internal-benchmark\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n"),
+            ("      - name: Run tests\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n",
+             "      - name: Run tests\n        if: needs.changes.outputs.verified != 'true'\n"),
+            # The matrix lost a suite.
+            ("        suite: ${{ fromJSON(needs.changes.outputs.rust_suites) }}\n",
+             "        suite: [default]\n"),
+            ("      fail-fast: false\n      matrix:\n        suite:", "      matrix:\n        suite:"),
             ("      - name: Run golden dictation scenarios 100 times with the dictation shadow\n",
              "      - name: Unrelated goldens\n"),
         ):
@@ -382,7 +412,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             ("continue-on-error on the tests", "        timeout-minutes: 25\n", "        timeout-minutes: 25\n        continue-on-error: true\n"),
             ("tests timeout raised", "        timeout-minutes: 25\n", "        timeout-minutes: 250\n"),
             ("the job suppresses failures", "  rust-macos:\n    needs: changes\n", "  rust-macos:\n    continue-on-error: true\n    needs: changes\n"),
-            ("the tests step's if weakened", "      - name: Run dictation shadow tests\n        if: needs.changes.outputs.verified != 'true'\n", "      - name: Run dictation shadow tests\n        if: always()\n"),
+            ("the tests step's if weakened", "      - name: Run dictation shadow tests\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'\n", "      - name: Run dictation shadow tests\n        if: always()\n"),
         ):
             with self.subTest(label=label):
                 self.assertIn(old, workflow, label)
@@ -419,7 +449,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "Run golden dictation scenarios 100 times with the dictation shadow",
         ):
             with self.subTest(step=name):
-                old = f"      - name: {name}\n        if: needs.changes.outputs.verified != 'true'\n"
+                old = f"      - name: {name}\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'\n"
                 mutated = workflow.replace(old, f"      - name: {name}\n", 1)
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
@@ -640,12 +670,12 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             ("      verified: ${{ steps.verified.outputs.verified == 'true' }}\n", ""),
             (
                 "      - name: Run tests\n"
-                "        if: needs.changes.outputs.verified != 'true'\n",
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n",
                 "      - name: Run tests\n",
             ),
             (
                 "      - name: Run deterministic dictation evaluation\n"
-                "        if: needs.changes.outputs.verified != 'true'\n",
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n",
                 "      - name: Run deterministic dictation evaluation\n",
             ),
         ):
