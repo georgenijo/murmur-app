@@ -1,6 +1,5 @@
-import { useLayoutEffect, useRef } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
-import { liveWordsTail } from '../../lib/liveWordsLine';
+import { LiveWordsWheel } from './LiveWordsWheel';
 import type { DictationStatus } from '../../lib/types';
 import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
@@ -18,8 +17,9 @@ interface OverlayPillProps {
   deliveryCue?: OverlayDeliveryCue | null;
   /** The finish just landed (the floating pill shows a check for it). */
   done?: boolean;
-  /** The floating pill's one line of live words while recording. `null` when
-   * Live Words is off (the pill is then just the dot and the waveform). */
+  /** The floating pill's live words while recording, shown on a two-line
+   * wheel. `null` when Live Words is off (the pill is then just the dot and
+   * the waveform). */
   liveWords?: string | null;
   onRetryDelivery?: () => void;
   onPauseDeliveryTimer?: () => void;
@@ -69,7 +69,7 @@ export function OverlayPill({
       // The capsule's hairline border takes layout space; centre the row inside it.
       // The row is as wide as the capsule, not the (possibly larger) native
       // window, so a width change reveals it from the centre and never reflows.
-      <div className="overlay-pill-row bezel-row" style={{
+      <div className="overlay-pill-row bezel-row" data-words={liveWords !== null && visual.indicator.kind === 'recording' || undefined} style={{
         height: topH - 2 * PILL_BORDER,
         width: geometry.island.pillW - 2 * PILL_BORDER,
         alignSelf: 'center',
@@ -78,7 +78,7 @@ export function OverlayPill({
         {visual.indicator.kind === 'recording' ? (
           <>
             <Waveform barRefs={barRefs} count={PILL_BAR_COUNT} status={status} visible={visual.waveformVisible} height={16} />
-            {liveWords !== null && <LiveWordsLine text={liveWords} />}
+            {liveWords !== null && <LiveWordsWheel text={liveWords} />}
           </>
         ) : cue.retry ? (
           <RetryButton {...retryProps} label={cue.word} />
@@ -109,35 +109,6 @@ export function OverlayPill({
           <Waveform barRefs={barRefs} count={NOTCH_BAR_COUNT} status={status} visible={visual.waveformVisible} height={14} />
         )}
       </div>
-    </div>
-  );
-}
-
-/** The newest words on one line inside the pill. The words fill from the left
- * until they reach the edge, then the line follows the newest word and the
- * older ones fade out on the left. It never wraps and never changes the pill's
- * width, whatever the text (a long word, CJK, a burst of fast speech). */
-function LiveWordsLine({ text }: { text: string }) {
-  const line = useRef<HTMLDivElement>(null);
-  const tail = liveWordsTail(text);
-  useLayoutEffect(() => {
-    const el = line.current;
-    if (!el) return;
-    const fit = () => {
-      el.dataset.overflow = String(el.scrollWidth > el.clientWidth + 1);
-      el.scrollLeft = el.scrollWidth;
-    };
-    fit();
-    // The pill can resize (a warning widens it) without the words changing.
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(fit);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [tail]);
-  return (
-    <div className="bezel-words" ref={line}>
-      <span role="status" aria-live="polite" aria-label="Words recognized so far">{tail}</span>
-      {!tail && <span className="bezel-words-hint" aria-hidden="true">Listening…</span>}
     </div>
   );
 }

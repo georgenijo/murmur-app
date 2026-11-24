@@ -21,18 +21,18 @@ App → General → **Recording overlay** chooses one of two renditions:
   any activity widens it to `notchW + 56` without growing taller. The status
   indicator sits in the left wing and a 7-bar waveform in the right wing.
   External and unmeasured displays use a 185pt pretend notch.
-- **Floating pill** ("Bezel"). One slim 34pt capsule of the macOS HUD
+- **Floating pill** ("Bezel"). One capsule of the macOS HUD
   material, bottom-centred 14pt above the Dock (work area). It follows the
   system light/dark appearance and is monochrome except the red recording dot.
   While recording it is the dot, a 12-bar waveform and, with Live Words on,
-  one line of the newest words (see [Live words](#live-words)): one object, no
+  a two-line word wheel (see [Live words](#live-words)): one object, no
   separate words box. Every other state pairs one shape with one word: a ring
   while connecting, a spinner while transcribing, a check when done, a cross
   when cancelled, a triangle for errors. A delivery retry is the word itself
   (`Paste`, `Try again`). It is fully hidden and click-through while idle, and
-  fades in when recording starts. Its width is fixed per setting: 120pt with
-  Live Words off, 224pt with it on, so dictating never moves it. Only a
-  speech-model warning widens it (256pt, see
+  fades in when recording starts. Its size is fixed per setting: 120×34pt with
+  Live Words off, 340×58pt with it on, so dictating never moves it. A
+  speech-model warning shows at 256×34pt (see
   [Speech model problems](#speech-model-problems)); it narrows again when the
   cue clears. Hover controls grow it upward as one segmented strip (Power,
   Paste, Settings) above a one-line status. The pill follows the Dock live (see
@@ -242,12 +242,14 @@ feed `useOverlayGeometry`; successful native resize transactions separately emit
 Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
 
 - Island metrics: notch width/height, idle/active corners 8/12pt, and the
-  floating pill, 34pt tall and 120, 224 or 256pt wide (`pillW`).
+  floating pill: 120×34, 340×58 or 256×34pt (`pillW`, `pillH`).
 - Notch mode is `notchH` tall for every activity. A measured 185×32 notch uses
   idle 185×32 and active 241×32. An external 30pt bar uses active 241×30.
 - The floating pill keeps one window per `pillSize` for idle, recording and
-  processing: `compact` 120×34 (Live Words off), `words` 224×34 (Live Words
-  on, the default) and `warning` 256×34 (a speech-model cue). The frontend
+  processing: `compact` 120×34 (Live Words off), `words` 340×58 (Live Words
+  on, the default; tall enough for the front line and the one rolled back
+  above it) and `warning` 256×34 (a speech-model cue). The capsule's height
+  (`collapsedH`) follows the size, and the hover dropdown grows above it. The frontend
   picks the size from state it owns and sends it with `set_overlay_expanded`;
   Rust resolves the pixels, centres the window on its previous centre, and
   refits the material in the same main-thread turn. Only a cue changes the
@@ -455,22 +457,32 @@ App → General → **Live words** is on by default. Settings version 7 turns it
 once for earlier installs, where it had shipped off; an explicit opt-out after
 that is kept.
 
-**Floating pill.** The words are one line inside the pill, after the dot and
-the waveform, in the Bezel ink. The line never wraps and never sizes the
-pill: the pill's width is native and fixed (224pt), and the line fills what is
-left. Short text sits next to the waveform; once it reaches the edge, the line
-follows the newest word and the older ones fade out on the left (a 26pt mask
-gradient). It shows at most the last 160 characters, cut at a word boundary
-when there is one, so a very long word or unspaced CJK text is clipped by the
-line, never by the pill. Under Reduce Motion the line snaps instead of
-scrolling. The pill's overlay webview receives the partials itself
+**Floating pill.** The words sit on a two-line picker wheel inside the pill,
+after the dot and the waveform, in the Bezel ink (15px, weight 500). Words
+wrap into lines greedily, so appending words never moves a placed word, and a
+word wider than a line (or unspaced CJK text) is cut between code points. The
+line being spoken sits in front, 6px below centre, over a faint selection
+band. Each finished line rolls up and back over a cylinder: every line is
+`translateY(6px) translateZ(-R) rotateX(-offset × 27°) translateZ(R)` with
+R = 20px / 27° inside a 260px perspective, its opacity falls with the cosine
+of its angle (cos⁵ × 0.9 for older lines, cos³ for an incoming one, fading
+out between 1.5 and 2 lines away) and its blur grows 1.1px per line. A
+vertical mask fades the top, so at rest only the front line and a dimmed
+previous line show. A critically damped spring (k = 90/s², c = 2√k) drives
+the wheel toward the newest line in `requestAnimationFrame`, so lines never
+jump; each new word fades in from a 4px blur over 380ms. The DOM keeps at most
+four lines. Reduce Motion removes the roll: two flat slots (the previous line
+dimmed above the front one) and a 200ms opacity crossfade when a line
+changes. The pill's size is native and fixed (340×58pt), so long text becomes
+more lines, never a wider pill. The pill's overlay webview receives the partials itself
 (`useDictationPartial` with `presentNatively: false`): no Live Words window is
 built or shown for the pill (`ensure_window` and `show_dictation_preview`
 decline while the pill is placed), so there is no second webview, no native
-card and no card material. The line is a polite live region named `Words
-recognized so far`. With Live Words off the pill is just the dot and the
-waveform at 120pt. Consent comes from the durable settings file only, as for
-the window below.
+card and no card material. A visually hidden polite live region named `Words
+recognized so far` carries the last 160 characters as text; the wheel itself
+is hidden from assistive technology. With Live Words off the pill is just the
+dot and the waveform at 120pt. Consent comes from the durable settings file
+only, as for the window below. Constants live in `src/lib/liveWordsWheel.ts`.
 
 **Notch island.** A dark card wraps up to three lines and
 keeps the newest words in view. It has no recording dot of its own: the island

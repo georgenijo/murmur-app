@@ -1,5 +1,5 @@
-/** Characters kept for the pill's single line. The line is about 20 characters
- * wide, so this is generous; it only bounds the DOM for a long dictation. */
+/** Characters the pill's live region announces: the newest words of a long
+ * dictation, so a screen reader is not handed the whole transcript. */
 export const LIVE_WORDS_LINE_MAX_CHARS = 160;
 
 /** The newest words of a partial transcript, cut at a word boundary when there

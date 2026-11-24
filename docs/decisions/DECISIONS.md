@@ -1,5 +1,22 @@
 # Decisions Log
 
+## 2026-11-24: The floating pill's Live Words roll on a two-line wheel
+
+**Decision:** The pill's Live Words become a two-line picker wheel: the line
+being spoken in front, finished lines rolling up and back over a cylinder
+(27° per line, 1.1px blur per line, a critically damped spring at k = 90).
+The Live Words pill grows from 224×34 to 340×58pt so the previous line has
+room above the front one; compact (120×34) and warning (256×34) are
+unchanged, and `pillSize` now sets the capsule's height as well as its width.
+Reduce Motion uses a flat crossfade. This supersedes the one-line part of the
+2026-11-22 entry.
+
+**Why:** George disliked the one-line pill once a sentence got long (the start
+scrolled away). He chose the rolling two-line variant from mockups and
+approved these settings on a rendering.
+
+**Status:** active
+
 ## 2026-11-22: The floating pill is one object with one line of words
 
 **Decision:** The floating pill carries Live Words as a single line inside the

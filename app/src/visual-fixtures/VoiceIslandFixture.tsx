@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { OverlayIsland } from '../components/overlay/OverlayIsland';
 import { OverlayPill } from '../components/overlay/OverlayPill';
 import { OverlayDropdown } from '../components/overlay/OverlayDropdown';
@@ -12,10 +12,26 @@ import type { DictationStatus } from '../lib/types';
 const noop = () => {};
 const variants = ['idle', 'recording', 'processing', 'cancelled', 'miss', 'microphone', 'delivery', 'expanded', 'meeting', 'words', 'warning'] as const;
 type Variant = typeof variants[number];
-/** Floating-pill-only rows: one line of live words, and the widened warning. */
+/** Floating-pill-only rows: the live words wheel, and the widened warning. */
 const PILL_ONLY: readonly Variant[] = ['words', 'warning'];
 /** Synthetic words for the `words` row; `?text=` swaps in a long or CJK line. */
 const SYNTHETIC_WORDS = 'And it did not show up on the pill, so I think we can make it more minimal';
+
+/** `?stream=<ms>` reveals the words one at a time, like partials arriving, so
+ * the wheel can be watched rolling. `window.__wheelStream` reports progress. */
+function useStreamedWords(text: string | null): string | null {
+  const ms = Number(new URLSearchParams(location.search).get('stream')) || 0;
+  const words = text?.split(' ') ?? [];
+  const [count, setCount] = useState(ms ? 0 : words.length);
+  useEffect(() => {
+    const done = count >= words.length;
+    (window as unknown as { __wheelStream?: string }).__wheelStream = done ? 'done' : 'streaming';
+    if (!ms || done) return;
+    const timer = setTimeout(() => setCount((n) => n + 1), ms);
+    return () => clearTimeout(timer);
+  }, [ms, count, words.length]);
+  return text === null ? null : words.slice(0, count).join(' ');
+}
 const controlsStates = ['idle', 'starting', 'still-connecting', 'recording', 'recovering'] as const;
 type ControlsState = typeof controlsStates[number];
 /** Fixed synthetic levels so recording screenshots are deterministic. */
@@ -49,7 +65,7 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
       ? 'recording' : variant === 'processing' ? 'processing' : 'idle';
   const visual = deriveVisual(status, variant === 'cancelled', variant === 'miss', false, variant === 'microphone' ? 'chooseMicrophone' : null, false, false, 'idle', variant === 'delivery',
     variant === 'warning' ? 'incomplete' : null);
-  const liveWords = variant === 'words' ? new URLSearchParams(location.search).get('text') ?? SYNTHETIC_WORDS : null;
+  const liveWords = useStreamedWords(variant === 'words' ? new URLSearchParams(location.search).get('text') ?? SYNTHETIC_WORDS : null);
   useLayoutEffect(() => {
     if (status !== 'recording') return;
     barRefs.current.forEach((el, i) => {
