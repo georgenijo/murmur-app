@@ -22,11 +22,25 @@ export function normalizeHex(value: string): HexColor {
   return value.toLowerCase() as HexColor;
 }
 
-function srgbToLinear(value: number): number {
+function srgbToLinearExact(value: number): number {
   const channel = value / 255;
   return channel <= 0.04045
     ? channel / 12.92
     : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+// Every caller passes an 8-bit channel, so the transfer curve is tabulated once.
+// The entries come from the exact formula above, so results are bit-identical.
+const SRGB_TO_LINEAR = Float64Array.from({ length: 256 }, (_, value) => srgbToLinearExact(value));
+
+function srgbToLinear(value: number): number {
+  return SRGB_TO_LINEAR[value] ?? srgbToLinearExact(value);
+}
+
+const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, '0'));
+
+function byteHex(value: number): string {
+  return BYTE_HEX[value] ?? value.toString(16).padStart(2, '0');
 }
 
 function linearToSrgb(value: number): number {
@@ -55,27 +69,42 @@ export function hexToOklab(hex: HexColor): Oklab {
   };
 }
 
-function linearRgb(lab: Oklab): [number, number, number] {
-  const lRoot = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
-  const mRoot = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
-  const sRoot = lab.l - 0.0894841775 * lab.a - 1.291485548 * lab.b;
+// Scratch buffer: linearRgb runs thousands of times per theme solve and its
+// callers consume the three channels immediately, so it avoids an allocation.
+const LINEAR_RGB = new Float64Array(3);
+
+function linearRgb(lab: Oklab): Float64Array {
+  return linearRgbOf(lab.l, lab.a, lab.b);
+}
+
+function linearRgbOf(labL: number, labA: number, labB: number): Float64Array {
+  const lRoot = labL + 0.3963377774 * labA + 0.2158037573 * labB;
+  const mRoot = labL - 0.1055613458 * labA - 0.0638541728 * labB;
+  const sRoot = labL - 0.0894841775 * labA - 1.291485548 * labB;
   const l = lRoot ** 3;
   const m = mRoot ** 3;
   const s = sRoot ** 3;
-  return [
-    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
-  ];
+  LINEAR_RGB[0] = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  LINEAR_RGB[1] = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  LINEAR_RGB[2] = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+  return LINEAR_RGB;
+}
+
+function inGamutChannel(channel: number): boolean {
+  return channel >= -0.000001 && channel <= 1.000001;
+}
+
+function isInGamut(rgb: Float64Array): boolean {
+  return inGamutChannel(rgb[0]) && inGamutChannel(rgb[1]) && inGamutChannel(rgb[2]);
 }
 
 export function isOklabInGamut(lab: Oklab): boolean {
-  return linearRgb(lab).every((channel) => channel >= -0.000001 && channel <= 1.000001);
+  return isInGamut(linearRgb(lab));
 }
 
 export function oklabToHex(lab: Oklab): HexColor {
-  const [red, green, blue] = linearRgb(lab).map(linearToSrgb);
-  return `#${red.toString(16).padStart(2, '0')}${green.toString(16).padStart(2, '0')}${blue.toString(16).padStart(2, '0')}` as HexColor;
+  const rgb = linearRgb(lab);
+  return `#${byteHex(linearToSrgb(rgb[0]))}${byteHex(linearToSrgb(rgb[1]))}${byteHex(linearToSrgb(rgb[2]))}` as HexColor;
 }
 
 export function oklabToOklch(lab: Oklab): Oklch {
@@ -95,14 +124,17 @@ export function oklchToOklab(lch: Oklch): Oklab {
 }
 
 export function oklchToHexInGamut(lch: Oklch): { color: HexColor; clipped: boolean } {
-  let candidate = oklchToOklab(lch);
+  const candidate = oklchToOklab(lch);
   if (isOklabInGamut(candidate)) return { color: oklabToHex(candidate), clipped: false };
   let low = 0;
   let high = Math.max(0, lch.c);
+  // The hue is fixed during the search, so its direction is computed once.
+  const radians = lch.h * Math.PI / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
   for (let index = 0; index < 24; index += 1) {
     const chroma = (low + high) / 2;
-    candidate = oklchToOklab({ ...lch, c: chroma });
-    if (isOklabInGamut(candidate)) low = chroma;
+    if (isInGamut(linearRgbOf(lch.l, chroma * cosine, chroma * sine))) low = chroma;
     else high = chroma;
   }
   return {
@@ -122,11 +154,20 @@ export function mixOklab(from: HexColor, to: HexColor, amount: number): HexColor
   });
 }
 
+// Contrast solving asks for the luminance of the same few palette colours over and over.
+const LUMINANCE_CACHE = new Map<string, number>();
+const LUMINANCE_CACHE_LIMIT = 4096;
+
 export function relativeLuminance(hex: HexColor): number {
+  const cached = LUMINANCE_CACHE.get(hex);
+  if (cached !== undefined) return cached;
   const red = srgbToLinear(parseInt(hex.slice(1, 3), 16));
   const green = srgbToLinear(parseInt(hex.slice(3, 5), 16));
   const blue = srgbToLinear(parseInt(hex.slice(5, 7), 16));
-  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  if (LUMINANCE_CACHE.size >= LUMINANCE_CACHE_LIMIT) LUMINANCE_CACHE.clear();
+  LUMINANCE_CACHE.set(hex, luminance);
+  return luminance;
 }
 
 export function contrastRatio(foreground: HexColor, background: HexColor): number {
@@ -144,11 +185,17 @@ export function compositeSrgb(
   alpha: number,
 ): HexColor {
   const opacity = Math.min(1, Math.max(0, alpha));
-  const channel = (color: HexColor, start: number) => parseInt(color.slice(start, start + 2), 16);
-  const output = [1, 3, 5].map((start) =>
-    Math.round(channel(foreground, start) * opacity + channel(background, start) * (1 - opacity)),
+  const inverse = 1 - opacity;
+  const red = Math.round(
+    parseInt(foreground.slice(1, 3), 16) * opacity + parseInt(background.slice(1, 3), 16) * inverse,
   );
-  return `#${output.map((value) => value.toString(16).padStart(2, '0')).join('')}` as HexColor;
+  const green = Math.round(
+    parseInt(foreground.slice(3, 5), 16) * opacity + parseInt(background.slice(3, 5), 16) * inverse,
+  );
+  const blue = Math.round(
+    parseInt(foreground.slice(5, 7), 16) * opacity + parseInt(background.slice(5, 7), 16) * inverse,
+  );
+  return `#${byteHex(red)}${byteHex(green)}${byteHex(blue)}` as HexColor;
 }
 
 export function ensureContrast(
