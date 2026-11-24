@@ -348,15 +348,45 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             # The feature test step dropped, or built without the feature.
             ("      - name: Run dictation shadow tests\n", "      - name: Unrelated\n"),
             (
-                "          cargo nextest run --lib --features dictation-shadow\n"
-                "          -E 'test(/dictation_shadow::/)",
-                "          cargo nextest run --lib\n          -E 'test(/dictation_shadow::/)",
+                "          cargo nextest list --lib --features dictation-shadow\n",
+                "          cargo nextest list --lib\n",
             ),
-            # The goldens no longer repeated, or run without the feature.
+            # The build step dropped, so the run steps reuse nothing.
+            ("      - name: Build dictation shadow test binaries\n", "      - name: Unrelated build\n"),
+            # The tests run against another build's binaries (the default suite's).
+            (
+                "          --binaries-metadata target/ci-shadow-binaries.json\n"
+                "          -E 'test(/dictation_shadow::/)",
+                "          --binaries-metadata target/ci-test-binaries.json\n"
+                "          -E 'test(/dictation_shadow::/)",
+            ),
+            # The goldens no longer repeated, or run without the feature's build.
             ('          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
-             "          cargo nextest run --lib --features dictation-shadow\n",
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-shadow-binaries.json\n",
              '          MURMUR_GOLDEN_REPEAT: "1"\n        run: >-\n          cd app/src-tauri &&\n'
-             "          cargo nextest run --lib --features dictation-shadow\n"),
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-shadow-binaries.json\n"),
+            ('          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-shadow-binaries.json\n",
+             '          MURMUR_GOLDEN_REPEAT: "100"\n        run: >-\n          cd app/src-tauri &&\n'
+             "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+             "          --binaries-metadata target/ci-test-binaries.json\n"),
+            # The benchmark build lost its feature, or the shadow joined it (one build, both features).
+            ("          cargo nextest list --lib --features internal-benchmark\n",
+             "          cargo nextest list --lib\n"),
+            ("          cargo nextest list --lib --features internal-benchmark\n",
+             "          cargo nextest list --lib --features internal-benchmark,dictation-shadow\n"),
+            # A suite's step moved to another suite, so it would run with the wrong features.
+            ("      - name: Run admission tests with internal-benchmark\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'\n",
+             "      - name: Run admission tests with internal-benchmark\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n"),
+            ("      - name: Run tests\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n",
+             "      - name: Run tests\n        if: needs.changes.outputs.verified != 'true'\n"),
+            # The matrix lost a suite.
+            ("        suite: ${{ fromJSON(needs.changes.outputs.rust_suites) }}\n",
+             "        suite: [default]\n"),
+            ("      fail-fast: false\n      matrix:\n        suite:", "      matrix:\n        suite:"),
             ("      - name: Run golden dictation scenarios 100 times with the dictation shadow\n",
              "      - name: Unrelated goldens\n"),
         ):
@@ -382,7 +412,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             ("continue-on-error on the tests", "        timeout-minutes: 25\n", "        timeout-minutes: 25\n        continue-on-error: true\n"),
             ("tests timeout raised", "        timeout-minutes: 25\n", "        timeout-minutes: 250\n"),
             ("the job suppresses failures", "  rust-macos:\n    needs: changes\n", "  rust-macos:\n    continue-on-error: true\n    needs: changes\n"),
-            ("the tests step's if weakened", "      - name: Run dictation shadow tests\n        if: needs.changes.outputs.verified != 'true'\n", "      - name: Run dictation shadow tests\n        if: always()\n"),
+            ("the tests step's if weakened", "      - name: Run dictation shadow tests\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'\n", "      - name: Run dictation shadow tests\n        if: always()\n"),
         ):
             with self.subTest(label=label):
                 self.assertIn(old, workflow, label)
@@ -419,7 +449,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "Run golden dictation scenarios 100 times with the dictation shadow",
         ):
             with self.subTest(step=name):
-                old = f"      - name: {name}\n        if: needs.changes.outputs.verified != 'true'\n"
+                old = f"      - name: {name}\n        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'\n"
                 mutated = workflow.replace(old, f"      - name: {name}\n", 1)
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
@@ -640,12 +670,12 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             ("      verified: ${{ steps.verified.outputs.verified == 'true' }}\n", ""),
             (
                 "      - name: Run tests\n"
-                "        if: needs.changes.outputs.verified != 'true'\n",
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n",
                 "      - name: Run tests\n",
             ),
             (
                 "      - name: Run deterministic dictation evaluation\n"
-                "        if: needs.changes.outputs.verified != 'true'\n",
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'\n",
                 "      - name: Run deterministic dictation evaluation\n",
             ),
         ):
@@ -657,16 +687,33 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_rust_caches_are_saved_only_from_main(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        line = "          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
-        self.assertEqual(workflow.count(line), 2)
-        for index in range(2):
-            with self.subTest(cache=index):
-                start = -1
-                for _ in range(index + 1):
-                    start = workflow.index(line, start + 1)
+        lines = (
+            "          save-if: ${{ github.ref == 'refs/heads/main' }}\n",
+            "          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'default' }}\n",
+        )
+        for line in lines:
+            with self.subTest(cache=line.strip()):
+                self.assertEqual(workflow.count(line), 1)
+                start = workflow.index(line)
                 mutated = workflow[:start] + workflow[start + len(line):]
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
+
+    def test_only_the_default_suite_saves_the_shared_rust_cache(self) -> None:
+        # The suites share one cache key and only the default suite builds the whole
+        # dependency graph: a cache saved by the first suite to finish would be incomplete.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        saves_for_every_suite = (
+            "          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'default' }}\n"
+        )
+        mutated = workflow.replace(
+            saves_for_every_suite,
+            "          save-if: ${{ github.ref == 'refs/heads/main' }}\n",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
 
     def test_cargo_audit_installs_pinned_prebuilt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -677,24 +724,36 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
-    def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
+    def test_the_evaluation_example_is_built_before_it_runs_and_not_with_the_tests(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        examples = (
-            "          cargo build --workspace\n"
-            "          --example murmur-eval &&\n"
+        build = (
+            "      - name: Build the dictation evaluation example\n"
+            "        # The example needs"
         )
-        tests = (
-            "          cargo nextest list --workspace\n"
-            "          --lib --bin murmur-capture-helper --test topology_watch\n"
-            "          --test c13_3_bug_replays\n"
-            "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
-            "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
-        )
-        swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
-        mutated = workflow.replace(examples + tests, swapped, 1)
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
+        for label, old, new in (
+            # The example's build dropped: the evaluation step would have no binary.
+            ("build step dropped", "      - name: Build the dictation evaluation example\n", "      - name: Unrelated\n"),
+            # The evaluation moved to a suite whose features differ from the build's.
+            (
+                "evaluation in another suite",
+                "      - name: Run deterministic dictation evaluation\n"
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'\n",
+                "      - name: Run deterministic dictation evaluation\n"
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'\n",
+            ),
+            # The example folded into the test prebuild again: it would not be built there.
+            (
+                "example in the prebuild",
+                "          --test c13_3_bug_replays\n",
+                "          --test c13_3_bug_replays --example murmur-eval\n",
+            ),
+        ):
+            with self.subTest(label=label):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+        self.assertIn(build, workflow)
 
     def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
