@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.68.3] - 2026-11-24
+
+<!-- Release notes generated using configuration in .github/release.yml at 89bbbe5a0c0210756b95828c2691b57ff3f755d2 -->
+
+## What's Changed
+### Other Changes
+* fix(overlay): tighten the fitted pill's edges by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1216
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.68.2...v0.68.3
+
 ## [0.68.2] - 2026-11-24
 
 <!-- Release notes generated using configuration in .github/release.yml at 1a9437749a040d5eaee9acc59d1a74792cb629ff -->
