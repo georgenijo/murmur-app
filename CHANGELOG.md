@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-11-24
+
+<!-- Release notes generated using configuration in .github/release.yml at ca56e8f3e940672222824f13d53429ee647d0b16 -->
+
+## What's Changed
+### Other Changes
+* feat(overlay): roll the pill's Live Words on a two-line word wheel by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1207
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.67.3...v0.68.0
+
 ## [0.67.3] - 2026-11-24
 
 <!-- Release notes generated using configuration in .github/release.yml at 536494666a2a41b88e80c9e6735b45459c151775 -->
