@@ -51,6 +51,20 @@ export const OVERLAY_PILL_TRANSITION =
   `opacity ${OVERLAY_PILL_FADE_MS}ms ease-out, transform ${OVERLAY_PILL_FADE_MS}ms ease-out, `
   + `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}`;
 
+/** The collapsed pill hugging its Live Words front line: a width-only change,
+ * on its own quicker-settling curve. The native material uses the same values
+ * (`FIT_SECONDS`, `FIT_EASE` in overlay_material.rs). */
+export const OVERLAY_FIT_MS = 420;
+export const OVERLAY_FIT_EASE = 'cubic-bezier(0.22,1,0.36,1)';
+/** The waveform folding to four bars once words appear. */
+export const OVERLAY_WAVE_FOLD_MS = 380;
+
+/** The floating pill when only its width changes (it fits its words); hover
+ * open and close keep `OVERLAY_PILL_TRANSITION`. */
+export const OVERLAY_PILL_FIT_TRANSITION =
+  `opacity ${OVERLAY_PILL_FADE_MS}ms ease-out, transform ${OVERLAY_PILL_FADE_MS}ms ease-out, `
+  + `width ${OVERLAY_FIT_MS}ms ${OVERLAY_FIT_EASE}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}`;
+
 /**
  * Live Words rides the island: its window anchors to the collapsed surface and
  * the card moves by the hover dropdown's height on the island's own curve, so

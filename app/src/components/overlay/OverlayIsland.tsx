@@ -1,6 +1,6 @@
-import { forwardRef, type ComponentPropsWithoutRef } from 'react';
+import { forwardRef, useRef, type ComponentPropsWithoutRef } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
-import { OVERLAY_ISLAND_TRANSITION, OVERLAY_PILL_TRANSITION } from '../../lib/overlayMotion';
+import { OVERLAY_ISLAND_TRANSITION, OVERLAY_PILL_FIT_TRANSITION, OVERLAY_PILL_TRANSITION } from '../../lib/overlayMotion';
 
 /** The native frame is already acknowledged before geometry reaches this
  * component. The full-window wrapper has no pointer handlers/hit target.
@@ -15,19 +15,27 @@ import { OVERLAY_ISLAND_TRANSITION, OVERLAY_PILL_TRANSITION } from '../../lib/ov
  * The pill's own width follows `expanded`, not the native window: the window
  * grows before the reveal and shrinks after the collapse, so width and height
  * animate together inside it. Its children sit in a frame fixed at the window
- * width, centred, so they never reflow while the capsule resizes around them. */
+ * width, centred, so they never reflow while the capsule resizes around them.
+ *
+ * `fitW` narrows the collapsed capsule to hug its words. A width-only change
+ * takes the fit curve; a hover expand or collapse keeps the island curve. */
 export const PILL_BORDER = 1;
 export const OverlayIsland = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<'div'> & {
-  geometry: OverlayGeometry; expanded: boolean; active: boolean; tapMissed?: boolean; material?: boolean;
-}>(function OverlayIsland({ geometry: g, expanded, active, tapMissed, material = false, children, ...props }, ref) {
+  geometry: OverlayGeometry; expanded: boolean; active: boolean; tapMissed?: boolean; material?: boolean; fitW?: number;
+}>(function OverlayIsland({ geometry: g, expanded, active, tapMissed, material = false, fitW, children, ...props }, ref) {
   const open = active || expanded;
   const corner = open ? g.island.cornerActive : g.island.cornerIdle;
-  const width = g.floating && !expanded ? g.island.pillW : g.windowW;
+  const width = g.floating && !expanded ? fitW ?? g.island.pillW : g.windowW;
+  const lastExpanded = useRef(expanded);
+  const toggled = lastExpanded.current !== expanded;
+  lastExpanded.current = expanded;
+  const pillTransition = fitW !== undefined && !toggled ? OVERLAY_PILL_FIT_TRANSITION : OVERLAY_PILL_TRANSITION;
   return <div {...props} ref={ref}
     className={`overlay-island cursor-pointer select-none overflow-hidden${g.floating ? ' bezel bezel-surface' : ''}`}
     data-floating={g.floating || undefined} data-active={active || undefined}
     data-shown={!g.floating || open || undefined}
     data-material={g.floating && material ? 'native' : undefined}
+    data-fit={g.floating && fitW !== undefined ? fitW : undefined}
     style={{
       position: 'relative', flexShrink: 0, marginInline: 'auto', width,
       height: g.collapsedH + (expanded ? g.dropdownH : 0),
@@ -39,7 +47,7 @@ export const OverlayIsland = forwardRef<HTMLDivElement, ComponentPropsWithoutRef
         opacity: open ? 1 : 0,
         transform: open || material ? 'none' : 'translateY(6px) scale(0.92)',
         transformOrigin: '50% 100%',
-        transition: OVERLAY_PILL_TRANSITION,
+        transition: pillTransition,
       } : {
         borderRadius: `0 0 ${corner}px ${corner}px`,
         transition: OVERLAY_ISLAND_TRANSITION,

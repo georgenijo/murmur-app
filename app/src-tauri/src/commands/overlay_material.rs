@@ -34,6 +34,12 @@ pub(crate) const LIVE_WORDS_LABEL: &str = "dictation-preview";
 const SHAPE_SECONDS: f64 = 0.36;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SHAPE_EASE: [f32; 4] = [0.32, 0.72, 0.0, 1.0];
+/// A width-only change of the collapsed pill (it hugs the Live Words front
+/// line): `OVERLAY_FIT_MS` and `OVERLAY_FIT_EASE` in `src/lib/overlayMotion.ts`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const FIT_SECONDS: f64 = 0.42;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const FIT_EASE: [f32; 4] = [0.22, 1.0, 0.36, 1.0];
 /// CSS `ease-out`, the fade's curve.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const FADE_EASE: [f32; 4] = [0.0, 0.0, 0.58, 1.0];
@@ -89,13 +95,26 @@ pub(crate) struct MaterialShape {
 
 /// The floating island's visible shape for `geometry` (resolved for the same
 /// `expanded` state). Mirrors `OverlayIsland`: the capsule while collapsed,
-/// the window-wide card while hover-expanded.
-pub(crate) fn pill_shape(geometry: &OverlayGeometry, shown: bool, expanded: bool) -> MaterialShape {
+/// the window-wide card while hover-expanded. `pill_w` is the collapsed
+/// capsule's width as the webview draws it (it hugs the Live Words front
+/// line); it never exceeds the size's own width, which is the window's, and
+/// never drops below a circle.
+pub(crate) fn pill_shape(
+    geometry: &OverlayGeometry,
+    shown: bool,
+    expanded: bool,
+    pill_w: Option<f64>,
+) -> MaterialShape {
+    let collapsed_w = pill_w
+        .filter(|w| w.is_finite())
+        .map_or(geometry.island.pill_w, |w| {
+            w.clamp(geometry.collapsed_h, geometry.island.pill_w)
+        });
     MaterialShape {
         width: if expanded {
             geometry.window_w
         } else {
-            geometry.island.pill_w
+            collapsed_w
         },
         height: geometry.collapsed_h + if expanded { geometry.dropdown_h } else { 0.0 },
         radius: if expanded {
@@ -259,6 +278,19 @@ pub(crate) fn plan(
             card: Step::Animate,
         },
     }
+}
+
+/// The shape changes only in width: the collapsed pill hugging its words.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn fits_width_only(previous: Option<MaterialShape>, next: MaterialShape) -> bool {
+    previous.is_some_and(|p| {
+        p.visible
+            && next.visible
+            && p.height == next.height
+            && p.radius == next.radius
+            && p.lift == next.lift
+            && p.width != next.width
+    })
 }
 
 /// Each material belongs to one window: no other webview may move or remove
@@ -563,14 +595,20 @@ mod native {
             entry.shape = Some(applied_shape(previous, shape, plan));
             let reduce_motion =
                 NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+            // A width-only change (the pill hugging its words) takes the fit
+            // curve, as the webview's capsule does; any other change follows
+            // the island.
+            let (seconds, ease) = if fits_width_only(previous, shape) {
+                (FIT_SECONDS, FIT_EASE)
+            } else {
+                (SHAPE_SECONDS, SHAPE_EASE)
+            };
             let place = |layer: &Retained<NSView>, target: NSRect, step: Step| match step {
                 Step::Keep => {}
                 _ if same(layer.frame(), target) => {}
                 Step::Animate if !reduce_motion => {
                     let moved = layer.clone();
-                    animate(SHAPE_SECONDS, SHAPE_EASE, move || {
-                        moved.animator().setFrame(target)
-                    });
+                    animate(seconds, ease, move || moved.animator().setFrame(target));
                 }
                 _ => layer.setFrame(target),
             };
@@ -818,8 +856,10 @@ async fn on_main_acked(
 
 /// Shape the floating pill's material from the island's semantic state:
 /// `shown` (not faded out for idle), `expanded` (hover card open, as rendered
-/// by CSS), and the card's `content`. `floating: false` removes the material
-/// from both windows. Resolves `true` while a native material backs the pill,
+/// by CSS), the card's `content`, and `pill_w`, the collapsed capsule's width
+/// as the webview draws it (it hugs the Live Words front line inside the
+/// fixed window; absent: the size's full width). `floating: false` removes
+/// the material from both windows. Resolves `true` while a native material backs the pill,
 /// so the webview draws no surface of its own.
 #[tauri::command]
 pub async fn set_overlay_material(
@@ -828,11 +868,12 @@ pub async fn set_overlay_material(
     expanded: bool,
     content: Option<OverlayContent>,
     floating: bool,
+    pill_w: Option<f64>,
 ) -> Result<bool, String> {
     require_owner(window.label(), OVERLAY_LABEL)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, shown, expanded, content, floating);
+        let _ = (window, shown, expanded, content, floating, pill_w);
         Ok(false)
     }
     #[cfg(target_os = "macos")]
@@ -849,7 +890,7 @@ pub async fn set_overlay_material(
             native::apply(
                 app,
                 OVERLAY_LABEL,
-                Some(pill_shape(&geometry, shown, expanded)),
+                Some(pill_shape(&geometry, shown, expanded, pill_w)),
                 Motion::Island,
             );
             native::apply_live_words(
@@ -898,6 +939,75 @@ pub async fn set_live_words_material(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words_pill() -> OverlayGeometry {
+        OverlayGeometry {
+            window_w: 224.0,
+            collapsed_h: 34.0,
+            expanded_h: 98.0,
+            pill_idle_w: 224.0,
+            pill_active_w: 224.0,
+            pill_margin_idle: 0.0,
+            pill_margin_active: 0.0,
+            dropdown_h: 64.0,
+            wing_w: 28.0,
+            floating: true,
+            island: super::super::overlay::IslandMetrics {
+                notch_w: 185.0,
+                notch_h: 0.0,
+                corner_idle: 8.0,
+                corner_active: 12.0,
+                pill_w: 224.0,
+                pill_h: 34.0,
+            },
+        }
+    }
+
+    #[test]
+    fn the_collapsed_pill_hugs_its_words_inside_its_size() {
+        let g = words_pill();
+        // No width from the webview: the size's own width, as before.
+        assert_eq!(pill_shape(&g, true, false, None).width, 224.0);
+        // The front line's fitted width, bounded by the window and a circle.
+        assert_eq!(pill_shape(&g, true, false, Some(131.5)).width, 131.5);
+        assert_eq!(pill_shape(&g, true, false, Some(500.0)).width, 224.0);
+        assert_eq!(pill_shape(&g, true, false, Some(3.0)).width, 34.0);
+        assert_eq!(pill_shape(&g, true, false, Some(f64::NAN)).width, 224.0);
+        let fitted = pill_shape(&g, true, false, Some(131.5));
+        assert_eq!((fitted.height, fitted.radius), (34.0, 17.0));
+        // The hover card is the window's width whatever the words.
+        let card = pill_shape(&g, true, true, Some(131.5));
+        assert_eq!(card.width, g.window_w);
+        assert_eq!(card.height, 98.0);
+    }
+
+    #[test]
+    fn only_a_width_change_of_the_shown_pill_takes_the_fit_curve() {
+        let g = words_pill();
+        let at = |w| pill_shape(&g, true, false, Some(w));
+        assert!(fits_width_only(Some(at(120.0)), at(160.0)));
+        assert!(fits_width_only(Some(at(160.0)), at(96.0)));
+        assert!(!fits_width_only(Some(at(120.0)), at(120.0)));
+        assert!(!fits_width_only(None, at(120.0)));
+        // Hover open and close keep the island's curve.
+        assert!(!fits_width_only(
+            Some(at(120.0)),
+            pill_shape(&g, true, true, Some(120.0))
+        ));
+        assert!(!fits_width_only(
+            Some(pill_shape(&g, true, true, None)),
+            at(120.0)
+        ));
+        // Appearing or hiding is a fade, not a fit.
+        assert!(!fits_width_only(
+            Some(pill_shape(&g, false, false, Some(120.0))),
+            at(160.0)
+        ));
+        assert!(!fits_width_only(
+            Some(at(120.0)),
+            pill_shape(&g, false, false, Some(160.0))
+        ));
+    }
 
     fn relative_luminance(c: [f64; 3]) -> f64 {
         let lin = |v: f64| {

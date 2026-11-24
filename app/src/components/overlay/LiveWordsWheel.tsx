@@ -1,8 +1,9 @@
-import { Fragment, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
 import { liveWordsTail } from '../../lib/liveWordsLine';
 import {
-  WHEEL_RENDERED_LINES, stepWheelSpring, wheelPose, wrapWheelLines, type WheelLine,
+  WHEEL_RENDERED_LINES, advanceWheel, newWheelCommitState, stepWheelSpring, wheelLineWidth,
+  wheelPose, wheelTokens, type WheelLine,
 } from '../../lib/liveWordsWheel';
 
 /** Words measured per string; bounded so a long dictation cannot grow it. */
@@ -10,7 +11,6 @@ const MEASURE_CACHE_LIMIT = 4000;
 /** Fallback when the webview cannot measure text (unit tests): about 6px
  * per code point at the pill's 11px. */
 const FALLBACK_CHAR_W = 6;
-const FALLBACK_LINE_W = 130;
 
 type Measure = (s: string) => number;
 
@@ -35,45 +35,64 @@ function createMeasure(font: string): Measure {
  * The line being spoken sits in front, vertically centred; each finished line
  * rolls up and back out of the top over a cylinder, dimming and softening,
  * driven by a critically damped spring so it never jumps. At rest only the
- * front line shows. New words fade in from a slight blur. The pill's size is
- * native and fixed: long text becomes more lines, never a bigger pill. Under
- * Reduce Motion there is no roll, only a crossfade between lines. */
-export function LiveWordsWheel({ text }: { text: string }) {
+ * front line shows. New words fade in from a slight blur. Finished lines are
+ * committed and never roll back: a word only starts a new line once it has
+ * existed for WHEEL_COMMIT_MS (see `advanceWheel`). `maxWidth` is the widest
+ * line the pill can hold; `onFrontWidth` reports the front line's text width
+ * (null before any words) so the pill can hug it. Under Reduce Motion there
+ * is no roll, only a crossfade between lines. Without `hint` the wheel
+ * takes no room before the first words (the fitted pill is then just the dot
+ * and the waveform). */
+export function LiveWordsWheel({ text, maxWidth, onFrontWidth, hint = true }: {
+  text: string;
+  maxWidth: number;
+  onFrontWidth?: (width: number | null) => void;
+  hint?: boolean;
+}) {
   const wheel = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion() ?? false;
-  const [frame, setFrame] = useState<{ width: number; measure: Measure } | null>(null);
+  const [measure, setMeasure] = useState<Measure | null>(null);
+  const commit = useRef(newWheelCommitState());
+  // Bumped when a held word becomes old enough to start a new line.
+  const [tick, setTick] = useState(0);
 
-  // Measure with the wheel's own font, and re-wrap if its width changes.
+  // Measure with the wheel's own font.
   useLayoutEffect(() => {
     const el = wheel.current;
     if (!el) return;
     const style = getComputedStyle(el);
-    const measure = createMeasure(`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`);
-    const read = () => {
-      const width = el.clientWidth || FALLBACK_LINE_W;
-      setFrame((prev) => prev && prev.width === width ? prev : { width, measure });
-    };
-    read();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(read);
-    observer.observe(el);
-    return () => observer.disconnect();
+    setMeasure(() => createMeasure(`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`));
   }, []);
 
-  const lines = useMemo<WheelLine[]>(
-    () => frame ? wrapWheelLines(text, frame.measure, frame.width) : [],
-    [text, frame],
-  );
+  const view = useMemo(() => {
+    if (!measure) return null;
+    const tokens = wheelTokens(text, measure, maxWidth);
+    return advanceWheel(commit.current, tokens, performance.now(), measure, maxWidth);
+    // `tick` re-evaluates held words without a new partial.
+  }, [text, measure, maxWidth, tick]);
+
+  useEffect(() => {
+    if (view?.recheckInMs == null) return;
+    const timer = setTimeout(() => setTick((n) => n + 1), view.recheckInMs + 1);
+    return () => clearTimeout(timer);
+  }, [view]);
+
+  const lines = view?.lines ?? [];
   const newest = Math.max(0, lines.length - 1);
+  const front = lines[newest] ?? [];
+  const frontWidth = measure && front.length ? Math.round(wheelLineWidth(front, measure) * 2) / 2 : null;
+  useLayoutEffect(() => { onFrontWidth?.(frontWidth); }, [onFrontWidth, frontWidth]);
+  useLayoutEffect(() => () => { onFrontWidth?.(null); }, [onFrontWidth]);
   const first = Math.max(0, lines.length - WHEEL_RENDERED_LINES);
   const shown = lines.slice(first);
   const tail = liveWordsTail(text);
 
   return (
-    <div className="bezel-wheel" ref={wheel} data-motion={reduced ? 'reduce' : 'roll'}>
+    <div className={!tail && !hint ? 'bezel-wheel bezel-wheel-idle' : 'bezel-wheel'} ref={wheel}
+      data-motion={reduced ? 'reduce' : 'roll'} data-line={newest}>
       {/* Screen readers get the words once, as text; the wheel is decoration. */}
       <span className="sr-only" role="status" aria-live="polite" aria-label="Words recognized so far">{tail}</span>
-      {!tail ? (
+      {!tail ? hint && (
         <div className="bezel-wheel-line bezel-wheel-hint" data-front aria-hidden="true">Listening…</div>
       ) : !lines.length ? null : reduced ? (
         <CrossfadeLines lines={lines} newest={newest} />

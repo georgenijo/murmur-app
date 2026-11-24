@@ -1,5 +1,26 @@
 # Decisions Log
 
+## 2026-11-24: The word wheel pill fits its words, and finished lines never roll back
+
+**Decision:** With Live Words on, the floating pill is the dot and the full
+12-bar waveform at 120×34pt until the first words. Then the waveform folds to
+four bars and the capsule hugs the front line (62.5pt of chrome plus the text,
+at most 224pt), animating on a 420ms `cubic-bezier(0.22, 1, 0.36, 1)` curve
+and narrowing when a new line starts. The red dot no longer pulses. The native
+window stays 224×34pt for the whole dictation; only the drawn capsule and its
+material (`pill_w` on `set_overlay_material`) change width, so words never
+cause a window resize. The wheel commits finished lines: a word past the edge
+starts a new line only after existing 700ms, and a word on the front line may
+run 4px past the edge. The 27° roll, k = 90 spring and 34pt layout are kept;
+Reduce Motion applies widths at once.
+
+**Why:** George found the 224pt pill too long for short phrases, with too much
+empty space. He picked mockup F (a fitted width plus a mini waveform, no
+pulse). The wheel rolled back and forth during a pause, because each re-guess
+of the last word across the line edge re-wrapped every line.
+
+**Status:** active
+
 ## 2026-11-24: The word wheel pill goes back to 224×34pt
 
 **Decision:** The Live Words pill returns to 224×34pt, the same 34pt height as

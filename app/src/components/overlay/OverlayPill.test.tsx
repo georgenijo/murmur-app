@@ -333,13 +333,15 @@ describe('OverlayPill transient cues', () => {
     expect(container.querySelector('button')).toBeNull();
   });
 
-  const recordingPill = (liveWords: string | null) => (
+  const recordingPill = (liveWords: string | null, fitW?: number, onFrontWidth?: (w: number | null) => void) => (
     <OverlayPill
       geometry={geometryFixture.pillWords as OverlayGeometry}
       barRefs={barRefs}
       visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
       status="recording"
       liveWords={liveWords}
+      fitW={fitW}
+      onFrontWidth={onFrontWidth}
     />
   );
 
@@ -355,9 +357,16 @@ describe('OverlayPill transient cues', () => {
     expect(row.querySelector('[class*="band"]')).toBeNull();
     expect([...row.children].map((child) => child.className.split(' ')[0]))
       .toEqual(['bezel-glyph', 'overlay-waveform', 'bezel-wheel']);
+    // Words past the front line's edge are held back until they are stable
+    // (WHEEL_COMMIT_MS), so a first long partial shows one line.
     const lines = [...row.querySelectorAll('.bezel-wheel-line')].map((line) => line.textContent);
-    expect(lines.join(' ')).toBe('and then we can make it more minimal');
+    expect(lines).toEqual(['and then we can make it']);
+    // Every bar stays mounted for the meter; alongside words four are shown.
     expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(PILL_BAR_COUNT);
+    expect(container.querySelector<HTMLElement>('.overlay-waveform')!.dataset.bars).toBe('4');
+    expect(container.querySelector<HTMLElement>('.overlay-waveform')!.style.width).toBe('12.5px');
+    // The dot is still: no pulsing ring.
+    expect(container.querySelector('[class*="ring"], [class*="pulse"]')).toBeNull();
     // One object: no second words surface is mounted anywhere.
     expect(container.querySelector('.live-words-card, .live-words-window')).toBeNull();
     // Words are announced politely, once, and never act as a control.
@@ -367,6 +376,23 @@ describe('OverlayPill transient cues', () => {
     expect(status?.textContent).toBe('and then we can make it more minimal');
     expect([...row.querySelectorAll('.bezel-wheel-line')].every((line) => line.getAttribute('aria-hidden') === 'true')).toBe(true);
     expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('narrows its row to the fitted width and reports the front line width', async () => {
+    const widths: (number | null)[] = [];
+    await act(async () => root.render(recordingPill('', 120, (w) => widths.push(w))));
+    const row = container.querySelector<HTMLElement>('.bezel-row')!;
+    expect(row.style.width).toBe('118px');
+    // Before words: the full twelve-bar waveform, no hint, no wheel in the row.
+    expect(container.querySelector<HTMLElement>('.overlay-waveform')!.dataset.bars).toBe('12');
+    expect(container.querySelector('.bezel-wheel-hint')).toBeNull();
+    expect(container.querySelector('.bezel-wheel')!.classList.contains('bezel-wheel-idle')).toBe(true);
+    expect(widths[widths.length - 1]).toBeNull();
+    await act(async () => root.render(recordingPill('make it', 140, (w) => widths.push(w))));
+    expect(row.style.width).toBe('138px');
+    expect(row.style.transition).toContain('width 420ms');
+    // 7 code points at the 6px test fallback.
+    expect(widths[widths.length - 1]).toBe(42);
   });
 
   it('shows only the dot and the waveform when Live Words is off', async () => {

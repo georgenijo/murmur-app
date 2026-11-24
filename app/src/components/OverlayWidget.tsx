@@ -19,6 +19,7 @@ import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib
 import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
 import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
 import { overlayPillSize } from '../lib/overlayGeometry';
+import { overlayPillFitWidth } from '../lib/overlayPillFit';
 import type { OverlayContent } from '../lib/overlayGeometry';
 import { useDictationPartial } from '../lib/hooks/useDictationPartial';
 import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
@@ -122,10 +123,15 @@ export function OverlayWidget() {
       activity, placement: settingsMirror.overlayPlacement, pillSize, hoverEnabled: !pillHidden });
   const waveform = useWaveform(status);
   useLiveWordsLift(geometry, expanded);
+  // With Live Words the collapsed capsule hugs the front line; the window
+  // keeps its size, so this moves only the drawn capsule and its material.
+  const [frontW, setFrontW] = useState<number | null>(null);
+  const fitW = geometry ? overlayPillFitWidth(geometry.floating, pillSize, geometry.island.pillW,
+    status === 'recording' && floatingPill && settingsMirror.overlayLiveWords, frontW) : undefined;
   // Rust shapes the pill's native Bezel material from this same state.
   const material = useOverlayMaterial({
     floating: floatingPill,
-    shown: activity !== 'idle', expanded, content: overlayContent,
+    shown: activity !== 'idle', expanded, content: overlayContent, pillW: fitW ?? null,
   });
 
   const recordingControls = useRecordingControls({
@@ -245,6 +251,7 @@ export function OverlayWidget() {
         active={activity !== 'idle'}
         tapMissed={visual.showTapMissedLabel || modelCueActive}
         material={material}
+        fitW={fitW}
         onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion || modelCueActive ? undefined : recordingControls.handleDoubleClick}
         onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : modelCueActive ? onPillClick : recordingControls.handleClick}
         onMouseEnter={calibrating ? undefined : onHoverStart}
@@ -260,6 +267,8 @@ export function OverlayWidget() {
           deliveryCue={runtime.deliveryCue}
           done={showDone}
           liveWords={floatingPill && settingsMirror.overlayLiveWords ? liveWordsText : null}
+          fitW={fitW}
+          onFrontWidth={setFrontW}
           onRetryDelivery={runtime.retryDelivery}
           onPauseDeliveryTimer={runtime.pauseDeliveryTimer}
           onResumeDeliveryTimer={runtime.resumeDeliveryTimer}

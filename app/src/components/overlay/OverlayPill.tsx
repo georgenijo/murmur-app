@@ -1,5 +1,7 @@
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import { LiveWordsWheel } from './LiveWordsWheel';
+import { PILL_WAVE_BARS_FULL, PILL_WAVE_BARS_MINI, pillWordsMaxText, waveWidth } from '../../lib/overlayPillFit';
+import { OVERLAY_FIT_EASE, OVERLAY_FIT_MS, OVERLAY_WAVE_FOLD_MS } from '../../lib/overlayMotion';
 import type { DictationStatus } from '../../lib/types';
 import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
@@ -21,6 +23,11 @@ interface OverlayPillProps {
    * wheel. `null` when Live Words is off (the pill is then just the dot and
    * the waveform). */
   liveWords?: string | null;
+  /** The capsule's drawn width when it hugs the words (see overlayPillFit);
+   * undefined keeps the size's own width. */
+  fitW?: number;
+  /** The words' front line width, for the parent to fit the pill. */
+  onFrontWidth?: (width: number | null) => void;
   onRetryDelivery?: () => void;
   onPauseDeliveryTimer?: () => void;
   onResumeDeliveryTimer?: () => void;
@@ -53,6 +60,8 @@ export function OverlayPill({
   deliveryCue = null,
   done = false,
   liveWords = null,
+  fitW,
+  onFrontWidth,
   onRetryDelivery,
   onPauseDeliveryTimer,
   onResumeDeliveryTimer,
@@ -69,16 +78,21 @@ export function OverlayPill({
       // The capsule's hairline border takes layout space; centre the row inside it.
       // The row is as wide as the capsule, not the (possibly larger) native
       // window, so a width change reveals it from the centre and never reflows.
+      // A capsule fitting its words moves its row on the same curve.
       <div className="overlay-pill-row bezel-row" style={{
         height: topH - 2 * PILL_BORDER,
-        width: geometry.island.pillW - 2 * PILL_BORDER,
+        width: (fitW ?? geometry.island.pillW) - 2 * PILL_BORDER,
         alignSelf: 'center',
+        transition: fitW === undefined ? undefined : `width ${OVERLAY_FIT_MS}ms ${OVERLAY_FIT_EASE}`,
       }}>
         <span className="bezel-glyph" {...a11y}><Glyph glyph={cue.glyph} /></span>
         {visual.indicator.kind === 'recording' ? (
           <>
-            <Waveform barRefs={barRefs} count={PILL_BAR_COUNT} status={status} visible={visual.waveformVisible} height={16} />
-            {liveWords !== null && <LiveWordsWheel text={liveWords} />}
+            {/* Alongside words the waveform folds to four bars. */}
+            <Waveform barRefs={barRefs} count={PILL_BAR_COUNT} status={status} visible={visual.waveformVisible} height={16}
+              shown={liveWords?.trim() ? PILL_WAVE_BARS_MINI : PILL_WAVE_BARS_FULL} />
+            {liveWords !== null && <LiveWordsWheel text={liveWords} onFrontWidth={onFrontWidth}
+              maxWidth={pillWordsMaxText(geometry.island.pillW)} hint={fitW === undefined} />}
           </>
         ) : cue.retry ? (
           <RetryButton {...retryProps} label={cue.word} />
@@ -113,18 +127,28 @@ export function OverlayPill({
   );
 }
 
-function Waveform({ barRefs, count, status, visible, height }: {
+/** `shown` clips the strip to its first bars (the pill's four-bar waveform
+ * alongside words); every bar stays mounted for the level meter. */
+function Waveform({ barRefs, count, status, visible, height, shown }: {
   barRefs: OverlayPillProps['barRefs'];
   count: number;
   status: DictationStatus;
   visible: boolean;
   height: number;
+  shown?: number;
 }) {
   return (
     <div
       className="overlay-waveform flex items-center gap-[1.5px]"
       data-recording={status === 'recording' || undefined}
-      style={{ height, opacity: visible ? 1 : 0 }}
+      data-bars={shown}
+      style={{
+        height, opacity: visible ? 1 : 0,
+        ...(shown === undefined ? {} : {
+          width: waveWidth(shown), flexShrink: 0, overflow: 'hidden',
+          transition: `width ${OVERLAY_WAVE_FOLD_MS}ms ${OVERLAY_FIT_EASE}`,
+        }),
+      }}
       aria-hidden="true"
     >
       {Array.from({ length: count }, (_, i) => (
@@ -132,7 +156,7 @@ function Waveform({ barRefs, count, status, visible, height }: {
           key={i}
           ref={(el) => { barRefs.current[i] = el; }}
           className="overlay-waveform-bar w-[2px] rounded-full bg-white/90"
-          style={{ height }}
+          style={{ height, flexShrink: 0 }}
         />
       ))}
     </div>
