@@ -121,6 +121,11 @@
   letter-spacing: 0;
   white-space: nowrap;
 }
+/* The pill hugging its words keeps its edges tight around the content. */
+.bezel-row[data-fit] {
+  gap: 6px;
+  padding: 0 6px;
+}
 .bezel-glyph {
   display: flex;
   flex-shrink: 0;

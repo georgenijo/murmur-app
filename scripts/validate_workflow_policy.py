@@ -101,6 +101,8 @@ CI_CHANGES_OUTPUTS = {
     "frontend": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}",
     "rust": "${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}",
     "github": "${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}",
+    # The `rust-macos` matrix: a verified push builds the default suite only.
+    "rust_suites": "${{ steps.verified.outputs.verified == 'true' && '[\"default\"]' || '[\"default\",\"internal-benchmark\",\"dictation-shadow\"]' }}",
 }
 CI_FILTER_RESULT_STEP = """      - name: Require the change filter result
         env:
@@ -116,13 +118,24 @@ CI_FILTER_RESULT_STEP = """      - name: Require the change filter result
             fi
           done
 """
-CI_RUST_TEST_STEPS = (
-    "Run tests",
-    "Run dictation shadow tests",
-    "Run golden dictation scenarios 100 times with the dictation shadow",
-    "Run capture worker unit tests",
-    "Run deterministic dictation evaluation",
-)
+# Each test-running step of `rust-macos` and the matrix suite that runs it. A step must skip
+# on a verified push, and must run in exactly one suite: the suites are the feature sets, so a
+# step moved to another suite would run its tests with the wrong features.
+CI_RUST_TEST_STEPS = {
+    "Run tests": "default",
+    "Run golden dictation scenarios 100 times": "default",
+    "Run admission tests with internal-benchmark": "internal-benchmark",
+    "Run dictation shadow tests": "dictation-shadow",
+    "Run golden dictation scenarios 100 times with the dictation shadow": "dictation-shadow",
+    "Run capture worker unit tests": "default",
+    "Run deterministic dictation evaluation": "internal-benchmark",
+}
+CI_RUST_SUITES = ("default", "internal-benchmark", "dictation-shadow")
+
+
+def suite_condition(suite: str) -> str:
+    return f"needs.changes.outputs.verified != 'true' && matrix.suite == '{suite}'"
+
 # What the dictation-shadow test step must select: the shadow's own tests, its build policy
 # tests, E8, the site-order check, and the read and allocation pins.
 SHADOW_TEST_SELECTIONS = (
@@ -338,15 +351,24 @@ def validate_ci(ci: str) -> int:
         "verified: ${{ steps.verified.outputs.verified == 'true' }}" in changes
     )
     # A verified push skips tests, never `ci-pass` itself.
-    for job_name, job, steps in (
-        ("rust-lint", rust_lint, ("Check Rust formatting",)),
-        ("rust-macos", rust_macos, CI_RUST_TEST_STEPS),
-    ):
-        for step in steps:
-            assert (
-                "if: needs.changes.outputs.verified != 'true'"
-                in named_step_block(job, step, 6)
-            ), f"{job_name}: {step} must skip on a verified push"
+    assert (
+        "if: needs.changes.outputs.verified != 'true'"
+        in named_step_block(rust_lint, "Check Rust formatting", 6)
+    ), "rust-lint: Check Rust formatting must skip on a verified push"
+    for step, suite in CI_RUST_TEST_STEPS.items():
+        assert (
+            f"if: {suite_condition(suite)}\n" in named_step_block(rust_macos, step, 6)
+        ), f"rust-macos: {step} must skip on a verified push and run only in the {suite} suite"
+    # The matrix is exactly the three feature sets, read from the `changes` output (a verified
+    # push builds the default suite only), and one suite failing does not hide the others.
+    assert re.search(
+        r"^    strategy:\n      fail-fast: false\n      matrix:\n"
+        r"        suite: \$\{\{ fromJSON\(needs\.changes\.outputs\.rust_suites\) \}\}\n",
+        rust_macos,
+        re.MULTILINE,
+    ), "rust-macos must run one job per feature set from the rust_suites output"
+    for suite in CI_RUST_SUITES:
+        assert f'"{suite}"' in CI_CHANGES_OUTPUTS["rust_suites"], suite
     assert scalar(policy, "if") == CI_GUARD
     assert "needs:" not in policy, "policy must start without waiting"
     for job in CI_BUILD_JOBS:
@@ -453,35 +475,107 @@ def validate_ci(ci: str) -> int:
         {"run": "cd app/src-tauri && cargo clippy --all-targets --features dictation-shadow -- -D warnings"},
     )
     selection = " | ".join(f"test(/{name}/)" for name in SHADOW_TEST_SELECTIONS)
+    # Each feature suite builds its test binary once, with its own feature, and every run step
+    # reuses that build through nextest's binaries metadata. A run step without the metadata
+    # would build again (about 100 s), and a build without the feature would test the wrong
+    # configuration, so both halves are pinned exactly.
+    metadata = (
+        "cargo nextest run --cargo-metadata target/ci-cargo-metadata.json"
+        " --binaries-metadata target/ci-{name}-binaries.json"
+    )
+    for suite, name, build_step, build_timeout in (
+        ("internal-benchmark", "benchmark", "Build internal-benchmark test binaries", "15"),
+        ("dictation-shadow", "shadow", "Build dictation shadow test binaries", "25"),
+    ):
+        validate_exact_step(
+            rust_macos,
+            build_step,
+            {
+                "if": suite_condition(suite),
+                "timeout-minutes": build_timeout,
+                "run": f"cd app/src-tauri && cargo nextest list --lib --features {suite}"
+                f" --message-format json --list-type binaries-only > target/ci-{name}-binaries.json"
+                " && cargo metadata --format-version 1 > target/ci-cargo-metadata.json",
+            },
+        )
+    validate_exact_step(
+        rust_macos,
+        "Run admission tests with internal-benchmark",
+        {
+            "if": suite_condition("internal-benchmark"),
+            "timeout-minutes": "15",
+            "run": "cd app/src-tauri && " + metadata.format(name="benchmark")
+            + " -E 'test(/dictation_admission::/) | test(/corpus::/)'",
+        },
+    )
     validate_exact_step(
         rust_macos,
         "Run dictation shadow tests",
         {
-            "if": "needs.changes.outputs.verified != 'true'",
+            "if": suite_condition("dictation-shadow"),
             "timeout-minutes": "25",
-            "run": "cd app/src-tauri && cargo nextest run --lib --features dictation-shadow"
-            f" -E '{selection}'",
+            "run": "cd app/src-tauri && " + metadata.format(name="shadow") + f" -E '{selection}'",
         },
     )
     validate_exact_step(
         rust_macos,
         "Run golden dictation scenarios 100 times with the dictation shadow",
         {
-            "if": "needs.changes.outputs.verified != 'true'",
+            "if": suite_condition("dictation-shadow"),
             "timeout-minutes": "10",
             "env": 'MURMUR_GOLDEN_REPEAT: "100"',
-            "run": "cd app/src-tauri && cargo nextest run --lib --features dictation-shadow"
-            " -E 'kind(lib) & test(/golden_tests::golden_/)'",
+            "run": "cd app/src-tauri && " + metadata.format(name="shadow")
+            + " -E 'kind(lib) & test(/golden_tests::golden_/)'",
         },
     )
+    for build_step, run_steps in (
+        ("Build internal-benchmark test binaries", ("Run admission tests with internal-benchmark",)),
+        (
+            "Build dictation shadow test binaries",
+            (
+                "Run dictation shadow tests",
+                "Run golden dictation scenarios 100 times with the dictation shadow",
+            ),
+        ),
+    ):
+        for run_step in run_steps:
+            assert rust_macos.index(f"- name: {build_step}\n") < rust_macos.index(
+                f"- name: {run_step}\n"
+            ), f"{run_step} must come after the build it reuses"
+    # The feature sets stay apart: neither feature is on the default suite's build or runs, and
+    # no step turns both on at once.
+    default_steps = (
+        "Build test binaries",
+        "Run tests",
+        "Run golden dictation scenarios 100 times",
+        "Run capture worker unit tests",
+    )
+    for step in default_steps:
+        block = named_step_block(rust_macos, step, 6)
+        assert "--features" not in block, f"{step} is the default suite and takes no feature"
+        assert "matrix.suite == 'default'" in block, f"{step} must run only in the default suite"
+    assert "--features" not in "".join(
+        named_step_block(rust_macos, step, 6)
+        for step in ("Build capture isolation helpers",)
+    )
+    assert "internal-benchmark,dictation-shadow" not in ci and "dictation-shadow,internal-benchmark" not in ci
     # No failure of either job is suppressed, and `ci-pass` waits on both of them.
     for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
         assert "continue-on-error" not in job, f"{job_name} must not suppress a failure"
         assert f"needs.{job_name}.result" in ci_pass, f"ci-pass must read {job_name}"
-    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
+    # Only main saves a Rust cache. The suites of `rust-macos` share one cache key, and only the
+    # default suite builds the whole dependency graph, so only it saves.
+    for job_name, job, save_if in (
+        ("rust-lint", rust_lint, "github.ref == 'refs/heads/main'"),
+        (
+            "rust-macos",
+            rust_macos,
+            "github.ref == 'refs/heads/main' && matrix.suite == 'default'",
+        ),
+    ):
         cache = named_step_block(job, "Cache Rust dependencies", 6)
         assert (
-            "save-if: ${{ github.ref == 'refs/heads/main' }}" in cache
+            f"save-if: ${{{{ {save_if} }}}}" in cache
         ), f"{job_name} must not save PR caches"
     test_library = named_step_block(rust_macos, "Configure test-only Rust library", 6)
     assert "python3 scripts/configure_ci_rust_library.py" in test_library
@@ -511,19 +605,35 @@ def validate_ci(ci: str) -> int:
         nextest_reuse + " -E 'kind(lib) | binary(c13_3_bug_replays)'"
         in " ".join(macos_lib_tests.split())
     )
-    # The prebuild must use the run steps' package selection and build the
-    # examples before the test targets, or the run steps recompile the app crate.
+    # The prebuild must use the run steps' package selection.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
-    example_build = test_build.find(
-        "cargo build --workspace"
-        " --example murmur-eval"
-    )
-    test_prebuild = test_build.find(
+    assert (
         "cargo nextest list --workspace --lib"
         " --bin murmur-capture-helper --test topology_watch"
         " --test c13_3_bug_replays"
+    ) in test_build
+    assert "--example" not in test_build, "the example is built by its own step, in the evaluation suite"
+    # The evaluation runs the example binary the step before it built, with the default features.
+    validate_exact_step(
+        rust_macos,
+        "Build the dictation evaluation example",
+        {
+            "if": suite_condition("internal-benchmark"),
+            "run": "cd app/src-tauri && cargo build --workspace --example murmur-eval",
+        },
     )
-    assert 0 <= example_build < test_prebuild, "build examples, then every test target"
+    validate_exact_step(
+        rust_macos,
+        "Run deterministic dictation evaluation",
+        {
+            "if": suite_condition("internal-benchmark"),
+            "run": "cd app/src-tauri && target/debug/examples/murmur-eval deterministic"
+            " --output target/murmur-eval/ci-report.json",
+        },
+    )
+    assert rust_macos.index("- name: Build the dictation evaluation example\n") < rust_macos.index(
+        "- name: Run deterministic dictation evaluation\n"
+    )
     assert (
         "--message-format json --list-type binaries-only > target/ci-test-binaries.json"
         in test_build

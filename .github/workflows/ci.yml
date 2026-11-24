@@ -23,11 +23,15 @@ jobs:
     # A verified push skips the frontend jobs and every Rust test step. The
     # Rust jobs still run, build-only, when dependency manifests or this
     # workflow changed, because only main saves the Rust caches PRs restore.
+    # `rust_suites` is the `rust-macos` matrix: a verified push only builds (to
+    # refresh main's cache), so it needs the default suite alone; the feature
+    # suites exist to run tests.
     outputs:
       verified: ${{ steps.verified.outputs.verified == 'true' }}
       frontend: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}
       rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}
       github: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}
+      rust_suites: ${{ steps.verified.outputs.verified == 'true' && '["default"]' || '["default","internal-benchmark","dictation-shadow"]' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -246,6 +250,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
     runs-on: macos-latest
+    # One runner per feature set. The app crate (`ui`) is one ~100k-line crate, so
+    # each feature set costs about two minutes of compiling, and a feature set
+    # that is already built cannot be rebuilt cheaply: the second cargo
+    # invocation on it recompiles `ui` once more (tauri-codegen writes into
+    # OUT_DIR during compilation, which leaves it newer than cargo's
+    # fingerprint). Each suite therefore builds once, in its own job, and every
+    # run step reuses that build through nextest's binaries metadata. The feature
+    # sets still differ exactly as before: `default` has neither feature,
+    # `internal-benchmark` and `dictation-shadow` each have only their own.
+    # Every suite shares one Rust cache: the dependency graph is the same.
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.rust_suites) }}
     # One environment for every cargo invocation so build scripts that watch
     # these variables never rebuild between steps.
     env:
@@ -282,8 +300,12 @@ jobs:
           workspaces: app/src-tauri
           # PRs restore main's cache but never save their own: each PR copy is
           # 1-2 GB and pushes the repository past its 10 GB cache quota, which
-          # evicts main's and the release build's caches.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # evicts main's and the release build's caches. Every suite shares one
+          # cache key, so only the default suite saves it: it alone builds the
+          # whole dependency graph (the helpers, the example and the tests); the
+          # feature suites build less, and a cache saved by whichever suite
+          # finished first could leave later runs without part of the graph.
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'default' }}
 
       - name: Refresh sherpa-onnx native libraries
         # rust-cache prunes files under target/sherpa-onnx-prebuilt but keeps
@@ -320,13 +342,12 @@ jobs:
             binaries/murmur-capture-helper-aarch64-apple-darwin
 
       - name: Build test binaries
-        # Build examples first, then every test target in one invocation.
-        # Record the build metadata so nextest can select unit-test subsets
-        # without asking Cargo to rebuild with a different feature graph.
+        # Build every test target in one invocation. Record the build metadata
+        # so nextest can select unit-test subsets without asking Cargo to
+        # rebuild with a different feature graph.
+        if: matrix.suite == 'default'
         run: >-
           cd app/src-tauri &&
-          cargo build --workspace
-          --example murmur-eval &&
           cargo nextest list --workspace
           --lib --bin murmur-capture-helper --test topology_watch
           --test c13_3_bug_replays
@@ -334,7 +355,7 @@ jobs:
           cargo metadata --format-version 1 > target/ci-cargo-metadata.json
 
       - name: Run tests
-        if: needs.changes.outputs.verified != 'true'
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'
         # kind(lib) covers app and protocol crate unit tests. binary(c13_3_bug_replays)
         # adds the dictation-core integration test holding the seven C13.3 bug
         # replays; it is a separate test target, so kind(lib) alone skips it.
@@ -353,7 +374,7 @@ jobs:
           -E 'kind(lib) | binary(c13_3_bug_replays)'
 
       - name: Run golden dictation scenarios 100 times
-        if: needs.changes.outputs.verified != 'true'
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'
         # Stage 0b gates G1, G4 and G5: every golden scenario runs 100 times in
         # one process and each run must equal its checked-in trace (about 1 s).
         # The single pass above is the ordinary check; this one is the flake
@@ -371,24 +392,46 @@ jobs:
           --binaries-metadata target/ci-test-binaries.json
           -E 'kind(lib) & test(/golden_tests::golden_/)'
 
-      - name: Run admission tests with internal-benchmark
-        if: needs.changes.outputs.verified != 'true'
+      - name: Build internal-benchmark test binaries
         # The corpus and benchmark admission sites, and half of the admission
         # differential test, compile only with this feature, which no other
-        # step enables. Rebuilds only this crate's lib with the feature.
+        # suite enables. Builds only this crate's lib with the feature, once;
+        # the step below reuses it.
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'
         timeout-minutes: 15
         run: >-
           cd app/src-tauri &&
-          cargo nextest run --lib --features internal-benchmark
+          cargo nextest list --lib --features internal-benchmark
+          --message-format json --list-type binaries-only > target/ci-benchmark-binaries.json &&
+          cargo metadata --format-version 1 > target/ci-cargo-metadata.json
+
+      - name: Run admission tests with internal-benchmark
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'
+        timeout-minutes: 15
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
+          --binaries-metadata target/ci-benchmark-binaries.json
           -E 'test(/dictation_admission::/) | test(/corpus::/)'
 
-      - name: Run dictation shadow tests
-        if: needs.changes.outputs.verified != 'true'
-        # The shadow feature is off in every other step, so nothing else compiles or
+      - name: Build dictation shadow test binaries
+        # The shadow feature is off in every other suite, so nothing else compiles or
         # runs the shadow. This step builds the app's lib once with
-        # --features dictation-shadow (the feature graph differs, so the prebuild
-        # cannot be reused, as with internal-benchmark above) and runs: the shadow's
-        # own tests (dictation_shadow::), the build policy tests, E8
+        # --features dictation-shadow (the feature graph differs from the default
+        # suite's, so its prebuild cannot be reused, as with internal-benchmark above).
+        # The next two steps reuse this build: a second cargo invocation on the same
+        # feature set would recompile the app crate (about 100 s).
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'
+        timeout-minutes: 25
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest list --lib --features dictation-shadow
+          --message-format json --list-type binaries-only > target/ci-shadow-binaries.json &&
+          cargo metadata --format-version 1 > target/ci-cargo-metadata.json
+
+      - name: Run dictation shadow tests
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'
+        # Runs the shadow's own tests (dictation_shadow::), the build policy tests, E8
         # (every_family_pd_is_witnessed), the site-order check (headers_leave_d),
         # and the read and allocation pins (pd_witness_tests::under_d::, plus the
         # process_audio refusal pin). The whole module E8 lives in is selected
@@ -401,24 +444,26 @@ jobs:
         timeout-minutes: 25
         run: >-
           cd app/src-tauri &&
-          cargo nextest run --lib --features dictation-shadow
+          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
+          --binaries-metadata target/ci-shadow-binaries.json
           -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/every_family_pd_is_witnessed/) | test(/headers_leave_d/) | test(/pd_witness_tests::under_d::/) | test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/) | test(/lifecycle_cutover_tests::/) | test(/stop_cutover_tests::/) | test(/cancel_cutover_tests::/) | test(/start_cutover_tests::/)'
 
       - name: Run golden dictation scenarios 100 times with the dictation shadow
-        if: needs.changes.outputs.verified != 'true'
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'
         # E7: every golden scenario through the real shell and the real comparator
-        # in synchronous mode, 100 runs in one process, 0 mismatches. Compiled by
-        # the step above.
+        # in synchronous mode, 100 runs in one process, 0 mismatches. Reuses the
+        # shadow build above.
         timeout-minutes: 10
         env:
           MURMUR_GOLDEN_REPEAT: "100"
         run: >-
           cd app/src-tauri &&
-          cargo nextest run --lib --features dictation-shadow
+          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
+          --binaries-metadata target/ci-shadow-binaries.json
           -E 'kind(lib) & test(/golden_tests::golden_/)'
 
       - name: Run capture worker unit tests
-        if: needs.changes.outputs.verified != 'true'
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'
         # Reuse both the helper's bin tests and topology_watch from the prebuild.
         # A fresh Cargo invocation for this subset recompiles native dependencies.
         run: >-
@@ -427,8 +472,17 @@ jobs:
           --binaries-metadata target/ci-test-binaries.json
           -E 'package(=murmur-capture-helper)'
 
+      - name: Build the dictation evaluation example
+        # The example needs the default features and a non-test build of the app
+        # crate (about 80 s), which no test suite shares. It runs in the
+        # internal-benchmark suite only because that is the shortest job: the
+        # default suite is the slowest one, and the wall time of the matrix is
+        # its slowest suite.
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'
+        run: cd app/src-tauri && cargo build --workspace --example murmur-eval
+
       - name: Run deterministic dictation evaluation
-        if: needs.changes.outputs.verified != 'true'
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'
         run: >-
           cd app/src-tauri &&
           target/debug/examples/murmur-eval deterministic
