@@ -6,7 +6,6 @@ import plistlib
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 
 from scripts.build_capture_helpers import unexpected_dynamic_dependencies
