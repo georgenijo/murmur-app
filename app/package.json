@@ -12,7 +12,7 @@
     "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri:bench:dev": "VITE_MURMUR_INTERNAL_BENCHMARK=1 tauri dev --features internal-benchmark --config src-tauri/tauri.bench.conf.json",
     "tauri:build": "tauri build",
-    "tauri:build:local": "CARGO_PROFILE_RELEASE_INCREMENTAL=true tauri build --bundles app",
+    "tauri:build:local": "node ../scripts/tauri_build_local.mjs",
     "tauri:bench:build": "VITE_MURMUR_INTERNAL_BENCHMARK=1 tauri build --features internal-benchmark --config src-tauri/tauri.bench.conf.json",
     "test": "vitest run",
     "test:watch": "vitest",
