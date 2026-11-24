@@ -130,7 +130,7 @@ for (const motion of ['no-preference', 'reduce'] as const) {
         const [capsule, glyph, wave] = await Promise.all([
           pill.boundingBox(), pill.locator('.bezel-glyph').boundingBox(), pill.locator('.overlay-waveform').boundingBox(),
         ]);
-        // The capsule keeps its fixed wheel size whatever the text.
+        // The capsule keeps its fixed slim size whatever the text.
         expect(capsule!.width).toBe(geometry.pillWords.windowW);
         expect(capsule!.height).toBe(geometry.pillWords.collapsedH);
         const { wheel: w, lines } = await wheelLines(page);
@@ -151,24 +151,23 @@ for (const motion of ['no-preference', 'reduce'] as const) {
           expect(line.bottom).toBeLessThanOrEqual(w.bottom + 0.5);
           expect(line.scrollWidth).toBeLessThanOrEqual(line.clientWidth + 1);
         }
-        // The front line is the newest words, fully lit, sharp and inside the
-        // mask's opaque band (40% to 86% of the wheel height).
+        // The front line is the newest words, fully lit, sharp, vertically
+        // centred in the slim pill and inside the mask's opaque band (22% to 78%).
         const front = shown.filter(l => l.front);
         expect(front).toHaveLength(1);
         expect(front[0].opacity).toBe(1);
         expect(front[0].blur).toBe('none');
-        expect(front[0].top).toBeGreaterThanOrEqual(w.top + 0.4 * w.height - 0.5);
-        expect(front[0].bottom).toBeLessThanOrEqual(w.top + 0.86 * w.height + 0.5);
+        expect(front[0].top).toBeGreaterThanOrEqual(w.top + 0.22 * w.height - 0.5);
+        expect(front[0].bottom).toBeLessThanOrEqual(w.top + 0.78 * w.height + 0.5);
+        expect(Math.abs((front[0].top + front[0].bottom) / 2 - (capsule!.y + capsule!.height / 2))).toBeLessThanOrEqual(1);
+        expect(front[0].bottom - front[0].top).toBeLessThanOrEqual(16);
         expect(text.replace(/\s+/g, ' ').trim().endsWith(front[0].text.replace(/\s+/g, ' ').trim().slice(-8))).toBe(true);
-        // At most the previous line shows, above the front one, dimmed.
-        const others = shown.filter(l => !l.front && l.opacity > 0.1);
-        expect(others.length).toBeLessThanOrEqual(1);
-        for (const line of others) {
-          expect(line.bottom).toBeLessThanOrEqual(front[0].top + 1);
-          expect(line.opacity).toBeLessThan(0.6);
-        }
-        if (name === 'sentence' || name === 'fast' || name === 'cjk' || name === 'longWord') expect(others).toHaveLength(1);
-        if (name === 'short') expect(others).toHaveLength(0);
+        // At rest only the front line is drawn: the previous line has rolled
+        // out of the top and is gone, not a blurred smudge above it.
+        expect(shown.filter(l => !l.front)).toHaveLength(0);
+        // No selection band or any other box behind the words.
+        expect(await wheel.evaluate(el => [...el.children].every(c => c.matches('[role="status"], .bezel-wheel-line')))).toBe(true);
+        await expect(page.locator('[class*="band"]')).toHaveCount(0);
         // Reduce Motion: flat lines, no 3D transform anywhere in the wheel.
         if (motion === 'reduce') {
           for (const line of lines) expect(line.transform).not.toContain('matrix3d');
@@ -187,14 +186,17 @@ test('streamed words roll finished lines up and back over the wheel', async ({ p
   const text = WORDS.sentence + ' and then a few more words so that it keeps on rolling';
   await page.goto(`/visual-fixtures.html?state=voice-island&placement=pill&variant=words&stream=60&text=${encodeURIComponent(text)}`);
   await expect(page.locator('.bezel-wheel')).toBeVisible();
-  // Sample the roll while words arrive: lines turn through 3D, never jump.
-  let rotated = false;
-  for (let i = 0; i < 40 && !rotated; i++) {
+  // Sample the roll while words arrive: the outgoing line turns through 3D
+  // above the front line and is glimpsed only while it leaves.
+  let rolling = false;
+  for (let i = 0; i < 60 && !rolling; i++) {
     const { lines } = await wheelLines(page);
-    rotated = lines.some(l => l.visible && l.opacity > 0.02 && l.transform.startsWith('matrix3d'));
-    if (!rotated) await page.waitForTimeout(50);
+    const front = lines.find(l => l.front);
+    rolling = !!front && lines.some(l => !l.front && l.visible && l.opacity > 0.02
+      && l.transform.startsWith('matrix3d') && l.top < front.top);
+    if (!rolling) await page.waitForTimeout(30);
   }
-  expect(rotated).toBe(true);
+  expect(rolling).toBe(true);
   await page.waitForFunction(() => (window as unknown as { __wheelStream?: string }).__wheelStream === 'done');
   await page.waitForTimeout(1200);
   const { wheel: w, lines } = await wheelLines(page);
@@ -202,15 +204,14 @@ test('streamed words roll finished lines up and back over the wheel', async ({ p
   expect(front).toHaveLength(1);
   expect(front[0].opacity).toBe(1);
   expect(front[0].text.trim().endsWith('rolling')).toBe(true);
-  const shown = lines.filter(l => l.visible && l.opacity > 0.1 && !l.front);
-  expect(shown.length).toBeLessThanOrEqual(1);
+  expect(lines.filter(l => l.visible && l.opacity > 0.02 && !l.front)).toHaveLength(0);
   for (const line of lines.filter(l => l.visible && l.opacity > 0.02)) {
     expect(line.top).toBeGreaterThanOrEqual(w.top - 0.5);
     expect(line.bottom).toBeLessThanOrEqual(w.bottom + 0.5);
   }
 });
 
-test('the warning widens the slim pill and its phrase fits; the wheel pill is the largest', async ({ page }) => {
+test('the warning widens the slim pill and its phrase fits; every pill size is 34pt tall', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 420, height: 320 });
   await page.goto('/visual-fixtures.html?state=voice-island&placement=pill&appearance=dark');
@@ -222,10 +223,10 @@ test('the warning widens the slim pill and its phrase fits; the wheel pill is th
   expect([compact.width, compact.height]).toEqual([geometry.pillRecording.windowW, geometry.pillRecording.collapsedH]);
   expect([words.width, words.height]).toEqual([geometry.pillWords.windowW, geometry.pillWords.collapsedH]);
   expect([warning.width, warning.height]).toEqual([geometry.pillWarning.windowW, geometry.pillWarning.collapsedH]);
-  expect(compact.width).toBeLessThan(warning.width);
-  expect(warning.width).toBeLessThan(words.width);
-  expect(compact.height).toBe(warning.height);
-  expect(warning.height).toBeLessThan(words.height);
+  expect([words.width, words.height]).toEqual([224, 34]);
+  expect(compact.width).toBeLessThan(words.width);
+  expect(words.width).toBeLessThan(warning.width);
+  expect(new Set([compact.height, words.height, warning.height])).toEqual(new Set([34]));
   const island = page.locator('[data-variant="warning"] .overlay-island');
   const phrase = island.getByText('Model incomplete', { exact: true });
   const chip = island.locator('.bezel-chip');
