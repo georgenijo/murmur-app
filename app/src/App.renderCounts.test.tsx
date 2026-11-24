@@ -96,6 +96,16 @@ function response(command: string): unknown {
 }
 
 beforeEach(() => {
+  // The recording clock re-renders the header once per second, so a loaded machine that
+  // takes over a second for the sample loop would see one extra render that is not caused
+  // by an audio level. Freeze only the interval; the rest of the timers stay real.
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  // App loads the settings chunk on mount and preloads the meetings chunk when idle (a
+  // 300 ms timer where jsdom lacks requestIdleCallback), and re-renders when each lands.
+  // That is startup work, not a per-sample render, so run it up front instead of whenever
+  // the chunk or timer happens to finish.
+  vi.stubGlobal('requestIdleCallback', (callback: () => void) => window.setTimeout(callback, 0));
+  vi.stubGlobal('cancelIdleCallback', (handle: number) => window.clearTimeout(handle));
   localStorage.clear();
   native.listeners.clear();
   native.counts = {};
@@ -107,7 +117,21 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
+
+// Wait until no counted component has rendered for a few consecutive ticks.
+async function settle() {
+  let last = '';
+  let stable = 0;
+  for (let tick = 0; tick < 200 && stable < 5; tick += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const now = JSON.stringify(native.counts);
+    stable = now === last ? stable + 1 : 0;
+    last = now;
+  }
+}
 
 describe('App render counts while recording with the window visible', () => {
   it('keeps level-independent children from re-rendering on each audio-level sample', async () => {
@@ -115,11 +139,17 @@ describe('App render counts while recording with the window visible', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       ...DEFAULT_SETTINGS, model: 'base.en', recordingMode: 'double_tap', microphoneIdMigrationComplete: true,
     }));
+    // Load the deferred chunks before rendering, so they resolve as soon as App asks.
+    await Promise.all([
+      import('./components/settings/SettingsPanel'),
+      import('./components/history/MeetingsPanel'),
+    ]);
     await act(async () => root.render(<App />));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await settle();
     await act(async () => {
       for (const cb of native.listeners.get('recording-status-changed') ?? []) cb({ payload: 'recording' });
     });
+    await settle();
     expect(document.visibilityState).toBe('visible');
     const before = { ...native.counts };
     const SAMPLES = 100;
