@@ -675,7 +675,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             ),
             (
                 "      - name: Run deterministic dictation evaluation\n"
-                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'\n",
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'\n",
                 "      - name: Run deterministic dictation evaluation\n",
             ),
         ):
@@ -724,24 +724,36 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
-    def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
+    def test_the_evaluation_example_is_built_before_it_runs_and_not_with_the_tests(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        examples = (
-            "          cargo build --workspace\n"
-            "          --example murmur-eval &&\n"
+        build = (
+            "      - name: Build the dictation evaluation example\n"
+            "        # The example needs"
         )
-        tests = (
-            "          cargo nextest list --workspace\n"
-            "          --lib --bin murmur-capture-helper --test topology_watch\n"
-            "          --test c13_3_bug_replays\n"
-            "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
-            "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
-        )
-        swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
-        mutated = workflow.replace(examples + tests, swapped, 1)
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
+        for label, old, new in (
+            # The example's build dropped: the evaluation step would have no binary.
+            ("build step dropped", "      - name: Build the dictation evaluation example\n", "      - name: Unrelated\n"),
+            # The evaluation moved to a suite whose features differ from the build's.
+            (
+                "evaluation in another suite",
+                "      - name: Run deterministic dictation evaluation\n"
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'\n",
+                "      - name: Run deterministic dictation evaluation\n"
+                "        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'dictation-shadow'\n",
+            ),
+            # The example folded into the test prebuild again: it would not be built there.
+            (
+                "example in the prebuild",
+                "          --test c13_3_bug_replays\n",
+                "          --test c13_3_bug_replays --example murmur-eval\n",
+            ),
+        ):
+            with self.subTest(label=label):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+        self.assertIn(build, workflow)
 
     def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

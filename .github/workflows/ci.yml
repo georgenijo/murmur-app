@@ -302,9 +302,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Runner resources (temporary)
-        run: sysctl -n hw.ncpu hw.memsize
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
@@ -371,14 +368,12 @@ jobs:
             binaries/murmur-capture-helper-aarch64-apple-darwin
 
       - name: Build test binaries
-        # Build examples first, then every test target in one invocation.
-        # Record the build metadata so nextest can select unit-test subsets
-        # without asking Cargo to rebuild with a different feature graph.
+        # Build every test target in one invocation. Record the build metadata
+        # so nextest can select unit-test subsets without asking Cargo to
+        # rebuild with a different feature graph.
         if: matrix.suite == 'default'
         run: >-
           cd app/src-tauri &&
-          cargo build --workspace
-          --example murmur-eval &&
           cargo nextest list --workspace
           --lib --bin murmur-capture-helper --test topology_watch
           --test c13_3_bug_replays
@@ -503,8 +498,17 @@ jobs:
           --binaries-metadata target/ci-test-binaries.json
           -E 'package(=murmur-capture-helper)'
 
+      - name: Build the dictation evaluation example
+        # The example needs the default features and a non-test build of the app
+        # crate (about 80 s), which no test suite shares. It runs in the
+        # internal-benchmark suite only because that is the shortest job: the
+        # default suite is the slowest one, and the wall time of the matrix is
+        # its slowest suite.
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'
+        run: cd app/src-tauri && cargo build --workspace --example murmur-eval
+
       - name: Run deterministic dictation evaluation
-        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'default'
+        if: needs.changes.outputs.verified != 'true' && matrix.suite == 'internal-benchmark'
         run: >-
           cd app/src-tauri &&
           target/debug/examples/murmur-eval deterministic

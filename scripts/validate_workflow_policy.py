@@ -128,7 +128,7 @@ CI_RUST_TEST_STEPS = {
     "Run dictation shadow tests": "dictation-shadow",
     "Run golden dictation scenarios 100 times with the dictation shadow": "dictation-shadow",
     "Run capture worker unit tests": "default",
-    "Run deterministic dictation evaluation": "default",
+    "Run deterministic dictation evaluation": "internal-benchmark",
 }
 CI_RUST_SUITES = ("default", "internal-benchmark", "dictation-shadow")
 
@@ -548,7 +548,6 @@ def validate_ci(ci: str) -> int:
         "Run tests",
         "Run golden dictation scenarios 100 times",
         "Run capture worker unit tests",
-        "Run deterministic dictation evaluation",
     )
     for step in default_steps:
         block = named_step_block(rust_macos, step, 6)
@@ -605,19 +604,35 @@ def validate_ci(ci: str) -> int:
         nextest_reuse + " -E 'kind(lib) | binary(c13_3_bug_replays)'"
         in " ".join(macos_lib_tests.split())
     )
-    # The prebuild must use the run steps' package selection and build the
-    # examples before the test targets, or the run steps recompile the app crate.
+    # The prebuild must use the run steps' package selection.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
-    example_build = test_build.find(
-        "cargo build --workspace"
-        " --example murmur-eval"
-    )
-    test_prebuild = test_build.find(
+    assert (
         "cargo nextest list --workspace --lib"
         " --bin murmur-capture-helper --test topology_watch"
         " --test c13_3_bug_replays"
+    ) in test_build
+    assert "--example" not in test_build, "the example is built by its own step, in the evaluation suite"
+    # The evaluation runs the example binary the step before it built, with the default features.
+    validate_exact_step(
+        rust_macos,
+        "Build the dictation evaluation example",
+        {
+            "if": suite_condition("internal-benchmark"),
+            "run": "cd app/src-tauri && cargo build --workspace --example murmur-eval",
+        },
     )
-    assert 0 <= example_build < test_prebuild, "build examples, then every test target"
+    validate_exact_step(
+        rust_macos,
+        "Run deterministic dictation evaluation",
+        {
+            "if": suite_condition("internal-benchmark"),
+            "run": "cd app/src-tauri && target/debug/examples/murmur-eval deterministic"
+            " --output target/murmur-eval/ci-report.json",
+        },
+    )
+    assert rust_macos.index("- name: Build the dictation evaluation example\n") < rust_macos.index(
+        "- name: Run deterministic dictation evaluation\n"
+    )
     assert (
         "--message-format json --list-type binaries-only > target/ci-test-binaries.json"
         in test_build
