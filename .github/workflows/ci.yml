@@ -335,14 +335,15 @@ jobs:
             -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
             -Xlinker capture-agent-info.plist \
             -o binaries/murmur-capture-agent-aarch64-apple-darwin
-          cargo build -p murmur-capture-helper
+          # Worker and helper are one crate with different Info.plists, so
+          # they share target/ and the dependency graph compiles once. The
+          # helper builds last so target/debug keeps the helper plist.
+          MURMUR_CAPTURE_ROLE=worker cargo build -p murmur-capture-helper
+          cp target/debug/murmur-capture-helper \
+            binaries/murmur-capture-worker-aarch64-apple-darwin
+          MURMUR_CAPTURE_ROLE=helper cargo build -p murmur-capture-helper
           cp target/debug/murmur-capture-helper \
             binaries/murmur-capture-helper-aarch64-apple-darwin
-          MURMUR_CAPTURE_ROLE=worker \
-            CARGO_TARGET_DIR=target/capture-worker-build \
-            cargo build -p murmur-capture-helper
-          cp target/capture-worker-build/debug/murmur-capture-helper \
-            binaries/murmur-capture-worker-aarch64-apple-darwin
 
       - name: Build test binaries
         # Build examples first, then every test target in one invocation.

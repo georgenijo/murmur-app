@@ -699,8 +699,8 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
     def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
-            "          MURMUR_CAPTURE_ROLE=worker \\\n",
-            "",
+            "          MURMUR_CAPTURE_ROLE=worker cargo build -p murmur-capture-helper\n",
+            "          cargo build -p murmur-capture-helper\n",
             1,
         )
         self.assertNotEqual(workflow, mutated)
