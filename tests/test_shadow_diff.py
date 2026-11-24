@@ -1,6 +1,7 @@
 from pathlib import Path
 import contextlib
 import io
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -45,18 +46,49 @@ def git(root: Path, *args: str) -> None:
 _KEEP: list[tempfile.TemporaryDirectory] = []
 
 
+_EMPTY_REPO: list[Path] = []
+
+
+def _empty_repo_template() -> Path:
+    """One `git init -b main` per process; every fixture repository starts as a copy of it."""
+    if not _EMPTY_REPO:
+        tmp = tempfile.TemporaryDirectory()
+        _KEEP.append(tmp)
+        git(Path(tmp.name), "init", "-q", "-b", "main")
+        _EMPTY_REPO.append(Path(tmp.name))
+    return _EMPTY_REPO[0]
+
+
+def _commit_record(ref: str, message: str, text: str, parent: str | None) -> bytes:
+    data, body = message.encode(), text.encode()
+    record = (
+        f"commit refs/heads/{ref}\ncommitter t <t@example.com> 1700000000 +0000\n"
+        f"data {len(data)}\n"
+    ).encode() + data + b"\n"
+    if parent:
+        record += f"from refs/heads/{parent}\n".encode()
+    return record + f"M 100644 inline {LIVE}\ndata {len(body)}\n".encode() + body + b"\n"
+
+
 def repo(base_text: str, branch_text: str) -> Path:
+    """`main` holds `base_text` and `branch` (checked out) holds `branch_text`.
+
+    Built with one `git fast-import` and one checkout instead of five separate git commands:
+    the shadow-diff tests make hundreds of these, and a process spawn is what they cost.
+    """
     tmp = tempfile.TemporaryDirectory()
     _KEEP.append(tmp)
     root = Path(tmp.name)
-    git(root, "init", "-b", "main")
-    (root / LIVE).parent.mkdir(parents=True)
-    (root / LIVE).write_text(base_text)
-    git(root, "add", ".")
-    git(root, "commit", "-m", "base")
-    git(root, "checkout", "-b", "branch")
-    (root / LIVE).write_text(branch_text)
-    git(root, "commit", "-am", "branch")
+    shutil.copytree(_empty_repo_template() / ".git", root / ".git", symlinks=True)
+    subprocess.run(
+        ["git", "fast-import", "--quiet"],
+        cwd=root,
+        input=_commit_record("main", "base", base_text, None)
+        + _commit_record("branch", "branch", branch_text, "main"),
+        check=True,
+        capture_output=True,
+    )
+    git(root, "checkout", "-q", "-f", "branch")
     return root
 
 

@@ -47,7 +47,17 @@ cd app/src-tauri && cargo nextest run --workspace --lib  # Rust unit tests, one 
 cd app/src-tauri && cargo test -- --test-threads=1   # Rust, full: also the tests/ integration targets and doc tests (slower)
 cd app && npm test                                   # frontend vitest
 cd app && npx tsc --noEmit                           # TypeScript
+python3 -m pytest tests -q -n auto --dist worksteal  # Python script/policy tests, in parallel (what CI runs)
 ```
+
+The Python tests need `python3 -m pip install -r requirements-test.txt` once (a venv
+is fine). `-n auto` starts one worker per core and `--dist worksteal` hands the
+remaining tests to whichever worker is idle, so the few slow tests do not leave the
+other cores waiting. Drop `-n auto` to run serially when debugging one test
+(`python3 -m pytest tests/test_log_receiver.py -k name`). The tests bind only
+ephemeral ports and use their own temp directories, so they are safe to run
+concurrently; keep new tests that way. `python3 -m unittest tests/<file>.py` still
+works for the unittest-style files.
 
 Prefer nextest for the unit tests: each test runs in its own process, which gives the
 isolation `--test-threads=1` was kept for, and the suite uses every core. Install it

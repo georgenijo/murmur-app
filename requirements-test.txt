@@ -1,3 +1,5 @@
+execnet==2.1.2
 markdown-it-py==4.0.0
 mdurl==0.1.2
 pytest==8.3.4
+pytest-xdist==3.8.0

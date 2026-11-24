@@ -249,12 +249,111 @@ def numstat(root: Path, base: str) -> dict[str, tuple[int, int]]:
     return stats
 
 
+# While `main` runs, the repository is read-only and `base` is one resolved commit, so a
+# `git show` or `git diff` of one (ref, path) always answers the same text. `main` keeps those
+# answers in a `_Run`: each is read once instead of once per check that needs it, the file
+# texts through one `git cat-file --batch` process and the per-file diffs from one whole-tree
+# `git diff`, so a run spawns a handful of git processes instead of dozens. Outside `main`
+# (a test calling a helper on a repository it keeps changing) nothing is cached or batched.
+_SIMPLE_PATH = re.compile(r"[A-Za-z0-9_./+@,=-]+")
+_DIFF_HEADER = re.compile(r"^diff --git a/(?P<path>\S+) b/(?P=path)$", re.M)
+
+
+class _Run:
+    def __init__(self) -> None:
+        self.cache: dict[tuple, str] = {}
+        self.readers: dict[Path, subprocess.Popen] = {}
+        self.diffs: dict[tuple[Path, str], dict[str, str]] = {}
+
+    def close(self) -> None:
+        for reader in self.readers.values():
+            reader.stdin.close()
+            reader.stdout.close()
+            reader.wait()
+        self.readers.clear()
+
+    def blob(self, root: Path, spec: str) -> str | None:
+        """The text of `spec` (`ref:path`) when it names a blob, `""` when it names nothing,
+        `None` when it names something else (the caller then asks `git show`)."""
+        if "\n" in spec:
+            return None
+        reader = self.readers.get(root)
+        if reader is None:
+            reader = self.readers[root] = subprocess.Popen(
+                ["git", "cat-file", "--batch"],
+                cwd=root,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        reader.stdin.write(spec.encode() + b"\n")
+        reader.stdin.flush()
+        header = reader.stdout.readline().split()
+        if len(header) == 2 and header[1] == b"missing":
+            return ""
+        if len(header) != 3 or header[1] != b"blob":
+            raise RuntimeError(f"git cat-file --batch answered {header!r} for {spec}")
+        data = reader.stdout.read(int(header[2]))
+        reader.stdout.read(1)
+        # The same decoding `text=True` gives `git show`: UTF-8, universal newlines.
+        return data.decode().replace("\r\n", "\n").replace("\r", "\n")
+
+    def whole_diff(self, root: Path, base: str) -> dict[str, str]:
+        key = (root, base)
+        if key not in self.diffs:
+            result = subprocess.run(
+                ["git", "diff", "-U0", "--no-renames", f"{base}...HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            sections: dict[str, str] = {}
+            headers = list(_DIFF_HEADER.finditer(result.stdout)) if result.returncode == 0 else []
+            for index, found in enumerate(headers):
+                end = headers[index + 1].start() if index + 1 < len(headers) else len(result.stdout)
+                sections[found.group("path")] = result.stdout[found.start() : end]
+            self.diffs[key] = sections
+        return self.diffs[key]
+
+
+_RUN: _Run | None = None
+
+
 def show(root: Path, ref: str, path: str) -> str:
     """The file's text at `ref` (empty if it does not exist there)."""
-    result = subprocess.run(
-        ["git", "show", f"{ref}:{path}"], cwd=root, capture_output=True, text=True
-    )
-    return result.stdout if result.returncode == 0 else ""
+    run = _RUN
+    key = (root, "show", ref, path)
+    if run is not None and key in run.cache:
+        return run.cache[key]
+    text = run.blob(root, f"{ref}:{path}") if run is not None else None
+    if text is None:
+        result = subprocess.run(
+            ["git", "show", f"{ref}:{path}"], cwd=root, capture_output=True, text=True
+        )
+        text = result.stdout if result.returncode == 0 else ""
+    if run is not None:
+        run.cache[key] = text
+    return text
+
+
+def diff_u0(root: Path, base: str, path: str) -> str:
+    """The zero-context diff of `path` from the merge base to `HEAD`."""
+    run = _RUN
+    key = (root, "diff", base, path)
+    if run is not None and key in run.cache:
+        return run.cache[key]
+    if run is not None and _SIMPLE_PATH.fullmatch(path):
+        text = run.whole_diff(root, base).get(path, "")
+    else:
+        text = subprocess.run(
+            ["git", "diff", "-U0", "--no-renames", f"{base}...HEAD", "--", path],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        ).stdout
+    if run is not None:
+        run.cache[key] = text
+    return text
 
 
 def guarded_paths(stats: dict[str, tuple[int, int]], root: Path, base: str) -> list[str]:
@@ -333,14 +432,8 @@ def _requires_test(predicate: str) -> bool:
 
 def added_lines(root: Path, base: str, path: str) -> set[int]:
     """The 1-based line numbers the branch added to `path`."""
-    result = subprocess.run(
-        ["git", "diff", "-U0", "--no-renames", f"{base}...HEAD", "--", path],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
     lines: set[int] = set()
-    for header in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", result.stdout, re.M):
+    for header in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", diff_u0(root, base, path), re.M):
         start, count = int(header.group(1)), int(header.group(2) or 1)
         lines.update(range(start, start + count))
     return lines
@@ -627,14 +720,8 @@ def base_survives(
 
 def removed_lines(root: Path, base: str, path: str) -> set[int]:
     """The 1-based line numbers (in the base) the branch removed from `path`."""
-    result = subprocess.run(
-        ["git", "diff", "-U0", "--no-renames", f"{base}...HEAD", "--", path],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
     lines: set[int] = set()
-    for header in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+\S+ @@", result.stdout, re.M):
+    for header in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+\S+ @@", diff_u0(root, base, path), re.M):
         start, count = int(header.group(1)), int(header.group(2) or 1)
         lines.update(range(start, start + count))
     return lines
@@ -1562,6 +1649,16 @@ def base_twin_table(root: Path, base: str) -> dict[str, list[dict]] | None:
 
 
 def main(root: Path = ROOT, base: str = "origin/main") -> int:
+    global _RUN
+    _RUN = _Run()
+    try:
+        return _main(root, base)
+    finally:
+        _RUN.close()
+        _RUN = None
+
+
+def _main(root: Path, base: str) -> int:
     try:
         base = resolve_base(root, base)
         stats = numstat(root, base)
