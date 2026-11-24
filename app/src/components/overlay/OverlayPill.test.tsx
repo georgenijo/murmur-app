@@ -360,7 +360,7 @@ describe('OverlayPill transient cues', () => {
     // Words past the front line's edge are held back until they are stable
     // (WHEEL_COMMIT_MS), so a first long partial shows one line.
     const lines = [...row.querySelectorAll('.bezel-wheel-line')].map((line) => line.textContent);
-    expect(lines).toEqual(['and then we can make it']);
+    expect(lines).toEqual(['and then we can make it more']);
     // Every bar stays mounted for the meter; alongside words four are shown.
     expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(PILL_BAR_COUNT);
     expect(container.querySelector<HTMLElement>('.overlay-waveform')!.dataset.bars).toBe('4');

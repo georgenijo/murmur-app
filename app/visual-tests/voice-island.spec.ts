@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { surfaceCases } from './surface-matrix';
-import { PILL_FIT_CHROME } from '../src/lib/overlayPillFit';
+import { PILL_FIT_CHROME, PILL_FIT_PAD, PILL_FIT_REST_W } from '../src/lib/overlayPillFit';
 import geometry from '../src/components/overlay/overlay-geometry.fixture.json' with { type: 'json' };
 
 for (const placement of ['notch', 'pill'] as const) {
@@ -185,6 +185,9 @@ for (const motion of ['no-preference', 'reduce'] as const) {
         expect(wave!.x).toBeGreaterThanOrEqual(glyph!.x + glyph!.width);
         expect(w.left).toBeGreaterThanOrEqual(wave!.x + wave!.width);
         expect(w.right).toBeLessThanOrEqual(capsule!.x + capsule!.width - 1);
+        // Tight edges: 1pt hairline plus 6pt padding each side, no more.
+        expect(glyph!.x - capsule!.x).toBeLessThanOrEqual(1 + PILL_FIT_PAD + 0.5);
+        expect(capsule!.x + capsule!.width - w.right).toBeLessThanOrEqual(1 + PILL_FIT_PAD + 0.5);
         expect(w.top).toBeGreaterThanOrEqual(capsule!.y);
         expect(w.bottom).toBeLessThanOrEqual(capsule!.y + capsule!.height);
         const shown = lines.filter(l => l.visible && l.opacity > 0.02);
@@ -279,7 +282,7 @@ async function recordWheel(page: import('@playwright/test').Page) {
   });
 }
 
-test('before words the fitted pill is the dot and the full waveform at the compact width', async ({ page }) => {
+test('before words the fitted pill hugs the dot and the full waveform', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'dark' });
   await page.setViewportSize({ width: 420, height: 200 });
   // A very slow stream: no word has arrived yet.
@@ -287,7 +290,7 @@ test('before words the fitted pill is the dot and the full waveform at the compa
   const pill = page.locator('.overlay-island');
   await expect(pill).toBeVisible();
   const box = (await pill.boundingBox())!;
-  expect([box.width, box.height]).toEqual([geometry.pillRecording.island.pillW, 34]);
+  expect([box.width, box.height]).toEqual([PILL_FIT_REST_W, 34]);
   expect(await visibleBars(page)).toBe(12);
   await expect(pill.locator('.bezel-wheel-hint')).toHaveCount(0);
   await expect(pill.locator('[class*="ring"], [class*="pulse"]')).toHaveCount(0);
@@ -297,6 +300,8 @@ test('before words the fitted pill is the dot and the full waveform at the compa
   const left = glyph!.x - box.x;
   const right = box.x + box.width - (wave!.x + wave!.width);
   expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+  // Tight edges, like the pill with words: no wide empty margins.
+  expect(left).toBeLessThanOrEqual(1 + PILL_FIT_PAD + 1.5);
 });
 
 for (const motion of ['no-preference', 'reduce'] as const) {
