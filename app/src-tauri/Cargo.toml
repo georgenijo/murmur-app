@@ -34,6 +34,18 @@ debug = "line-tables-only"
 debug = false
 strip = "none"
 
+# The source-ratchet tests (`dictation_executor/ratchet_tests.rs`, `audio_lifecycle_mirror_tests.rs`,
+# the `*_cutover_tests.rs`) parse the crate's own source with `syn`, and an unoptimized `syn`
+# made them 75% of all Rust test CPU. Optimizing only these three parsing crates cuts the
+# nextest suite from about 405 s to about 165 s of CPU. Dev/test profile only: the release
+# profile is untouched, and none of the three is linked into the shipped app.
+[profile.dev.package.syn]
+opt-level = 3
+[profile.dev.package.proc-macro2]
+opt-level = 3
+[profile.dev.package.quote]
+opt-level = 3
+
 [features]
 # Test-only capture helper executable injection.
 capture-test-support = []

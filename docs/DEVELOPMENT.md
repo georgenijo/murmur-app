@@ -42,11 +42,17 @@ cd app && npm run dev              # frontend only (no Rust backend)
 cd app && npm run tauri build      # production .app and .dmg
 
 # Tests
-cd app/src-tauri && cargo test -- --test-threads=1   # Rust (timing-sensitive; keep single-threaded)
-cd app/src-tauri && cargo nextest run --workspace --lib  # Rust unit tests, one process per test (exactly what CI runs)
+cd app/src-tauri && cargo nextest run --workspace --lib  # Rust unit tests, one process per test (exactly what CI runs; fast local default)
+cd app/src-tauri && cargo test -- --test-threads=1   # Rust, full: also the tests/ integration targets and doc tests (slower)
 cd app && npm test                                   # frontend vitest
 cd app && npx tsc --noEmit                           # TypeScript
 ```
+
+Prefer nextest for the unit tests: each test runs in its own process, which gives the
+isolation `--test-threads=1` was kept for, and the suite uses every core. Install it
+with `cargo install cargo-nextest --locked` (CI pins the version in `ci.yml`). Run
+`cargo test -- --test-threads=1` as well when you touch the `tests/` integration
+targets or doc tests, which `nextest run --lib` does not run.
 
 Every nextest run kills a test that runs past its budget: 120 s by default, 60 s for
 the golden scenarios, with a named override in `app/src-tauri/.config/nextest.toml`

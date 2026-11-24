@@ -22,10 +22,16 @@ Run each command from the repository root:
 python3 scripts/build_capture_helpers.py
 (cd app && npm run tauri:dev)
 (cd app/src-tauri && cargo check)
+(cd app/src-tauri && cargo nextest run --workspace --lib)
 (cd app/src-tauri && cargo test -- --test-threads=1)
 (cd app && npx tsc --noEmit)
 (cd app && npm test)
 ```
+
+For the Rust unit tests use `cargo nextest run --workspace --lib`: it is the command
+CI runs, one process per test, so it keeps the isolation of `--test-threads=1` and
+uses every core. `cargo test -- --test-threads=1` is the slower full run; it also
+covers the `tests/` integration targets and doc tests, which nextest `--lib` skips.
 
 On Apple Silicon macOS, build the bundled helpers before the first Rust check
 or Tauri build. Helper binaries are gitignored. See Development for packaging.

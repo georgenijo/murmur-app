@@ -100,7 +100,11 @@ fn lines_with(
     source
         .lines()
         .enumerate()
-        .filter(|(at, line)| (*first..=*last).contains(&(at + 1)) && line.contains(needle))
+        // Only the function's own lines: scanning the whole file for every function made
+        // these tests quadratic in the size of `recording.rs`.
+        .skip(first.saturating_sub(1))
+        .take((*last + 1).saturating_sub(*first))
+        .filter(|(_, line)| line.contains(needle))
         .map(|(at, _)| at + 1)
         .collect()
 }
