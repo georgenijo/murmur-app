@@ -265,7 +265,8 @@ For a local `.app` to install and test, use:
 cd app && npm run tauri:build:local
 ```
 
-It differs from `npm run tauri build` in two ways, and only for that local build:
+It runs `scripts/tauri_build_local.mjs`, which differs from
+`npm run tauri build` in three ways, and only for that local build:
 
 - `--bundles app` skips the `.dmg` (about 20 s). The `.app` and the updater
   archive are still produced; installing copies only the `.app` anyway.
@@ -273,6 +274,12 @@ It differs from `npm run tauri build` in two ways, and only for that local build
   compile of the `ui` crate, so a Rust or frontend change recompiles only what
   changed instead of the whole crate (about 79 s down to about 11 s on a busy
   Mac mini M4).
+- The type check runs beside vite and cargo instead of before them, and it is
+  incremental (`node_modules/.cache/murmur-local-build.tsbuildinfo`), so a
+  one-line edit re-checks only what it touches. A type error still fails the
+  command (and stops the build). `tauri build` and release CI keep the
+  sequential `tsc && vite build` of `beforeBuildCommand`; the script only
+  overrides that hook for its own invocation.
 
 Measured after a real one-line Rust or frontend change, median of 3 interleaved
 runs: `tauri build` 122.7 s, `--bundles app` 103.0 s, `tauri:build:local`
