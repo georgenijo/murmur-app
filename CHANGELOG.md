@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.67.3] - 2026-11-24
+
+<!-- Release notes generated using configuration in .github/release.yml at 536494666a2a41b88e80c9e6735b45459c151775 -->
+
+## What's Changed
+### Other Changes
+* chore(cleanup): remove dead Python helpers, unused imports and an orphan probe script by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1202
+* perf(frontend): keep jszip out of the eager bundle by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1204
+* perf(main): memoize PermissionsBanner against audio-level re-renders by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1205
+* perf(startup): lazy-load main-window Settings and Meetings panels by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1206
+* chore(cleanup): remove unused frontend files and dead exports by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1203
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.67.2...v0.67.3
+
 ## [0.67.2] - 2026-11-23
 
 <!-- Release notes generated using configuration in .github/release.yml at bc07c11e5715403c7659a39862a756d80c52ba27 -->
