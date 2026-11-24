@@ -502,6 +502,21 @@ margins of the window; a click in those margins still lands on the overlay
 window (the same 224pt footprint as before) and does nothing. Outside recording, the pill rests at 120pt. Reduce
 Motion applies each width at once. Long text becomes more lines, never a
 taller pill.
+
+Hovering the pill while dictating unrolls the wheel
+(`src/components/overlay/OverlayTranscript.tsx`). Once a line has rolled
+away, the hover card's content is `transcript` instead of the controls: the
+card keeps the words pill's 224pt width and grows 48pt upward
+(`TRANSCRIPT_DROPDOWN_H`, 224×82 in all), and the last three finished lines sit
+flat above the front line at its x and the wheel's 16pt pitch, at 60%, 38% and
+22% opacity, oldest on top. The front line stays where it is, and the row
+spans the card while it is open. Before the first line finishes, and once the
+dictation ends, hover shows the controls as before. A content change while
+the card is open resizes it through the same acknowledged writer
+(`useOverlayExpansion`); the geometry profile stays `controls`, because the
+card's size arrives with the expand acknowledgment and a profile refetch would
+blank the pill mid-dictation. The card is decoration for assistive technology:
+the wheel's live region already carries the words.
 The pill's overlay webview receives the partials itself
 (`useDictationPartial` with `presentNatively: false`): no Live Words window is
 built or shown for the pill (`ensure_window` and `show_dictation_preview`

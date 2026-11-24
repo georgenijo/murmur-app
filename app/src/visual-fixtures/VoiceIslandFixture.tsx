@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { OverlayIsland } from '../components/overlay/OverlayIsland';
 import { OverlayPill } from '../components/overlay/OverlayPill';
 import { OverlayDropdown } from '../components/overlay/OverlayDropdown';
+import { OverlayTranscript } from '../components/overlay/OverlayTranscript';
 import { OverlayMeetingSuggestion } from '../components/overlay/OverlayMeetingSuggestion';
 import { DictationPreviewCard } from '../components/dictation-preview/DictationPreviewApp';
 import { deriveVisual } from '../components/overlay/deriveVisual';
@@ -11,12 +12,15 @@ import { overlayPillFitWidth } from '../lib/overlayPillFit';
 import type { DictationStatus } from '../lib/types';
 
 const noop = () => {};
-const variants = ['idle', 'recording', 'processing', 'cancelled', 'miss', 'microphone', 'delivery', 'expanded', 'meeting', 'words', 'warning'] as const;
+const variants = ['idle', 'recording', 'processing', 'cancelled', 'miss', 'microphone', 'delivery', 'expanded', 'meeting', 'words', 'transcript', 'warning'] as const;
 type Variant = typeof variants[number];
-/** Floating-pill-only rows: the live words wheel, and the widened warning. */
-const PILL_ONLY: readonly Variant[] = ['words', 'warning'];
+/** Floating-pill-only rows: the live words wheel, its hover card (the wheel
+ * unrolled), and the widened warning. */
+const PILL_ONLY: readonly Variant[] = ['words', 'transcript', 'warning'];
 /** Synthetic words for the `words` row; `?text=` swaps in a long or CJK line. */
 const SYNTHETIC_WORDS = 'And it did not show up on the pill, so I think we can make it more minimal';
+/** Long enough to roll several lines away, for the `transcript` row. */
+const SYNTHETIC_TRANSCRIPT = 'Okay so for the next release I want the pill to stay really small while I am talking and then when I move the mouse over it I can see everything I said so far';
 
 /** `?stream=<ms>` reveals the words one at a time, like partials arriving, so
  * the wheel can be watched rolling. `?revise=<word>` then imitates a pause:
@@ -52,6 +56,7 @@ function geometryKey(variant: Variant, pill: boolean, external: boolean): keyof 
   if (variant === 'meeting') return pill ? 'pillMeetingSuggestion' : 'expandedMeetingNotched';
   if (variant === 'expanded') return pill ? 'pillExpanded' : 'expandedNotched';
   if (variant === 'words') return 'pillWords';
+  if (variant === 'transcript') return 'pillTranscript';
   if (variant === 'warning') return 'pillWarning';
   const activity = variant === 'idle' ? 'idle' : variant === 'recording' ? 'recording' : 'processing';
   if (pill) return activity === 'idle' ? 'pillIdle' : activity === 'recording' ? 'pillRecording' : 'pillProcessing';
@@ -64,7 +69,9 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
 }) {
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   const meeting = variant === 'meeting';
-  const expanded = meeting || variant === 'expanded';
+  const transcript = variant === 'transcript';
+  const wordsRow = variant === 'words' || transcript;
+  const expanded = meeting || variant === 'expanded' || transcript;
   const idle = variant === 'idle';
   const recording = variant === 'recording';
   const g: OverlayGeometry = variant === 'expanded' && !pill && (external || fallback)
@@ -72,14 +79,16 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
     : geometry[geometryKey(variant, pill, external)];
   const status: DictationStatus = variant === 'expanded'
     ? controlsState === 'still-connecting' ? 'starting' : controlsState
-    : recording || variant === 'words' || ['cancelled', 'miss', 'microphone'].includes(variant)
+    : recording || wordsRow || ['cancelled', 'miss', 'microphone'].includes(variant)
       ? 'recording' : variant === 'processing' ? 'processing' : 'idle';
   const visual = deriveVisual(status, variant === 'cancelled', variant === 'miss', false, variant === 'microphone' ? 'chooseMicrophone' : null, false, false, 'idle', variant === 'delivery',
     variant === 'warning' ? 'incomplete' : null);
-  const liveWords = useStreamedWords(variant === 'words' ? new URLSearchParams(location.search).get('text') ?? SYNTHETIC_WORDS : null);
+  const liveWords = useStreamedWords(wordsRow
+    ? new URLSearchParams(location.search).get('text') ?? (transcript ? SYNTHETIC_TRANSCRIPT : SYNTHETIC_WORDS) : null);
+  const [finished, setFinished] = useState<string[]>([]);
   // The words row hugs its front line, as OverlayWidget does.
   const [frontW, setFrontW] = useState<number | null>(null);
-  const fitW = variant === 'words' ? overlayPillFitWidth(true, 'words', g.island.pillW, true, frontW) : undefined;
+  const fitW = wordsRow ? overlayPillFitWidth(true, 'words', g.island.pillW, true, frontW) : undefined;
   useLayoutEffect(() => {
     if (status !== 'recording') return;
     barRefs.current.forEach((el, i) => {
@@ -94,10 +103,12 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
     }}>
       <OverlayIsland geometry={g} active={!idle} expanded={expanded} tapMissed={visual.showTapMissedLabel} fitW={fitW}>
         <OverlayPill geometry={g} visual={visual} status={status} barRefs={barRefs} liveWords={liveWords}
-          fitW={fitW} onFrontWidth={variant === 'words' ? setFrontW : undefined} />
+          fitW={transcript ? g.island.pillW : fitW} onFrontWidth={wordsRow ? setFrontW : undefined}
+          onFinishedLines={transcript ? setFinished : undefined} />
         {meeting ? <OverlayMeetingSuggestion geometry={g} expanded suggestion={{
           token: '88888888-8888-4888-8888-888888888888', title: 'Synthetic calendar: Product review', startMs: 1, endMs: 2,
         }} busy={false} error={null} onAccept={noop} onDismiss={noop} />
+          : transcript ? <OverlayTranscript geometry={g} expanded lines={finished} />
           // Production always mounts the dropdown, collapsed or not.
           : <OverlayDropdown geometry={g} expanded={expanded} status={status} stillConnecting={controlsState === 'still-connecting'}
             showTapMissed={false} disabled={false} autoPaste fileOutputEnabled={false}

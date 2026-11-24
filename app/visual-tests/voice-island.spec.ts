@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { surfaceCases } from './surface-matrix';
 import { PILL_FIT_CHROME, PILL_FIT_PAD, PILL_FIT_REST_W } from '../src/lib/overlayPillFit';
+import { TRANSCRIPT_LINES } from '../src/components/overlay/OverlayTranscript';
 import geometry from '../src/components/overlay/overlay-geometry.fixture.json' with { type: 'json' };
 
 for (const placement of ['notch', 'pill'] as const) {
@@ -303,6 +304,54 @@ test('before words the fitted pill hugs the dot and the full waveform', async ({
   // Tight edges, like the pill with words: no wide empty margins.
   expect(left).toBeLessThanOrEqual(1 + PILL_FIT_PAD + 1.5);
 });
+
+for (const appearance of ['light', 'dark'] as const) {
+  test(`hovering while dictating unrolls the wheel above the front line (${appearance})`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: appearance });
+    await page.setViewportSize({ width: 420, height: 240 });
+    await page.goto(`/visual-fixtures.html?state=voice-island&placement=pill&variant=transcript&appearance=${appearance}`);
+    const island = page.locator('[data-variant="transcript"] .overlay-island');
+    const g = geometry.pillTranscript;
+    // The card keeps the words pill's width and only grows taller.
+    await expect(island).toHaveCSS('width', `${g.windowW}px`);
+    await expect(island).toHaveCSS('height', `${g.expandedH}px`);
+    const card = page.getByTestId('overlay-transcript');
+    await expect(card).toHaveCSS('opacity', '1');
+    const lines = card.locator('.bezel-transcript-line');
+    await expect(lines).toHaveCount(TRANSCRIPT_LINES);
+    const box = (await island.boundingBox())!;
+    const front = (await page.locator('.bezel-wheel-line[data-front]').evaluate((line) => {
+      const range = document.createRange();
+      range.selectNodeContents(line);
+      const r = range.getBoundingClientRect();
+      return { left: r.left, top: r.top, bottom: r.bottom, text: line.textContent ?? '' };
+    }));
+    const rows = await lines.evaluateAll((els) => els.map((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const r = range.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, opacity: Number(getComputedStyle(el).opacity),
+        clipped: el.scrollWidth > el.clientWidth };
+    }));
+    // Same x as the front line, one 16px pitch apart, inside the capsule,
+    // nothing cut, and dimmer the older the line.
+    let below = front.top;
+    for (const row of [...rows].reverse()) {
+      expect(Math.abs(row.left - front.left)).toBeLessThanOrEqual(0.5);
+      expect(row.bottom).toBeLessThanOrEqual(below + 0.5);
+      expect(below - row.bottom).toBeLessThanOrEqual(4);
+      expect(row.top).toBeGreaterThanOrEqual(box.y + 1);
+      expect(row.right).toBeLessThanOrEqual(box.x + box.width - 1 - PILL_FIT_PAD + 0.5);
+      expect(row.clipped).toBe(false);
+      below = row.top;
+    }
+    expect(rows.map((row) => row.opacity)).toEqual([...rows.map((row) => row.opacity)].sort((a, b) => a - b));
+    expect(rows[rows.length - 1].opacity).toBeLessThan(1);
+    // The front line keeps its place at the bottom of the card.
+    expect(front.bottom).toBeLessThanOrEqual(box.y + box.height - 1);
+    expect(front.top).toBeGreaterThanOrEqual(box.y + box.height - g.collapsedH);
+  });
+}
 
 for (const motion of ['no-preference', 'reduce'] as const) {
   test(`re-guessing the tail word across the line edge never rolls the wheel back (${motion})`, async ({ page }) => {

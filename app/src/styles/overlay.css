@@ -218,6 +218,33 @@
 /* Reduce Motion: one flat line and an opacity crossfade, no roll. */
 .bezel-wheel-fade { animation: bezel-wheel-fade 200ms ease-out both; }
 @keyframes bezel-wheel-fade { from { opacity: 0; } }
+/* The hover card while dictating: the wheel unrolled. The finished lines sit
+   flat above the front line at its x and 16px pitch (OverlayTranscript). */
+.bezel-transcript {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  padding-top: 8px;
+  overflow: hidden;
+  /* The wheel's type: the row's 11px at the wheel's weight. */
+  --ui-font-pill-words: 11px;
+  font-size: var(--ui-font-pill-words);
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: 0;
+  text-align: left;
+  pointer-events: none;
+}
+.bezel-transcript-line {
+  height: 16px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: bezel-transcript-in 260ms ease-out both;
+}
+@keyframes bezel-transcript-in { from { opacity: 0; transform: translateY(4px); } }
 /* The hover strip: one segmented control above the capsule. */
 .bezel-strip {
   display: flex;
@@ -270,6 +297,7 @@
   .live-words-card { transition: none !important; }
   .bezel-segment, .bezel-meeting-dismiss { transition: none; }
   .bezel-wheel-word-in { animation: none; }
+  .bezel-transcript-line { animation: none; }
   /* The crossfade is the Reduce Motion substitute for the roll; keep it past
      the global guard that collapses animation durations. */
   .bezel-wheel-fade { animation-duration: 200ms !important; }

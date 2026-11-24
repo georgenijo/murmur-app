@@ -14,6 +14,7 @@ import { useSmartAutoMicrophoneStatus } from '../lib/hooks/useSmartAutoMicrophon
 import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
+import { OverlayTranscript } from './overlay/OverlayTranscript';
 import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatus } from '../lib/meetings';
 import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib/smartAutoMicrophone';
 import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
@@ -50,10 +51,10 @@ export function OverlayWidget() {
     && !meetingBusy
     && !disabled
     && !calibrating;
-  const overlayContent: OverlayContent = showMeetingSuggestion
-    ? 'meeting_suggestion'
-    : 'controls';
-  const geometry = useOverlayGeometry(overlayContent);
+  // The geometry profile: the transcript card needs none of its own, its
+  // size arrives with the expand acknowledgment (`overlay-surface-changed`),
+  // and a profile change would blank the pill mid-dictation.
+  const geometry = useOverlayGeometry(showMeetingSuggestion ? 'meeting_suggestion' : 'controls');
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
   useApplySavedOverlayOffset(geometry, settingsMirror.overlayVerticalOffset);
@@ -118,6 +119,14 @@ export function OverlayWidget() {
   // The floating pill carries the words itself; the notch keeps its own window.
   const liveWordsText = useDictationPartial(floatingPill && settingsMirror.overlayLiveWords,
     { presentNatively: false });
+  // Hovering the pill while dictating unrolls the wheel: once a line has
+  // rolled away, the card shows the lines already said instead of the controls.
+  const [finishedLines, setFinishedLines] = useState<string[]>([]);
+  const showTranscript = floatingPill && settingsMirror.overlayLiveWords && status === 'recording'
+    && finishedLines.length > 0 && !showMeetingSuggestion;
+  const overlayContent: OverlayContent = showMeetingSuggestion
+    ? 'meeting_suggestion'
+    : showTranscript ? 'transcript' : 'controls';
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
     useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent,
       activity, placement: settingsMirror.overlayPlacement, pillSize, hoverEnabled: !pillHidden });
@@ -267,8 +276,11 @@ export function OverlayWidget() {
           deliveryCue={runtime.deliveryCue}
           done={showDone}
           liveWords={floatingPill && settingsMirror.overlayLiveWords ? liveWordsText : null}
-          fitW={fitW}
+          // Unrolled, the row spans the card so the front line keeps the x of
+          // the lines above it.
+          fitW={expanded && showTranscript ? geometry.island.pillW : fitW}
           onFrontWidth={setFrontW}
+          onFinishedLines={setFinishedLines}
           onRetryDelivery={runtime.retryDelivery}
           onPauseDeliveryTimer={runtime.pauseDeliveryTimer}
           onResumeDeliveryTimer={runtime.resumeDeliveryTimer}
@@ -283,6 +295,8 @@ export function OverlayWidget() {
             onAccept={() => void meetingSuggestion.accept()}
             onDismiss={() => void meetingSuggestion.dismiss()}
           />
+        ) : showTranscript ? (
+          <OverlayTranscript geometry={geometry} expanded={expanded} lines={finishedLines} />
         ) : (
           <OverlayDropdown
             geometry={geometry}
