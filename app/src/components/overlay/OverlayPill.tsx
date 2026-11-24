@@ -17,7 +17,7 @@ interface OverlayPillProps {
   deliveryCue?: OverlayDeliveryCue | null;
   /** The finish just landed (the floating pill shows a check for it). */
   done?: boolean;
-  /** The floating pill's live words while recording, shown on a two-line
+  /** The floating pill's live words while recording, shown on a word
    * wheel. `null` when Live Words is off (the pill is then just the dot and
    * the waveform). */
   liveWords?: string | null;
@@ -69,7 +69,7 @@ export function OverlayPill({
       // The capsule's hairline border takes layout space; centre the row inside it.
       // The row is as wide as the capsule, not the (possibly larger) native
       // window, so a width change reveals it from the centre and never reflows.
-      <div className="overlay-pill-row bezel-row" data-words={liveWords !== null && visual.indicator.kind === 'recording' || undefined} style={{
+      <div className="overlay-pill-row bezel-row" style={{
         height: topH - 2 * PILL_BORDER,
         width: geometry.island.pillW - 2 * PILL_BORDER,
         alignSelf: 'center',
