@@ -40,6 +40,7 @@ assistant — you do not need to place model files by hand.
 cd app && npm run tauri:dev        # full app, isolated bundle/data, hot reload
 cd app && npm run dev              # frontend only (no Rust backend)
 cd app && npm run tauri build      # production .app and .dmg
+cd app && npm run tauri:build:local  # local release .app only, ~3.5x faster rebuilds (see below)
 
 # Tests
 cd app/src-tauri && cargo test -- --test-threads=1   # Rust (timing-sensitive; keep single-threaded)
@@ -249,6 +250,31 @@ embeds every `dist` file through `tauri::generate_context!`, so a rewrite with
 identical bytes would still recompile the `ui` crate (about 30 s). Keep the sync
 step: a build with an unchanged frontend then skips that recompile. A real
 frontend change still recompiles `ui`.
+
+### Fast local release build
+
+For a local `.app` to install and test, use:
+
+```bash
+cd app && npm run tauri:build:local
+```
+
+It differs from `npm run tauri build` in two ways, and only for that local build:
+
+- `--bundles app` skips the `.dmg` (about 20 s). The `.app` and the updater
+  archive are still produced; installing copies only the `.app` anyway.
+- `CARGO_PROFILE_RELEASE_INCREMENTAL=true` lets rustc reuse the previous
+  compile of the `ui` crate, so a Rust or frontend change recompiles only what
+  changed instead of the whole crate (about 79 s down to about 11 s on a busy
+  Mac mini M4).
+
+Measured after a real one-line Rust or frontend change, median of 3 interleaved
+runs: `tauri build` 122.7 s, `--bundles app` 103.0 s, `tauri:build:local`
+34.6 s. The binary is the same release profile (opt-level `s`, `panic = abort`);
+incremental mode can make it marginally different in size (+0.5 %) and code
+layout, so release CI keeps the non-incremental `tauri build` and every shipped
+artifact is unchanged. Switching between the two commands in one checkout
+recompiles `ui` once.
 
 ### Shadow soak build (temporary, issue #1154)
 

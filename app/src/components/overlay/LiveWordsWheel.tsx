@@ -7,12 +7,10 @@ import {
 
 /** Words measured per string; bounded so a long dictation cannot grow it. */
 const MEASURE_CACHE_LIMIT = 4000;
-/** Fallback when the webview cannot measure text (unit tests): about 7.5px
- * per code point at the wheel's 15px. */
-const FALLBACK_CHAR_W = 7.5;
-const FALLBACK_LINE_W = 225;
-/** Lines are inset this far from each side of the wheel, inside the band. */
-const LINE_INSET = 6;
+/** Fallback when the webview cannot measure text (unit tests): about 6px
+ * per code point at the pill's 11px. */
+const FALLBACK_CHAR_W = 6;
+const FALLBACK_LINE_W = 130;
 
 type Measure = (s: string) => number;
 
@@ -33,12 +31,13 @@ function createMeasure(font: string): Measure {
   };
 }
 
-/** The floating pill's Live Words: a two-line picker wheel. The line being
- * spoken sits in front, a little below centre; each finished line rolls up and
- * back over a cylinder, dimming and softening, driven by a critically damped
- * spring so it never jumps. New words fade in from a slight blur. The pill's
- * size is native and fixed: long text becomes more lines, never a wider pill.
- * Under Reduce Motion there is no roll, only a crossfade between lines. */
+/** The floating pill's Live Words on a picker wheel inside the slim pill.
+ * The line being spoken sits in front, vertically centred; each finished line
+ * rolls up and back out of the top over a cylinder, dimming and softening,
+ * driven by a critically damped spring so it never jumps. At rest only the
+ * front line shows. New words fade in from a slight blur. The pill's size is
+ * native and fixed: long text becomes more lines, never a bigger pill. Under
+ * Reduce Motion there is no roll, only a crossfade between lines. */
 export function LiveWordsWheel({ text }: { text: string }) {
   const wheel = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion() ?? false;
@@ -51,7 +50,7 @@ export function LiveWordsWheel({ text }: { text: string }) {
     const style = getComputedStyle(el);
     const measure = createMeasure(`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`);
     const read = () => {
-      const width = el.clientWidth ? el.clientWidth - 2 * LINE_INSET : FALLBACK_LINE_W;
+      const width = el.clientWidth || FALLBACK_LINE_W;
       setFrame((prev) => prev && prev.width === width ? prev : { width, measure });
     };
     read();
@@ -74,7 +73,6 @@ export function LiveWordsWheel({ text }: { text: string }) {
     <div className="bezel-wheel" ref={wheel} data-motion={reduced ? 'reduce' : 'roll'}>
       {/* Screen readers get the words once, as text; the wheel is decoration. */}
       <span className="sr-only" role="status" aria-live="polite" aria-label="Words recognized so far">{tail}</span>
-      <div className="bezel-wheel-band" aria-hidden="true" />
       {!tail ? (
         <div className="bezel-wheel-line bezel-wheel-hint" data-front aria-hidden="true">Listening…</div>
       ) : !lines.length ? null : reduced ? (
@@ -152,18 +150,12 @@ function RollingLines({ lines, first, newest }: { lines: WheelLine[]; first: num
   })}</>;
 }
 
-/** Reduce Motion: two flat slots, the previous line dimmed above the front
- * one. A new line fades in where it lands; nothing moves or turns. */
+/** Reduce Motion: one flat line. A new line fades in in place of the old
+ * one; nothing moves or turns. */
 function CrossfadeLines({ lines, newest }: { lines: WheelLine[]; newest: number }) {
-  const previous = newest > 0 ? lines[newest - 1] : null;
-  return <>
-    {previous && (
-      <div key={`p${newest - 1}`} className="bezel-wheel-line bezel-wheel-fade" data-slot="previous" aria-hidden="true">
-        <LineWords words={previous} animate={false} />
-      </div>
-    )}
-    <div key={`f${newest}`} className="bezel-wheel-line bezel-wheel-fade" data-slot="front" data-front aria-hidden="true">
+  return (
+    <div key={newest} className="bezel-wheel-line bezel-wheel-fade" data-front aria-hidden="true">
       <LineWords words={lines[newest] ?? []} animate={false} />
     </div>
-  </>;
+  );
 }
