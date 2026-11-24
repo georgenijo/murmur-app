@@ -343,36 +343,48 @@ describe('OverlayPill transient cues', () => {
     />
   );
 
-  it('puts the newest words on one line inside the recording pill, after the dot and waveform', async () => {
+  it('puts the live words on a wheel inside the recording pill, after the dot and waveform', async () => {
     await act(async () => root.render(recordingPill('and then we can make it more minimal')));
     const row = container.querySelector<HTMLElement>('.bezel-row')!;
     expect(row.style.width).toBe(`${geometryFixture.pillWords.island.pillW - 2}px`);
+    expect(row.style.height).toBe(`${geometryFixture.pillWords.collapsedH - 2}px`);
+    expect(row.hasAttribute('data-words')).toBe(true);
     expect([...row.children].map((child) => child.className.split(' ')[0]))
-      .toEqual(['bezel-glyph', 'overlay-waveform', 'bezel-words']);
-    expect(row.querySelector('.bezel-words')?.textContent).toBe('and then we can make it more minimal');
+      .toEqual(['bezel-glyph', 'overlay-waveform', 'bezel-wheel']);
+    const lines = [...row.querySelectorAll('.bezel-wheel-line')].map((line) => line.textContent);
+    expect(lines.join(' ')).toBe('and then we can make it more minimal');
     expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(PILL_BAR_COUNT);
     // One object: no second words surface is mounted anywhere.
     expect(container.querySelector('.live-words-card, .live-words-window')).toBeNull();
-    // Words are announced politely and never act as a control.
-    const status = container.querySelector('.bezel-words [role="status"]');
+    // Words are announced politely, once, and never act as a control.
+    const status = container.querySelector('.bezel-wheel [role="status"]');
     expect(status?.getAttribute('aria-live')).toBe('polite');
     expect(status?.getAttribute('aria-label')).toBe('Words recognized so far');
+    expect(status?.textContent).toBe('and then we can make it more minimal');
+    expect([...row.querySelectorAll('.bezel-wheel-line')].every((line) => line.getAttribute('aria-hidden') === 'true')).toBe(true);
     expect(container.querySelector('button')).toBeNull();
   });
 
   it('shows only the dot and the waveform when Live Words is off', async () => {
     await act(async () => root.render(recordingPill(null)));
-    expect(container.querySelector('.bezel-words')).toBeNull();
+    expect(container.querySelector('.bezel-wheel')).toBeNull();
+    expect(container.querySelector('.bezel-row')!.hasAttribute('data-words')).toBe(false);
     expect(container.querySelectorAll('.bezel-row > *')).toHaveLength(2);
   });
 
-  it('keeps the line to the tail of a very long dictation, cutting only at a word boundary', async () => {
+  it('shows Listening before the first words', async () => {
+    await act(async () => root.render(recordingPill('')));
+    expect(container.querySelector('.bezel-wheel-hint')?.textContent).toBe('Listening…');
+    expect(container.querySelector('.bezel-wheel [role="status"]')?.textContent).toBe('');
+  });
+
+  it('keeps a long dictation to a few lines in the DOM and announces only its tail', async () => {
     const long = 'synthetic words '.repeat(60);
     await act(async () => root.render(recordingPill(long)));
-    const shown = container.querySelector('.bezel-words')!.textContent!;
-    expect(shown.length).toBeLessThanOrEqual(160);
-    expect(shown.startsWith('synthetic') || shown.startsWith('words')).toBe(true);
-    expect(shown).not.toMatch(/\s{2}/);
+    expect(container.querySelectorAll('.bezel-wheel-line').length).toBeLessThanOrEqual(4);
+    const announced = container.querySelector('.bezel-wheel [role="status"]')!.textContent!;
+    expect(announced.length).toBeLessThanOrEqual(160);
+    expect(announced).not.toMatch(/\s{2}/);
   });
 
   it('mirrors the model problem in the notch left wing without a waveform', async () => {

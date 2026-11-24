@@ -54,7 +54,8 @@ for (const placement of ['notch', 'pill'] as const) {
           // One object: the floating pill has no separate words box at all.
           await expect(words).toHaveCount(0);
           await expect(fixture.locator('.live-words-window')).toHaveCount(0);
-          await expect(fixture.locator('[data-variant="words"] .bezel-words')).toBeVisible();
+          await expect(fixture.locator('[data-variant="words"] .bezel-wheel')).toBeVisible();
+          await expect(fixture.locator('[data-variant="words"] .overlay-island')).toHaveCSS('height', `${geometry.pillWords.collapsedH}px`);
         } else {
           await expect(words).toHaveCSS('padding-left', '14px');
           await expect(words).toHaveCSS('font-size', '13px');
@@ -89,70 +90,142 @@ const WORDS = {
   fast: 'one two three four five six seven eight nine ten eleven twelve '.repeat(10),
 };
 
-for (const appearance of ['light', 'dark'] as const) {
-  for (const [name, text] of Object.entries(WORDS)) {
-    test(`floating pill keeps ${name} words on one line inside a fixed ${appearance} capsule`, async ({ page }) => {
-      await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: appearance });
-      await page.setViewportSize({ width: 420, height: 200 });
-      await page.goto(`/visual-fixtures.html?state=voice-island&placement=pill&variant=words&appearance=${appearance}&text=${encodeURIComponent(text)}`);
-      const pill = page.locator('.overlay-island');
-      const row = pill.locator('.bezel-row');
-      const line = pill.locator('.bezel-words');
-      await expect(line).toBeVisible();
-      await page.evaluate(() => document.fonts.ready);
-      const [capsule, rowBox, glyph, wave, lineBox] = await Promise.all([
-        pill.boundingBox(), row.boundingBox(), pill.locator('.bezel-glyph').boundingBox(),
-        pill.locator('.overlay-waveform').boundingBox(), line.boundingBox(),
-      ]);
-      // The capsule keeps its fixed words width and slim height whatever the text.
-      expect(capsule!.width).toBe(geometry.pillWords.windowW);
-      expect(capsule!.height).toBe(geometry.pillWords.collapsedH);
-      // Dot, waveform and words sit side by side, inside the capsule.
-      expect(glyph!.x).toBeGreaterThanOrEqual(capsule!.x + 1);
-      expect(wave!.x).toBeGreaterThanOrEqual(glyph!.x + glyph!.width);
-      expect(lineBox!.x).toBeGreaterThanOrEqual(wave!.x + wave!.width);
-      expect(lineBox!.x + lineBox!.width).toBeLessThanOrEqual(capsule!.x + capsule!.width - 1);
-      expect(rowBox!.x + rowBox!.width).toBeLessThanOrEqual(capsule!.x + capsule!.width);
-      // One line: the text never wraps, so the line is never taller than the capsule's row.
-      const metrics = await line.evaluate(el => {
-        const span = el.querySelector('span')!;
-        const range = document.createRange();
-        range.selectNodeContents(span);
-        const rects = [...range.getClientRects()];
-        const tops = new Set(rects.map(r => Math.round(r.top)));
-        return { lines: tops.size, whiteSpace: getComputedStyle(el).whiteSpace, overflow: el.getAttribute('data-overflow') };
-      });
-      expect(metrics.lines).toBeLessThanOrEqual(1);
-      expect(metrics.whiteSpace).toBe('nowrap');
-      // Text that does not fit fades in from the left and shows its newest end.
-      const scrolled = await line.evaluate(el => ({ end: Math.abs(el.scrollWidth - el.clientWidth - el.scrollLeft) < 2, wide: el.scrollWidth > el.clientWidth }));
-      if (scrolled.wide) {
-        expect(metrics.overflow).toBe('true');
-        expect(scrolled.end).toBe(true);
-        expect(await line.evaluate(el => getComputedStyle(el).maskImage)).toContain('linear-gradient');
-      } else {
-        expect(metrics.overflow).toBe('false');
-      }
-      // No separate words box exists anywhere.
-      await expect(page.locator('.live-words-card, .live-words-window')).toHaveCount(0);
+type LineState = {
+  top: number; bottom: number; left: number; right: number;
+  opacity: number; visible: boolean; front: boolean; blur: string;
+  transform: string; scrollWidth: number; clientWidth: number; text: string;
+};
+
+/** Every wheel line's projected box and effective visibility. */
+async function wheelLines(page: import('@playwright/test').Page) {
+  return page.locator('.bezel-wheel').evaluate((wheel) => {
+    const lines = [...wheel.querySelectorAll<HTMLElement>('.bezel-wheel-line')].map((el): LineState => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return {
+        top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+        opacity: Number(cs.opacity), visible: cs.visibility === 'visible', front: el.hasAttribute('data-front'),
+        blur: cs.filter, transform: cs.transform, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+        text: el.textContent ?? '',
+      };
     });
+    const w = wheel.getBoundingClientRect();
+    return { wheel: { top: w.top, bottom: w.bottom, left: w.left, right: w.right, height: w.height }, lines };
+  });
+}
+
+for (const motion of ['no-preference', 'reduce'] as const) {
+  for (const appearance of ['light', 'dark'] as const) {
+    for (const [name, text] of Object.entries(WORDS)) {
+      test(`floating pill wheel keeps ${name} words inside the fixed ${appearance} capsule (${motion})`, async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: motion, colorScheme: appearance });
+        await page.setViewportSize({ width: 420, height: 200 });
+        await page.goto(`/visual-fixtures.html?state=voice-island&placement=pill&variant=words&appearance=${appearance}&text=${encodeURIComponent(text)}`);
+        const pill = page.locator('.overlay-island');
+        const wheel = pill.locator('.bezel-wheel');
+        await expect(wheel).toBeVisible();
+        await page.evaluate(() => document.fonts.ready);
+        // Let the word fade-ins finish so opacity and blur are at rest.
+        await page.waitForTimeout(motion === 'reduce' ? 300 : 600);
+        const [capsule, glyph, wave] = await Promise.all([
+          pill.boundingBox(), pill.locator('.bezel-glyph').boundingBox(), pill.locator('.overlay-waveform').boundingBox(),
+        ]);
+        // The capsule keeps its fixed wheel size whatever the text.
+        expect(capsule!.width).toBe(geometry.pillWords.windowW);
+        expect(capsule!.height).toBe(geometry.pillWords.collapsedH);
+        const { wheel: w, lines } = await wheelLines(page);
+        // Dot, waveform and the wheel sit side by side, inside the capsule.
+        expect(wave!.x).toBeGreaterThanOrEqual(glyph!.x + glyph!.width);
+        expect(w.left).toBeGreaterThanOrEqual(wave!.x + wave!.width);
+        expect(w.right).toBeLessThanOrEqual(capsule!.x + capsule!.width - 1);
+        expect(w.top).toBeGreaterThanOrEqual(capsule!.y);
+        expect(w.bottom).toBeLessThanOrEqual(capsule!.y + capsule!.height);
+        const shown = lines.filter(l => l.visible && l.opacity > 0.02);
+        expect(lines.length).toBeLessThanOrEqual(4);
+        // Every visible line stays inside the wheel and never overflows sideways
+        // (a long word or CJK is cut into lines, never wider than the pill).
+        for (const line of shown) {
+          expect(line.left).toBeGreaterThanOrEqual(w.left - 0.5);
+          expect(line.right).toBeLessThanOrEqual(w.right + 0.5);
+          expect(line.top).toBeGreaterThanOrEqual(w.top - 0.5);
+          expect(line.bottom).toBeLessThanOrEqual(w.bottom + 0.5);
+          expect(line.scrollWidth).toBeLessThanOrEqual(line.clientWidth + 1);
+        }
+        // The front line is the newest words, fully lit, sharp and inside the
+        // mask's opaque band (40% to 86% of the wheel height).
+        const front = shown.filter(l => l.front);
+        expect(front).toHaveLength(1);
+        expect(front[0].opacity).toBe(1);
+        expect(front[0].blur).toBe('none');
+        expect(front[0].top).toBeGreaterThanOrEqual(w.top + 0.4 * w.height - 0.5);
+        expect(front[0].bottom).toBeLessThanOrEqual(w.top + 0.86 * w.height + 0.5);
+        expect(text.replace(/\s+/g, ' ').trim().endsWith(front[0].text.replace(/\s+/g, ' ').trim().slice(-8))).toBe(true);
+        // At most the previous line shows, above the front one, dimmed.
+        const others = shown.filter(l => !l.front && l.opacity > 0.1);
+        expect(others.length).toBeLessThanOrEqual(1);
+        for (const line of others) {
+          expect(line.bottom).toBeLessThanOrEqual(front[0].top + 1);
+          expect(line.opacity).toBeLessThan(0.6);
+        }
+        if (name === 'sentence' || name === 'fast' || name === 'cjk' || name === 'longWord') expect(others).toHaveLength(1);
+        if (name === 'short') expect(others).toHaveLength(0);
+        // Reduce Motion: flat lines, no 3D transform anywhere in the wheel.
+        if (motion === 'reduce') {
+          for (const line of lines) expect(line.transform).not.toContain('matrix3d');
+          expect(await wheel.evaluate(el => el.querySelectorAll('[style*="rotate"], [style*="translateZ"]').length)).toBe(0);
+        }
+        // No separate words box exists anywhere.
+        await expect(page.locator('.live-words-card, .live-words-window')).toHaveCount(0);
+      });
+    }
   }
 }
 
-test('the warning widens the floating pill and its phrase fits; the normal pill is narrower again', async ({ page }) => {
+test('streamed words roll finished lines up and back over the wheel', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference', colorScheme: 'dark' });
+  await page.setViewportSize({ width: 420, height: 200 });
+  const text = WORDS.sentence + ' and then a few more words so that it keeps on rolling';
+  await page.goto(`/visual-fixtures.html?state=voice-island&placement=pill&variant=words&stream=60&text=${encodeURIComponent(text)}`);
+  await expect(page.locator('.bezel-wheel')).toBeVisible();
+  // Sample the roll while words arrive: lines turn through 3D, never jump.
+  let rotated = false;
+  for (let i = 0; i < 40 && !rotated; i++) {
+    const { lines } = await wheelLines(page);
+    rotated = lines.some(l => l.visible && l.opacity > 0.02 && l.transform.startsWith('matrix3d'));
+    if (!rotated) await page.waitForTimeout(50);
+  }
+  expect(rotated).toBe(true);
+  await page.waitForFunction(() => (window as unknown as { __wheelStream?: string }).__wheelStream === 'done');
+  await page.waitForTimeout(1200);
+  const { wheel: w, lines } = await wheelLines(page);
+  const front = lines.filter(l => l.front);
+  expect(front).toHaveLength(1);
+  expect(front[0].opacity).toBe(1);
+  expect(front[0].text.trim().endsWith('rolling')).toBe(true);
+  const shown = lines.filter(l => l.visible && l.opacity > 0.1 && !l.front);
+  expect(shown.length).toBeLessThanOrEqual(1);
+  for (const line of lines.filter(l => l.visible && l.opacity > 0.02)) {
+    expect(line.top).toBeGreaterThanOrEqual(w.top - 0.5);
+    expect(line.bottom).toBeLessThanOrEqual(w.bottom + 0.5);
+  }
+});
+
+test('the warning widens the slim pill and its phrase fits; the wheel pill is the largest', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 420, height: 320 });
   await page.goto('/visual-fixtures.html?state=voice-island&placement=pill&appearance=dark');
-  const widthOf = async (variant: string) =>
-    (await page.locator(`[data-variant="${variant}"] .overlay-island`).boundingBox())!.width;
-  const normal = await widthOf('words');
-  const warning = await widthOf('warning');
-  const compact = await widthOf('recording');
-  expect(compact).toBe(geometry.pillRecording.windowW);
-  expect(normal).toBe(geometry.pillWords.windowW);
-  expect(warning).toBe(geometry.pillWarning.windowW);
-  expect(compact).toBeLessThan(normal);
-  expect(normal).toBeLessThan(warning);
+  const boxOf = async (variant: string) =>
+    (await page.locator(`[data-variant="${variant}"] .overlay-island`).boundingBox())!;
+  const words = await boxOf('words');
+  const warning = await boxOf('warning');
+  const compact = await boxOf('recording');
+  expect([compact.width, compact.height]).toEqual([geometry.pillRecording.windowW, geometry.pillRecording.collapsedH]);
+  expect([words.width, words.height]).toEqual([geometry.pillWords.windowW, geometry.pillWords.collapsedH]);
+  expect([warning.width, warning.height]).toEqual([geometry.pillWarning.windowW, geometry.pillWarning.collapsedH]);
+  expect(compact.width).toBeLessThan(warning.width);
+  expect(warning.width).toBeLessThan(words.width);
+  expect(compact.height).toBe(warning.height);
+  expect(warning.height).toBeLessThan(words.height);
   const island = page.locator('[data-variant="warning"] .overlay-island');
   const phrase = island.getByText('Model incomplete', { exact: true });
   const chip = island.locator('.bezel-chip');
@@ -168,7 +241,7 @@ test('floating pill words need no separate native window box and Live Words off 
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/visual-fixtures.html?state=voice-island&placement=pill&variant=recording');
   const row = page.locator('[data-variant="recording"] .bezel-row');
-  await expect(row.locator('.bezel-words')).toHaveCount(0);
+  await expect(row.locator('.bezel-wheel')).toHaveCount(0);
   await expect(row.locator('> *')).toHaveCount(2);
 });
 

@@ -13,9 +13,10 @@ export interface OverlayGeometry {
 }
 export type OverlayActivity = 'idle' | 'recording' | 'processing';
 export type OverlayPlacement = 'notch' | 'floating_pill';
-/** How wide the floating pill rests; Rust owns the pixels. `compact` is the
- * dot and waveform alone (Live Words off), `words` adds one line of words and
- * is fixed for a whole dictation, `warning` is the only width change. */
+/** How big the floating pill rests; Rust owns the pixels. `compact` is the
+ * dot and waveform alone (Live Words off), `words` adds the two-line word
+ * wheel (wider and taller) and is fixed for a whole dictation, `warning` is
+ * the slim pill widened for a speech-model cue. */
 export type OverlayPillSize = 'compact' | 'words' | 'warning';
 /** The pill width the overlay asks for. The notch has none. A speech-model
  * warning beats words, which beat compact. `liveWordsConsented` is false until
