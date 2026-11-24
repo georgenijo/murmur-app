@@ -1,5 +1,22 @@
 # Decisions Log
 
+## 2026-11-24: The word wheel pill goes back to 224×34pt
+
+**Decision:** The Live Words pill returns to 224×34pt, the same 34pt height as
+the compact (120×34) and warning (256×34) pills; `pillSize` sets the width
+only again. The selection band is removed. The wheel keeps its motion (27°
+per line, 1.1px blur per line, spring k = 90, words fading in) fitted to the
+slim pill: the front line is vertically centred at the row's 11px, each
+finished line rolls up and back out of the top and is gone at rest, and the
+next line fades in at the front instead of rolling up from below. This
+supersedes the 340×58 size and the band in the entry below.
+
+**Why:** George found the shipped 340×58 pill far too large, the band read
+as a text field, and the previous line sat above the words as an unreadable
+blur.
+
+**Status:** active
+
 ## 2026-11-24: The floating pill's Live Words roll on a two-line wheel
 
 **Decision:** The pill's Live Words become a two-line picker wheel: the line
@@ -15,7 +32,7 @@ Reduce Motion uses a flat crossfade. This supersedes the one-line part of the
 scrolled away). He chose the rolling two-line variant from mockups and
 approved these settings on a rendering.
 
-**Status:** active
+**Status:** superseded in part (size and band) by "The word wheel pill goes back to 224×34pt"
 
 ## 2026-11-22: The floating pill is one object with one line of words
 

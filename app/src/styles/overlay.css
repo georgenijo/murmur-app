@@ -73,8 +73,6 @@
   --bezel-ink: rgb(255, 255, 255);
   --bezel-sel: rgba(255, 255, 255, 0.1);
   --bezel-sel-strong: rgba(255, 255, 255, 0.18);
-  --bezel-band: rgba(255, 255, 255, 0.07);
-  --bezel-band-edge: rgba(255, 255, 255, 0.1);
   color: var(--bezel-ink);
   font-family: var(--ui-font-sans);
 }
@@ -85,8 +83,6 @@
     --bezel-ink: rgba(0, 0, 0, 0.87);
     --bezel-sel: rgba(0, 0, 0, 0.06);
     --bezel-sel-strong: rgba(0, 0, 0, 0.11);
-    --bezel-band: rgba(0, 0, 0, 0.045);
-    --bezel-band-edge: rgba(0, 0, 0, 0.06);
   }
 }
 .bezel-surface {
@@ -174,54 +170,33 @@
   border-radius: 8px;
   background: var(--bezel-sel-strong);
 }
-/* Live Words in the pill: a two-line picker wheel. The pill's size is native
-   and fixed; the wheel fills what the dot and waveform leave. The line being
-   spoken sits in front, 6px below centre; LiveWordsWheel rolls finished lines
-   up and back over a cylinder (inline transforms, spring-driven). The mask
-   fades the rolled-back line into the top edge. Values mirror
+/* Live Words in the pill: a picker wheel inside the slim capsule. The pill's
+   size is native and fixed; the wheel fills what the dot and waveform leave.
+   The line being spoken sits in front, vertically centred, at the row's 11px;
+   LiveWordsWheel rolls each finished line up and back out of the top
+   (inline transforms, spring-driven). The mask fades the top and bottom edges
+   so a line turning away or coming in never shows a hard cut. Values mirror
    src/lib/liveWordsWheel.ts. */
-.bezel-row[data-words] {
-  gap: 10px;
-  padding: 0 14px 0 16px;
-}
 .bezel-wheel {
-  --ui-font-pill-words: 15px;
   position: relative;
   flex: 1 1 0;
   min-width: 0;
   align-self: stretch;
   overflow: hidden;
-  perspective: 260px;
-  perspective-origin: 50% 60%;
-  font-size: var(--ui-font-pill-words);
+  perspective: 200px;
   font-weight: 500;
-  line-height: 20px;
-  letter-spacing: 0;
+  line-height: 16px;
   text-align: left;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 40%, #000 86%, transparent 100%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 40%, #000 86%, transparent 100%);
-}
-/* A faint selection band behind the front line, as on a picker wheel. */
-.bezel-wheel-band {
-  position: absolute;
-  inset-inline: 0;
-  top: 50%;
-  height: 22px;
-  margin-top: -11px;
-  transform: translateY(6px);
-  border-radius: 7px;
-  background: var(--bezel-band);
-  border-block: 0.5px solid var(--bezel-band-edge);
-  box-sizing: border-box;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 22%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 22%, #000 78%, transparent 100%);
 }
 .bezel-wheel-line {
   position: absolute;
-  inset-inline: 6px;
+  inset-inline: 0;
   top: 50%;
-  height: 20px;
-  margin-top: -10px;
+  height: 16px;
+  margin-top: -8px;
   white-space: nowrap;
-  transform: translateY(6px);
   transform-style: preserve-3d;
   backface-visibility: hidden;
   will-change: transform, opacity;
@@ -230,14 +205,9 @@
 .bezel-wheel-word { display: inline-block; }
 .bezel-wheel-word-in { animation: bezel-wheel-word-in 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 @keyframes bezel-wheel-word-in {
-  from { opacity: 0; filter: blur(4px); transform: translateY(5px); }
+  from { opacity: 0; filter: blur(3px); transform: translateY(3px); }
 }
-/* Reduce Motion: two flat slots and an opacity crossfade, no roll. */
-.bezel-wheel-line[data-slot="previous"] {
-  transform: translateY(-14px);
-  opacity: 0.5;
-  filter: blur(1.1px);
-}
+/* Reduce Motion: one flat line and an opacity crossfade, no roll. */
 .bezel-wheel-fade { animation: bezel-wheel-fade 200ms ease-out both; }
 @keyframes bezel-wheel-fade { from { opacity: 0; } }
 /* The hover strip: one segmented control above the capsule. */

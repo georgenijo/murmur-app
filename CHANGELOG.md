@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.68.1] - 2026-11-24
+
+<!-- Release notes generated using configuration in .github/release.yml at 8ca60ab270ef1601b34fc4213a3b5047d946e53f -->
+
+## What's Changed
+### Other Changes
+* fix(overlay): shrink the word wheel pill back to 224x34 and drop the band by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1213
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.68.0...v0.68.1
+
 ## [0.68.0] - 2026-11-24
 
 <!-- Release notes generated using configuration in .github/release.yml at ca56e8f3e940672222824f13d53429ee647d0b16 -->

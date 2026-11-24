@@ -320,23 +320,23 @@
     "wingW": 28.0
   },
   "pillWords": {
-    "collapsedH": 58.0,
+    "collapsedH": 34.0,
     "dropdownH": 64.0,
-    "expandedH": 122.0,
+    "expandedH": 98.0,
     "floating": true,
     "island": {
       "cornerActive": 12.0,
       "cornerIdle": 8.0,
       "notchH": 0.0,
       "notchW": 185.0,
-      "pillH": 58.0,
-      "pillW": 340.0
+      "pillH": 34.0,
+      "pillW": 224.0
     },
-    "pillActiveW": 340.0,
-    "pillIdleW": 340.0,
+    "pillActiveW": 224.0,
+    "pillIdleW": 224.0,
     "pillMarginActive": 0.0,
     "pillMarginIdle": 0.0,
-    "windowW": 340.0,
+    "windowW": 224.0,
     "wingW": 28.0
   },
   "processingExternal": {
