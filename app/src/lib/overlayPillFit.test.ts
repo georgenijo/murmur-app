@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import geometry from '../components/overlay/overlay-geometry.fixture.json';
 import {
-  PILL_COMPACT_W, PILL_FIT_CHROME, overlayPillFitWidth, pillWordsMaxText, waveWidth,
+  PILL_COMPACT_W, PILL_FIT_CHROME, PILL_FIT_REST_W, overlayPillFitWidth, pillWordsMaxText, waveWidth,
 } from './overlayPillFit';
 
 describe('overlayPillFitWidth', () => {
@@ -19,8 +19,9 @@ describe('overlayPillFitWidth', () => {
     expect(overlayPillFitWidth(true, 'words', max, true, 999)).toBe(max);
   });
 
-  it('rests at the compact width before words and outside recording', () => {
-    expect(overlayPillFitWidth(true, 'words', max, true, null)).toBe(PILL_COMPACT_W);
+  it('hugs the dot and full waveform before words, and rests at the compact width outside recording', () => {
+    expect(PILL_FIT_REST_W).toBe(74);
+    expect(overlayPillFitWidth(true, 'words', max, true, null)).toBe(PILL_FIT_REST_W);
     expect(overlayPillFitWidth(true, 'words', max, false, 80)).toBe(PILL_COMPACT_W);
   });
 

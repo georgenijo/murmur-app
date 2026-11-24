@@ -17,11 +17,18 @@ export function waveWidth(bars: number): number {
   return bars * BAR_W + (bars - 1) * BAR_GAP;
 }
 /** Everything in the fitted pill except the words: the 1px hairline each
- * side, 10px row padding each side, the 12px dot, two 8px gaps and the
- * four-bar waveform (`.bezel-row` in overlay.css). */
-export const PILL_FIT_CHROME = 2 + 2 * 10 + 12 + 8 + waveWidth(PILL_WAVE_BARS_MINI) + 8;
+ * side, 6px row padding each side, the 12px dot, two 6px gaps and the
+ * four-bar waveform (`.bezel-row[data-fit]` in overlay.css). */
+export const PILL_FIT_PAD = 6;
+export const PILL_FIT_GAP = 6;
+export const PILL_FIT_CHROME = 2 + 2 * PILL_FIT_PAD + 12 + PILL_FIT_GAP + waveWidth(PILL_WAVE_BARS_MINI) + PILL_FIT_GAP;
 /** Rounding slack, so subpixel text never touches the clip. */
 const FIT_SLACK = 1;
+/** Recording before the first words: the dot and the full waveform with the
+ * same tight edges (74pt), not the compact pill's 120pt. */
+export const PILL_FIT_REST_W = Math.ceil(
+  2 + 2 * PILL_FIT_PAD + 12 + PILL_FIT_GAP + waveWidth(PILL_WAVE_BARS_FULL) + FIT_SLACK,
+);
 
 /** The widest front line the `words` pill can hold, for wrapping. */
 export function pillWordsMaxText(pillW: number): number {
@@ -40,6 +47,7 @@ export function overlayPillFitWidth(
   frontW: number | null,
 ): number | undefined {
   if (!floating || pillSize !== 'words') return undefined;
-  if (!recording || frontW === null || frontW <= 0) return Math.min(pillW, PILL_COMPACT_W);
+  if (!recording) return Math.min(pillW, PILL_COMPACT_W);
+  if (frontW === null || frontW <= 0) return Math.min(pillW, PILL_FIT_REST_W);
   return Math.min(pillW, Math.ceil(PILL_FIT_CHROME + frontW + FIT_SLACK));
 }

@@ -79,7 +79,7 @@ export function OverlayPill({
       // The row is as wide as the capsule, not the (possibly larger) native
       // window, so a width change reveals it from the centre and never reflows.
       // A capsule fitting its words moves its row on the same curve.
-      <div className="overlay-pill-row bezel-row" style={{
+      <div className="overlay-pill-row bezel-row" data-fit={fitW === undefined ? undefined : ''} style={{
         height: topH - 2 * PILL_BORDER,
         width: (fitW ?? geometry.island.pillW) - 2 * PILL_BORDER,
         alignSelf: 'center',
