@@ -687,16 +687,33 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_rust_caches_are_saved_only_from_main(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        line = "          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
-        self.assertEqual(workflow.count(line), 2)
-        for index in range(2):
-            with self.subTest(cache=index):
-                start = -1
-                for _ in range(index + 1):
-                    start = workflow.index(line, start + 1)
+        lines = (
+            "          save-if: ${{ github.ref == 'refs/heads/main' }}\n",
+            "          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'default' }}\n",
+        )
+        for line in lines:
+            with self.subTest(cache=line.strip()):
+                self.assertEqual(workflow.count(line), 1)
+                start = workflow.index(line)
                 mutated = workflow[:start] + workflow[start + len(line):]
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
+
+    def test_only_the_default_suite_saves_the_shared_rust_cache(self) -> None:
+        # The suites share one cache key and only the default suite builds the whole
+        # dependency graph: a cache saved by the first suite to finish would be incomplete.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        saves_for_every_suite = (
+            "          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'default' }}\n"
+        )
+        mutated = workflow.replace(
+            saves_for_every_suite,
+            "          save-if: ${{ github.ref == 'refs/heads/main' }}\n",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
 
     def test_cargo_audit_installs_pinned_prebuilt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

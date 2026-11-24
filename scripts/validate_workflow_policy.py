@@ -563,10 +563,19 @@ def validate_ci(ci: str) -> int:
     for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
         assert "continue-on-error" not in job, f"{job_name} must not suppress a failure"
         assert f"needs.{job_name}.result" in ci_pass, f"ci-pass must read {job_name}"
-    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
+    # Only main saves a Rust cache. The suites of `rust-macos` share one cache key, and only the
+    # default suite builds the whole dependency graph, so only it saves.
+    for job_name, job, save_if in (
+        ("rust-lint", rust_lint, "github.ref == 'refs/heads/main'"),
+        (
+            "rust-macos",
+            rust_macos,
+            "github.ref == 'refs/heads/main' && matrix.suite == 'default'",
+        ),
+    ):
         cache = named_step_block(job, "Cache Rust dependencies", 6)
         assert (
-            "save-if: ${{ github.ref == 'refs/heads/main' }}" in cache
+            f"save-if: ${{{{ {save_if} }}}}" in cache
         ), f"{job_name} must not save PR caches"
     test_library = named_step_block(rust_macos, "Configure test-only Rust library", 6)
     assert "python3 scripts/configure_ci_rust_library.py" in test_library

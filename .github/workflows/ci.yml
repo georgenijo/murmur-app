@@ -302,6 +302,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Runner resources (temporary)
+        run: sysctl -n hw.ncpu hw.memsize
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
@@ -326,8 +329,12 @@ jobs:
           workspaces: app/src-tauri
           # PRs restore main's cache but never save their own: each PR copy is
           # 1-2 GB and pushes the repository past its 10 GB cache quota, which
-          # evicts main's and the release build's caches.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # evicts main's and the release build's caches. Every suite shares one
+          # cache key, so only the default suite saves it: it alone builds the
+          # whole dependency graph (the helpers, the example and the tests); the
+          # feature suites build less, and a cache saved by whichever suite
+          # finished first could leave later runs without part of the graph.
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'default' }}
 
       - name: Refresh sherpa-onnx native libraries
         # rust-cache prunes files under target/sherpa-onnx-prebuilt but keeps
