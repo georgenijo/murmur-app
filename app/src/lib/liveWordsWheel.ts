@@ -1,25 +1,27 @@
 // The floating pill's Live Words wheel: words wrap into lines, the line being
-// spoken sits in front and finished lines roll up and back over a cylinder,
-// like a picker wheel. These are the approved settings from the mockup
-// (curvature 27°, older line blur 1.1px, "medium" roll speed).
+// spoken sits in front and each finished line rolls up and back out of the
+// top of the slim 34pt pill, like a picker wheel turning; the next line fades
+// in where it left. Curvature 27°,
+// older line blur 1.1px and the "medium" roll speed are the approved settings.
 
 /** Height of one line of words (px). The cylinder's radius follows from it. */
-export const WHEEL_LINE_H = 20;
-/** The front line sits this far below the wheel's centre, so the previous
- * line has room above it. */
-export const WHEEL_FRONT_SHIFT = 6;
+export const WHEEL_LINE_H = 16;
 /** Rotation between neighbouring lines on the cylinder. */
 export const WHEEL_STEP_DEG = 27;
 /** Blur added per line of distance from the front line (px). */
 export const WHEEL_BLUR_PER_LINE = 1.1;
 /** Spring stiffness of the roll (1/s²), critically damped. */
 export const WHEEL_SPRING_K = 90;
-/** Lines kept in the DOM: the front line, two rolled back and one spare. */
-export const WHEEL_RENDERED_LINES = 4;
-/** Lines fade out between these distances from the front and are hidden
- * beyond: at rest only the front line and the one above it are drawn. */
-const WHEEL_FADE_FROM = 1.5;
-const WHEEL_VISIBLE_RANGE = 2;
+/** Lines kept in the DOM: the front line, the one rolling away and a spare
+ * for fast speech. */
+export const WHEEL_RENDERED_LINES = 3;
+/** An outgoing line is fully gone one line behind the front: at rest only the
+ * front line is drawn, and the previous one shows only while it rolls away. */
+const WHEEL_OUTGOING_RANGE = 1;
+/** A new line does not roll in from below (two lines would crowd the 34pt
+ * pill): it waits in the front position and fades in once the outgoing line
+ * is half way out of the top. */
+const WHEEL_INCOMING_RANGE = 0.5;
 /** Slack kept at the right edge of a line (px). */
 const LINE_SLACK = 4;
 
@@ -70,22 +72,25 @@ export function wrapWheelLines(
 }
 
 /** The pose of the line `offset` lines from the wheel's position (negative:
- * older, rolled up and back; positive: incoming from below). */
+ * older, rolling up and back; positive: the next line, waiting in front). */
 export interface WheelPose { visible: boolean; transform: string; opacity: number; blur: number }
 
 export function wheelPose(offset: number): WheelPose {
   const distance = Math.abs(offset);
-  if (distance >= WHEEL_VISIBLE_RANGE) return { visible: false, transform: 'none', opacity: 0, blur: 0 };
+  if (offset > 0) {
+    if (distance >= WHEEL_INCOMING_RANGE) return { visible: false, transform: 'none', opacity: 0, blur: 0 };
+    return { visible: true, transform: 'none', opacity: 1 - distance / WHEEL_INCOMING_RANGE, blur: 0 };
+  }
+  if (distance >= WHEEL_OUTGOING_RANGE) return { visible: false, transform: 'none', opacity: 0, blur: 0 };
   const step = WHEEL_STEP_DEG * Math.PI / 180;
   const radius = WHEEL_LINE_H / step;
   const angle = -offset * step;
-  const c = Math.max(0, Math.cos(Math.min(Math.abs(angle), Math.PI / 2)));
-  const edge = Math.min(1, (WHEEL_VISIBLE_RANGE - distance) / (WHEEL_VISIBLE_RANGE - WHEEL_FADE_FROM));
+  // The outgoing line dims with its angle and fades linearly to nothing one
+  // line back, so it is only glimpsed while it rolls away.
   return {
     visible: true,
-    transform: `translateY(${WHEEL_FRONT_SHIFT}px) translateZ(${-radius.toFixed(3)}px) `
-      + `rotateX(${angle.toFixed(4)}rad) translateZ(${radius.toFixed(3)}px)`,
-    opacity: (offset < 0 ? Math.pow(c, 5) * 0.9 : Math.pow(c, 3)) * edge,
+    transform: `translateZ(${-radius.toFixed(3)}px) rotateX(${angle.toFixed(4)}rad) translateZ(${radius.toFixed(3)}px)`,
+    opacity: Math.pow(Math.cos(angle), 5) * (1 - distance / WHEEL_OUTGOING_RANGE),
     blur: distance * WHEEL_BLUR_PER_LINE,
   };
 }

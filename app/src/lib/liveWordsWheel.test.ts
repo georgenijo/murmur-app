@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  WHEEL_BLUR_PER_LINE, WHEEL_FRONT_SHIFT, stepWheelSpring, wheelPose, wrapWheelLines,
+  WHEEL_BLUR_PER_LINE, stepWheelSpring, wheelPose, wrapWheelLines,
 } from './liveWordsWheel';
 
 // 10px per code point keeps the arithmetic readable.
@@ -41,23 +41,29 @@ describe('wrapWheelLines', () => {
 });
 
 describe('wheelPose', () => {
-  it('shows the front line flat, a little below centre', () => {
+  it('shows the front line flat and centred', () => {
     const front = wheelPose(0);
     expect(front).toMatchObject({ visible: true, opacity: 1, blur: 0 });
-    expect(front.transform).toContain(`translateY(${WHEEL_FRONT_SHIFT}px)`);
     expect(front.transform).toContain('rotateX(0.0000rad)');
+    expect(front.transform).not.toContain('translateY');
   });
 
-  it('rolls older lines up and back, dimmed and blurred by distance', () => {
-    const previous = wheelPose(-1);
-    expect(previous.transform).toContain('rotateX(0.4712rad)'); // 27°
-    expect(previous.opacity).toBeCloseTo(Math.pow(Math.cos(27 * Math.PI / 180), 5) * 0.9, 5);
-    expect(previous.blur).toBeCloseTo(WHEEL_BLUR_PER_LINE);
-    // Two lines back is gone at rest, and it fades out rather than popping.
-    expect(wheelPose(-2).visible).toBe(false);
-    expect(wheelPose(-1.99).opacity).toBeLessThan(0.01);
-    expect(wheelPose(-1.5).opacity).toBeGreaterThan(wheelPose(-1.75).opacity);
-    expect(wheelPose(1).opacity).toBeCloseTo(Math.pow(Math.cos(27 * Math.PI / 180), 3), 5);
+  it('rolls an outgoing line up and back, gone one line behind the front', () => {
+    const half = wheelPose(-0.5);
+    expect(half.transform).toContain('rotateX(0.2356rad)'); // 13.5°, half of 27°
+    expect(half.opacity).toBeCloseTo(Math.pow(Math.cos(13.5 * Math.PI / 180), 5) * 0.5, 5);
+    expect(half.blur).toBeCloseTo(WHEEL_BLUR_PER_LINE / 2);
+    // It fades continuously from the front line's full opacity to nothing.
+    expect(wheelPose(-0.001).opacity).toBeGreaterThan(0.99);
+    expect(wheelPose(-0.99).opacity).toBeLessThan(0.01);
+    // At rest the previous line is not drawn at all.
+    expect(wheelPose(-1).visible).toBe(false);
+  });
+
+  it('fades the next line in at the front, without rolling it up from below', () => {
+    expect(wheelPose(0.25)).toMatchObject({ visible: true, transform: 'none', opacity: 0.5, blur: 0 });
+    expect(wheelPose(0.5).visible).toBe(false);
+    expect(wheelPose(1).visible).toBe(false);
   });
 });
 
