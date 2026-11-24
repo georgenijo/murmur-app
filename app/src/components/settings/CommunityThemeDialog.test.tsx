@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   AppearanceController,
-  OpenVsxThemeExtension,
   ThemeLibraryEntryV1,
 } from '../../lib/appearance';
+import type { OpenVsxThemeExtension } from '../../lib/appearance/openVsxThemes';
 import { CommunityThemeDialog } from './CommunityThemeDialog';
 
 const mocks = vi.hoisted(() => ({
