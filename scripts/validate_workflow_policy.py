@@ -531,9 +531,11 @@ def validate_ci(ci: str) -> int:
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build
-    assert "MURMUR_CAPTURE_ROLE=worker" in capture_build
-    assert "CARGO_TARGET_DIR=target/capture-worker-build" in capture_build
-    assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
+    assert "MURMUR_CAPTURE_ROLE=worker cargo build -p murmur-capture-helper" in capture_build
+    assert "MURMUR_CAPTURE_ROLE=helper cargo build -p murmur-capture-helper" in capture_build
+    # One shared target directory: a second target dir recompiles the whole
+    # dependency graph (webrtc/abseil alone is ~25 s) for a plist-only difference.
+    assert "CARGO_TARGET_DIR" not in capture_build
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
     capture_tests = named_step_block(rust_macos, "Run capture worker unit tests", 6)
     assert (
