@@ -250,6 +250,13 @@ Output:
 The `build` shell function installs the result into `/Applications` and resets
 the stale Accessibility grant for you (see below).
 
+`npm run build` (the `beforeBuildCommand`) builds Vite into a staging directory
+and `scripts/sync_dist.mjs` copies only changed files into `app/dist`. Cargo
+embeds every `dist` file through `tauri::generate_context!`, so a rewrite with
+identical bytes would still recompile the `ui` crate (about 30 s). Keep the sync
+step: a build with an unchanged frontend then skips that recompile. A real
+frontend change still recompiles `ui`.
+
 ### Fast local release build
 
 For a local `.app` to install and test, use:
