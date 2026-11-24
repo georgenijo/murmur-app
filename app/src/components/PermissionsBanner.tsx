@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -38,7 +38,7 @@ function isMicHardDenied(status: MicPermissionStatus): boolean {
   return status === 'denied';
 }
 
-export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHome?: boolean }) {
+function PermissionsBanner({ microphoneInHome = false }: { microphoneInHome?: boolean }) {
   const [permissions, setPermissions] = useState<PermissionStatus>({
     microphone: 'unknown',
     accessibility: 'unknown',
@@ -346,3 +346,8 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
     </div>
   );
 }
+
+// Its only prop is a boolean, so skip the ~47/s App re-renders that the
+// recording audio level causes while the main window is visible.
+const MemoPermissionsBanner = memo(PermissionsBanner);
+export { MemoPermissionsBanner as PermissionsBanner };

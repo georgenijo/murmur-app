@@ -73,6 +73,14 @@ import { SettingsBranch } from './SettingsBranch';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
+import {
+  AI_DETAIL_PAGES,
+  SETTINGS_CATEGORIES,
+  SETTINGS_TOOLS,
+  resolvePage,
+  settingsLatencyView,
+  type SettingsPageRequest,
+} from './settingsPages';
 import { SettingsCallout, SettingsDisclosure, SettingsGroup } from './SettingsLayout';
 import {
   DiagnosticsWorkspace,
@@ -202,12 +210,9 @@ function VadSensitivitySlider({
   );
 }
 
-export interface SettingsPageRequest {
-  page: string;
-  token: number;
-  editorTab?: SettingsEditorTab;
-  target?: string;
-}
+// Page registry lives in settingsPages.ts; re-exported for existing importers.
+export { SETTINGS_CATEGORIES, SETTINGS_TOOLS, resolvePage, settingsLatencyView };
+export type { SettingsPageRequest };
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -230,27 +235,6 @@ interface SettingsPanelProps {
   /** Stable ref avoids re-rendering the warm Settings tree when its surface is hidden. */
   activeRef?: React.RefObject<boolean>;
 }
-
-export const SETTINGS_CATEGORIES = [
-  { id: 'general', label: 'General', icon: 'general' },
-  { id: 'recording', label: 'Recording', icon: 'recording' },
-  { id: 'customize', label: 'Customize', icon: 'customize' },
-  { id: 'delivery', label: 'Delivery', icon: 'delivery' },
-  { id: 'meetings', label: 'Meetings', icon: 'meetings' },
-  { id: 'text', label: 'Text & vocabulary', icon: 'text' },
-  { id: 'ai', label: 'AI & models', icon: 'ai' },
-  { id: 'appearance', label: 'Appearance', icon: 'appearance' },
-] as const;
-
-const DEFAULT_SETTINGS_PAGE = 'general';
-
-export const SETTINGS_TOOLS = [
-  { id: 'performance', label: 'Performance Lab', icon: 'performance' },
-  { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
-] as const;
-
-const AI_DETAIL_PAGES = ['ai-transcription'] as const;
-const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
 
 interface SettingTargetRequest {
   id: string;
@@ -279,25 +263,6 @@ function customizationRoute(destination: CustomizationDestination): {
     case 'text': return { page: 'text' };
     case 'styles': return { page: 'delivery', target: 'app-overrides' };
   }
-}
-
-/** Coerce a requested page id back to a real page — an unknown id opens
- *  General rather than rendering an empty pane. */
-export function resolvePage(page: string | undefined): string {
-  if (SETTINGS_CATEGORIES.some((category) => category.id === page)) return page as string;
-  if (SETTINGS_TOOLS.some((tool) => tool.id === page)) return page as string;
-  if ((AI_DETAIL_PAGES as readonly string[]).includes(page ?? '')) return page as string;
-  if ((GENERAL_DETAIL_PAGES as readonly string[]).includes(page ?? '')) return page as string;
-  if (page === 'dictation') return 'recording';
-  if (page === 'model' || page === 'transcription') return 'ai-transcription';
-  if (page === 'benchmark') return 'performance';
-  if (page === 'text-vocabulary') return 'text';
-  if (page === 'app') return 'general';
-  return DEFAULT_SETTINGS_PAGE;
-}
-
-export function settingsLatencyView(page: string | undefined): string {
-  return `settings.${resolvePage(page)}`;
 }
 
 export function isMacOSSettingsPlatform(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
@@ -449,7 +414,9 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [customizationDetail, setCustomizationDetail] = useState<CustomizationDestination | null>(() => (
     customizationDestinationForRequest(pageRequest)
   ));
-  const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
+  const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(() => (
+    customizationDestinationForRequest(pageRequest)
+  ));
   const [shortcutReturnFocus, setShortcutReturnFocus] = useState<GlobalShortcutId | null>(null);
   const latencyView = editorTab
     ? `settings.${activeCat}.editor.${editorTab}`

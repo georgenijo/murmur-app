@@ -308,37 +308,6 @@ def _cfg_value(predicate: str, shadow: bool | None = None) -> bool | None:
     return False if all(value is False for value in values) else None
 
 
-def _strip_comments(line: str) -> str:
-    """The line without `//` and `/* */` comments (outside string literals)."""
-    out: list[str] = []
-    i, in_string = 0, False
-    while i < len(line):
-        char = line[i]
-        if in_string:
-            out.append(char)
-            if char == "\\" and i + 1 < len(line):
-                out.append(line[i + 1])
-                i += 2
-                continue
-            if char == '"':
-                in_string = False
-        elif char == '"':
-            in_string = True
-            out.append(char)
-        elif line.startswith("//", i):
-            break
-        elif line.startswith("/*", i):
-            end = line.find("*/", i + 2)
-            if end < 0:
-                break
-            i = end + 2
-            continue
-        else:
-            out.append(char)
-        i += 1
-    return "".join(out)
-
-
 def _requires_test(predicate: str) -> bool:
     """The predicate holds only in a test build (`test`, or `all(.., test, ..)`)."""
     predicate = predicate.strip()
@@ -531,10 +500,6 @@ def twin_difference(original: list[str], twin: list[str]) -> str | None:
 # `cfg` or `cfg_attr` there is rejected without being evaluated (D-S2c-12 c).
 NEGATED_GATE = '#[cfg(not(feature="dictation-shadow"))]'
 FEATURE_GATE = '#[cfg(feature="dictation-shadow")]'
-
-
-def added_lines_of(root: Path, base: str, path: str) -> set[int]:
-    return added_lines(root, base, path)
 
 
 def region_end(tokens: list[tuple[str, int]], start: int) -> int:

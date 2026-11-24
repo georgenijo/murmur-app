@@ -6,7 +6,7 @@ import {
   importOpenVsxThemeExtension,
   searchOpenVsxThemes,
   type OpenVsxThemeExtension,
-} from '.';
+} from './openVsxThemes';
 
 const extension: OpenVsxThemeExtension = {
   id: 'sample.aurora',

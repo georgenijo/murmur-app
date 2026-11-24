@@ -1,6 +1,5 @@
 export * from './apply';
 export * from './color';
-export * from './openVsxThemes';
 export * from './palettes';
 export * from './resolve';
 export * from './sanitize';

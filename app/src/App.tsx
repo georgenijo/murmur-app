@@ -1,18 +1,18 @@
 import { dictationKeyLabel } from './lib/settings';
-import { MeetingsPanel } from './components/history';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
-import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
 import { listen } from '@tauri-apps/api/event';
+import { SettingsSurfaceActiveContext } from './components/settings/SettingsSurfaceContext';
+import type { MeetingsPanel as MeetingsPanelComponent } from './components/history/MeetingsPanel';
+import { deferredModule, useDeferredModule } from './lib/deferredModule';
 import {
-  SettingsPanel,
-  SettingsSurfaceActiveContext,
   SETTINGS_CATEGORIES,
   SETTINGS_TOOLS,
   settingsLatencyView,
   type SettingsPageRequest,
-} from './components/settings';
+} from './components/settings/settingsPages';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
 import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
@@ -92,6 +92,20 @@ const PERFORMANCE_BUILD_BADGE = import.meta.env.VITE_MURMUR_BUILD_ID?.startsWith
   ? 'Use this · Phase 2 Perf'
   : undefined;
 
+// Settings and Meetings are not on the first screen, so their code loads as
+// separate chunks. Settings is always mounted (hidden), so its chunk is requested
+// on the first render; Meetings is preloaded once the window is idle. A loaded
+// module renders synchronously, so opening either after the preload shows no
+// fallback frame; the fallback only covers a request that beats the load (e.g.
+// a deep link at launch).
+const settingsPanelModule = deferredModule(() => import('./components/settings/SettingsPanel'));
+const meetingsPanelModule = deferredModule(() => import('./components/history/MeetingsPanel'));
+
+function MeetingsPanel(props: ComponentProps<typeof MeetingsPanelComponent>) {
+  const loaded = useDeferredModule(meetingsPanelModule);
+  return loaded ? <loaded.MeetingsPanel {...props} /> : null;
+}
+
 function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
@@ -101,6 +115,19 @@ function App() {
   const setupAdmittedRef = useRef(false);
   const canStartRecording = useCallback(() => mainAppReadyRef.current && !setupAdmittedRef.current, []);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // Opening Settings retries a chunk that failed to load.
+  const settingsPanel = useDeferredModule(settingsPanelModule, isSettingsOpen);
+  useEffect(() => {
+    const preload = () => {
+      void meetingsPanelModule.preload().catch(() => {});
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      const handle = window.requestIdleCallback(preload, { timeout: 1500 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(preload, 300);
+    return () => window.clearTimeout(handle);
+  }, []);
   const homeSidebar = useHomeSidebar(false, isSettingsOpen);
   const homeNavId = useId();
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
@@ -835,7 +862,9 @@ function App() {
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         >
           <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
-            <SettingsPanel
+            {/* Same size and background as the panel, so nothing shows through or jumps. */}
+            {settingsPanel ? (
+            <settingsPanel.SettingsPanel
               settings={settings}
               onUpdateSettings={updateSettings}
               initialized={initialized}
@@ -853,6 +882,9 @@ function App() {
               onLatencyViewChange={trackSettingsView}
               activeRef={settingsActiveRef}
             />
+            ) : (
+              <div className="min-h-0 flex-1 bg-background" aria-hidden="true" />
+            )}
           </SettingsSurfaceActiveContext.Provider>
         </section>
       </div>
