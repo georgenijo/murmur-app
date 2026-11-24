@@ -264,7 +264,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings\n",
             "          -E 'kind(lib) | binary(c13_3_bug_replays)'\n",
-            "          --test c13_3_bug_replays --example murmur-eval\n",
+            "          --test c13_3_bug_replays\n",
             "          tool: cargo-nextest@0.9.150\n",
         ):
             with self.subTest(policy=old.strip()):
@@ -726,22 +726,17 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_rust_test_prebuild_builds_the_example_with_the_test_targets(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        together = "          --test c13_3_bug_replays --example murmur-eval\n"
+        together = "          --test c13_3_bug_replays --example murmur-eval &&\n"
         # The example dropped from the prebuild: the evaluation step would have no binary.
-        mutated = workflow.replace(together, "          --test c13_3_bug_replays\n", 1)
+        mutated = workflow.replace(together, "          --test c13_3_bug_replays &&\n", 1)
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
         # The example built on its own again: a second compile of the app crate.
-        separate = (
-            "          cd app/src-tauri &&\n"
-            "          cargo build --workspace --example murmur-eval &&\n"
-            "          cargo nextest list --workspace\n"
-        )
         mutated = workflow.replace(
-            "          cd app/src-tauri &&\n          cargo nextest list --workspace\n"
-            "          --lib --bin murmur-capture-helper",
-            separate + "          --lib --bin murmur-capture-helper",
+            "          cd app/src-tauri &&\n          cargo test --no-run --workspace\n",
+            "          cd app/src-tauri &&\n          cargo build --workspace --example murmur-eval &&\n"
+            "          cargo test --no-run --workspace\n",
             1,
         )
         self.assertNotEqual(workflow, mutated)
