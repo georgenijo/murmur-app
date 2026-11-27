@@ -730,7 +730,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_the_four_manifests_together_hold_every_c3_row_once(self):
         expected = self.c3_rows()
-        self.assertEqual(len(expected), 141)
+        self.assertEqual(len(expected), 142)
         seen = []
         for family in verdict.FAMILIES:
             data = manifest(family)

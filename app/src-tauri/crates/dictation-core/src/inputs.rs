@@ -259,8 +259,12 @@ pub enum GuardOrigin {
     /// Legacy `process_audio` parse failure: site 302 (`ProcessAudioFinish`,
     /// R302.1); `handle` routes it there.
     LegacyParse,
-    /// `IdleGuard::drop` (panic or early return).
+    /// `IdleGuard::drop` on an early return: the caller claims the terminal.
     Dropped,
+    /// `IdleGuard::drop` while the thread unwinds from a panic in the stop task or
+    /// the pipeline: nothing else will claim the recording's terminal, so the guard
+    /// claims `PipelineFailure/WorkerPanicked` (R204a.7, the PD-13 fix, #1191).
+    Unwound,
 }
 
 /// Site 204a.

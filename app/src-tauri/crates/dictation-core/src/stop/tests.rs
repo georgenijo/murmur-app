@@ -808,7 +808,7 @@ fn r204a_6_a_dropped_guard_never_emits_and_never_terminates() {
                 NOW,
             );
             assert_eq!(decided.row, RowId("R204a.6"));
-            // PD-13: no TERM in any case.
+            // An early return: the caller claims the terminal, so the guard claims none.
             assert!(!tags(&decided)
                 .iter()
                 .any(|t| t.contains("TERM") || t.contains("EM(")));
@@ -819,6 +819,59 @@ fn r204a_6_a_dropped_guard_never_emits_and_never_terminates() {
             };
             assert_eq!(tags(&decided), expected, "{status:?} current={}", current.0);
         }
+    }
+}
+
+/// R204a.7, the PD-13 fix (#1191): a guard dropped while its thread unwinds claims the
+/// recording's terminal before `CX-`, for the current recording and a stale one alike, and
+/// never emits `idle`. The shell's `Pre` phase runs the same list.
+#[test]
+fn r204a_7_an_unwinding_guard_claims_a_worker_panicked_terminal() {
+    for status in ALL {
+        for current in [RID, NEWER] {
+            let decided = decide_guard_finish(
+                &core(status, current),
+                guard(RID, GuardOrigin::Unwound, false),
+                NOW,
+            );
+            assert_eq!(decided.row, RowId("R204a.7"));
+            let expected: &[&str] = if current == RID {
+                &[
+                    "Pre:TERM(PipelineFailure/WorkerPanicked)",
+                    "Pre:CX-(7)",
+                    "In:ST→Idle",
+                    "In:KB(false)",
+                ]
+            } else {
+                &["Pre:TERM(PipelineFailure/WorkerPanicked)", "Pre:CX-(7)"]
+            };
+            assert_eq!(tags(&decided), expected, "{status:?} current={}", current.0);
+            assert_valid(&decided);
+        }
+    }
+    assert_eq!(
+        guard_finish_pre_effects(RID, GuardOrigin::Unwound),
+        decide_guard_finish(
+            &core(Status::Processing, RID),
+            guard(RID, GuardOrigin::Unwound, false),
+            NOW
+        )
+        .effects
+        .into_iter()
+        .filter(|placed| placed.at == crate::effects::Placement::Pre)
+        .collect::<Vec<_>>(),
+    );
+    for origin in [
+        GuardOrigin::StopCapture,
+        GuardOrigin::PipelineExit,
+        GuardOrigin::LegacyParse,
+        GuardOrigin::Dropped,
+    ] {
+        assert_eq!(
+            guard_finish_pre_effects(RID, origin).len(),
+            1,
+            "{origin:?}: CX- only"
+        );
     }
 }
 
@@ -1026,6 +1079,7 @@ fn every_decision() -> Vec<Decision> {
                 GuardOrigin::PipelineExit,
                 GuardOrigin::LegacyParse,
                 GuardOrigin::Dropped,
+                GuardOrigin::Unwound,
             ] {
                 for emit in [true, false] {
                     all.push(decide_guard_finish(&c, guard(RID, origin, emit), NOW));

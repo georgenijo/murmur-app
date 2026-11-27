@@ -574,16 +574,23 @@ impl<T, E> EmitOutcome for Result<T, E> {
 }
 
 /// The ports of `IdleGuard::finish` / `Drop`. `EM(idle)` runs the guard's
-/// `on_idle` closure with the held `DictationState`.
+/// `on_idle` closure with the held `DictationState`; `TERM` is the unwinding
+/// guard's claim (R204a.7), made in `Pre` for the guard's own recording.
 pub(super) struct GuardPorts<'a> {
     app_state: &'a AppState,
+    recording_id: u64,
     on_idle: RefCell<Option<OnIdle<'a>>>,
 }
 
 impl<'a> GuardPorts<'a> {
-    pub(super) fn new(app_state: &'a AppState, on_idle: Option<OnIdle<'a>>) -> Self {
+    pub(super) fn new(
+        app_state: &'a AppState,
+        recording_id: u64,
+        on_idle: Option<OnIdle<'a>>,
+    ) -> Self {
         GuardPorts {
             app_state,
+            recording_id,
             on_idle: RefCell::new(on_idle),
         }
     }
@@ -619,8 +626,24 @@ impl Ports for GuardPorts<'_> {
         Err(PortFailure)
     }
 
-    fn terminal(&self, _effect: &Effect) -> PortResult {
-        Err(PortFailure)
+    fn terminal(&self, effect: &Effect) -> PortResult {
+        let Effect::Terminal(terminal) = effect else {
+            return Err(PortFailure);
+        };
+        // R204a.7: the unwinding guard's claim. First-wins, so a terminal the task claimed
+        // before it panicked keeps winning and this reports the loss. The claim and its log
+        // event only: the guard holds no `State`, so an armed diagnostics capture is not
+        // completed here (it never was for a panicked recording).
+        let claimed = self
+            .app_state
+            .dictation_telemetry
+            .emit_terminal_with_output(
+                self.recording_id,
+                terminal_outcome_from_core(terminal.outcome),
+                error_code_from_core(terminal.code),
+                0,
+            );
+        claimed.then_some(()).ok_or(PortFailure)
     }
 
     fn perf(&self, _effect: &Effect) -> PortResult {
@@ -748,7 +771,7 @@ mod tests {
     fn the_guard_and_the_idle_emit_ports_report_the_real_emit_result() {
         let app_state = AppState::default();
         for delivered in [true, false] {
-            let guard_ports = GuardPorts::new(&app_state, Some(Box::new(move |_| delivered)));
+            let guard_ports = GuardPorts::new(&app_state, 1, Some(Box::new(move |_| delivered)));
             let dictation = app_state.dictation.lock().unwrap();
             assert_eq!(
                 guard_ports.emit_under_d(&idle_emit(), &dictation).is_ok(),

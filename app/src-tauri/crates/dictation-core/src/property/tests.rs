@@ -347,7 +347,7 @@ fn ten_thousand_seeds_fit_the_ci_budget() {
 /// The converse (C7.0, C7.5): every PD signature occurs at least once in the
 /// seeds, so an allowlist entry cannot rot, and so does every row of the SP4(b)
 /// signature table and every split a pinned witness names. PD-17 is latent (no
-/// production schedule) and has no witness; PD-18, PD-19, PD-21 and PD-24 are fixed and have none
+/// production schedule) and has no witness; PD-13, PD-18, PD-19, PD-21 and PD-24 are fixed and have none
 /// (the teardown-gap starts are `TEARDOWN_GAP_SEEDS`; `a_failed_capture_cancel_claims_no_terminal`).
 #[test]
 fn every_preserved_defect_is_witnessed() {
@@ -356,9 +356,10 @@ fn every_preserved_defect_is_witnessed() {
         return; // a short local run does not owe every witness
     }
     let missing: Vec<usize> = (1..=24)
-        // PD-17 is latent; PD-2, PD-18, PD-19, PD-20, PD-21, PD-22, PD-23 and PD-24 are fixed (PD-2 with
-        // PD-22, the same R211.2 claim) and their signatures are gone.
-        .filter(|pd| !matches!(*pd, 2 | 17..=24) && summary.pd[*pd].0 == 0)
+        // PD-17 is latent; PD-2, PD-13, PD-18, PD-19, PD-20, PD-21, PD-22, PD-23 and PD-24 are fixed
+        // (PD-2 with PD-22, the same R211.2 claim; PD-13 by R204a.7, #1191) and their signatures
+        // are gone.
+        .filter(|pd| !matches!(*pd, 2 | 13 | 17..=24) && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
@@ -854,29 +855,32 @@ fn an_idle_for_a_finished_recording_claims_no_terminal() {
     }
 }
 
-/// A pinned PD-13 consequence of the PD-22 fix (D-PD-2 amendment 1, issue #1191): a stop task
-/// panics after its `IdleGuard` is armed (R204a.6 `Dropped`, which claims no terminal) and the
-/// supervisor's worker exit then notifies `Idle` for the current id. R211.2 used to claim
-/// `Superseded/StaleOwner` there, the recording's only terminal; it claims none now, so the
-/// recording ends with no terminal. The existing PD-13 exemption (`pd_touched(13, ..)` in the
-/// end-of-run "accepted but never claimed" check) admits exactly these ids, unwidened: about 76
-/// in 300,000 seeds, and the 300,000- and 3,000,000-seed sweeps report no other unclaimed id.
-/// Seed 1,859 is the first. When #1191 gives the unwinding stop its own claim, this seed's count
-/// drops to zero and the test flips with it.
+/// The PD-13 fix, pinned (#1191). A stop task panics after its `IdleGuard` is armed, and the
+/// supervisor's worker exit then notifies `Idle` for the current id. R211.2 claims no terminal
+/// there since the PD-22 fix (D-PD-2 amendment 1), so before #1191 the recording ended with
+/// none, admitted only by a PD-13 liveness exemption (about 76 ids in 300,000 seeds). The
+/// unwinding guard now claims `PipelineFailure/WorkerPanicked` in its `Pre` (R204a.7), and the
+/// end-of-run "accepted but never claimed" check runs with no exemption. Seed 1,859 is the
+/// first such run.
 const PANICKED_STOP_IDLE_SEED: u64 = 1_859;
 
 #[test]
-fn a_panicked_stop_then_the_supervisors_idle_ends_with_no_terminal() {
+fn a_panicked_stop_then_the_supervisors_idle_ends_with_the_guards_terminal() {
     let report = run_seed(gated(PANICKED_STOP_IDLE_SEED));
     assert!(
         report.hits.decided.get("R211.2").copied().unwrap_or(0) > 0,
         "seed {PANICKED_STOP_IDLE_SEED} no longer decides the supervisor's Idle: {:?}",
         report.hits
     );
-    assert!(report.hits.pd[13] > 0, "{:?}", report.hits);
+    assert!(
+        report.hits.decided.get("R204a.7").copied().unwrap_or(0) > 0,
+        "seed {PANICKED_STOP_IDLE_SEED} no longer unwinds a guard: {:?}",
+        report.hits
+    );
+    assert_eq!(report.hits.pd[13], 0, "a panic is no PD: {:?}", report.hits);
     assert_eq!(
-        report.hits.panicked_task_idle_without_terminal, 1,
-        "the panicked stop's recording must end with no terminal: {:?}",
+        report.hits.panicked_task_idle_claimed_by_guard, 1,
+        "the panicked stop's recording must end with the unwinding guard's terminal: {:?}",
         report.hits
     );
     assert!(

@@ -1649,12 +1649,15 @@ impl<'a> IdleGuard<'a> {
         flight.enter_pre();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
-        let ports = stop_ports::GuardPorts::new(app_state, on_idle);
+        let ports = stop_ports::GuardPorts::new(app_state, recording_id, on_idle);
         #[cfg(not(feature = "dictation-shadow"))]
         let pre = stop_ports::try_run_phase(
             &mut stop_ports::executor(
                 &ports,
-                Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
+                Decision::pre_only(
+                    core_stop::guard_finish_pre_effects(rid, origin),
+                    RowId("R204a.pre"),
+                ),
             ),
             Placement::Pre,
             None,
@@ -1664,7 +1667,10 @@ impl<'a> IdleGuard<'a> {
         let pre = stop_ports::try_run_phase(
             &mut stop_ports::executor(
                 &ports,
-                Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
+                Decision::pre_only(
+                    core_stop::guard_finish_pre_effects(rid, origin),
+                    RowId("R204a.pre"),
+                ),
             )
             .attach_flight(&flight),
             Placement::Pre,
@@ -1705,9 +1711,10 @@ impl<'a> IdleGuard<'a> {
                     },
                     core_now(),
                 ),
-                GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::Dropped => {
-                    core_stop::decide_guard_finish(&view, input, core_now())
-                }
+                GuardOrigin::StopCapture
+                | GuardOrigin::PipelineExit
+                | GuardOrigin::Dropped
+                | GuardOrigin::Unwound => core_stop::decide_guard_finish(&view, input, core_now()),
             })
         };
         let decision = match owner.as_mut() {
@@ -1999,6 +2006,7 @@ fn guard_origin_name(origin: murmur_dictation_core::inputs::GuardOrigin) -> &'st
         GuardOrigin::PipelineExit => "pipeline_exit",
         GuardOrigin::LegacyParse => "legacy_parse",
         GuardOrigin::Dropped => "dropped",
+        GuardOrigin::Unwound => "unwound",
     }
 }
 
@@ -2331,7 +2339,16 @@ impl Drop for IdleGuard<'_> {
     fn drop(&mut self) {
         if !self.disarmed {
             self.disarmed = true;
-            self.run_finish(self.drop_origin, None);
+            // A drop during an unwind (a panic in the stop task or the pipeline) is
+            // `Unwound` whatever the guard's own drop origin: the task that would claim
+            // the terminal is gone, so the guard claims it (R204a.7, PD-13, #1191). An
+            // early return keeps the drop origin, and its caller claims the terminal.
+            let origin = if std::thread::panicking() {
+                murmur_dictation_core::inputs::GuardOrigin::Unwound
+            } else {
+                self.drop_origin
+            };
+            self.run_finish(origin, None);
         }
     }
 }
