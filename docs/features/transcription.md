@@ -979,7 +979,11 @@ same pauses on exactly the audio the whole-clip decode sees.
   the recording is still the live, uncancelled one; and no preview still holds its
   lease. Then the tail is decoded, must start with the committed overlap text, and
   is joined after the earlier pieces. When the pieces already cover all kept
-  audio, no decode runs at Stop. Waiting for a preview that still holds its lease is a
+  audio, no decode runs at Stop. With a single committed piece the tail starts at
+  the first kept sample, so the tail decode is the whole-clip decode of the kept
+  audio (same samples, same call): if it fails the stitch, that text is the
+  result, with the whole-clip retry policy applied, and the audio is not decoded
+  a second time. Waiting for a preview that still holds its lease is a
   spin on `yield_now` of at most 10 ms, only with the setting on; if it is still
   held the outcome is `busy` and the whole clip is decoded.
 - **Transforms run once.** Stitching happens on raw ASR text, before the ordered
@@ -993,8 +997,10 @@ same pauses on exactly the audio the whole-clip decode sees.
 **What it costs and saves.** One extra Core ML decode of at most 20 s per cut
 (roughly every 3 s or more of speech, only at pauses) during recording; one piece
 of PCM (at most 1.3 MB) in memory; no second model. A failed stitch costs one extra
-tail decode over today. A dictation with no qualifying pause (continuous speech,
-or under about 6 s) gets no saving from decode reuse, only from the incremental VAD.
+tail decode over today, but only once two or more pieces are committed: with one
+piece the tail decode is the whole-clip decode and a failed stitch costs nothing.
+A dictation with no qualifying pause (continuous speech, or under about 6 s) gets
+no saving from decode reuse, only from the incremental VAD.
 
 **Telemetry** (content-free): `pipeline.stream_reuse_outcome` once per dictation
 whose setting was on, with `outcome` (`reused`, or the reason the whole clip was
@@ -1003,7 +1009,8 @@ decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`, `window_ca
 `bounds_mismatch`, `audio_mismatch`, `tail_too_long`, `busy`, `stitch_mismatch`,
 `tail_decode_error`), `piece_count`, `decoded_ms` (audio decoded at Stop: the tail
 when reused, nothing when the pieces covered everything, and on a fallback the
-whole clip plus any tail decode that was discarded first) and `overlap_words`.
+whole clip plus any tail decode that was discarded first; a tail that was the
+whole clip counts once) and `overlap_words`.
 
 **Evidence and limits.** The Core ML Parakeet cache on the development Mac lacks
 `Encoder.mlmodelc`, so decode reuse could not be run under Core ML there. The

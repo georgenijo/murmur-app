@@ -438,3 +438,38 @@ fn committed_bounds_at_any_cut_equal_the_final_bounds() {
     }
     assert!(commits_seen > 0, "the generator never produced a commit");
 }
+
+/// One committed piece (A), with C still to decode at Stop.
+fn one_piece_plan(raw: &[f32]) -> (FinalPlan, Vec<f32>) {
+    let mut reuse = StreamReuse::default();
+    reuse.begin(1);
+    let plan = commit_plan(&mut reuse, &snapshot(&[A], A.1 + EDGE_MARGIN));
+    let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+    assert_eq!(
+        reuse.commit(1, plan, piece, "First complete sentence."),
+        Committed::Stored
+    );
+    let bounds = [A, C];
+    let filtered = concat(raw, &bounds);
+    (
+        reuse.take_final(1, Some(&bounds), &filtered).unwrap(),
+        filtered,
+    )
+}
+
+#[test]
+fn with_one_committed_piece_the_tail_is_the_whole_kept_clip() {
+    let raw = raw();
+    let (plan, filtered) = one_piece_plan(&raw);
+    assert!(plan.tail_is_whole_clip());
+    assert_eq!(filtered[plan.start..].len(), filtered.len());
+
+    // With two pieces the tail starts at the second one: a real tail.
+    let mut reuse = two_pieces(&raw);
+    let bounds = [A, B, C];
+    let plan = reuse
+        .take_final(1, Some(&bounds), &concat(&raw, &bounds))
+        .unwrap();
+    assert!(!plan.tail_is_whole_clip());
+    assert_eq!(plan.start, 64_000);
+}
