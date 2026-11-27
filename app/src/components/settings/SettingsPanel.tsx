@@ -59,7 +59,7 @@ import {
 import { accessibilityOutcomeMessage, permissionErrorMessage } from '../../lib/permissionOutcome';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
-import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
+import { INTERNAL_BENCHMARK_BUILD, NO_SELF_MANAGEMENT_BUILD } from '../../lib/buildFlavor';
 import { playSoundCue, type SoundCue } from '../../lib/soundCues';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
@@ -1510,7 +1510,7 @@ export const SettingsPanel = memo(function SettingsPanel({
           <SettingsSection hideHeading card={false} pageId="general" activePage={activeCat} title="General">
             <div className="settings-groups">
               <SettingsGroup title="Startup">
-                {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at login" description="Start Murmur automatically when you log in" checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
+                {!NO_SELF_MANAGEMENT_BUILD && <SettingToggle targetId="launch-login" title="Launch at login" description="Start Murmur automatically when you log in" checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
                 <button
                   ref={generalShortcutsButtonRef}
                   type="button"
@@ -1536,7 +1536,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingsGroup title="Maintenance">
                 <SettingsRow targetId="setup" title="Setup assistant" description="Re-check permissions and models"
                   control={<Button size="sm" aria-label="Open setup assistant" onClick={onRerunSetup}>Open…</Button>} />
-                {!INTERNAL_BENCHMARK_BUILD && <SettingsRow targetId="updates" title="Updates" description={version ? `Murmur v${version}` : undefined}
+                {!NO_SELF_MANAGEMENT_BUILD && <SettingsRow targetId="updates" title="Updates" description={version ? `Murmur v${version}` : undefined}
                   control={<UpdateIndicator variant="settings" status={updateStatus}
                     onRetryCheck={() => void onCheckForUpdate()} onDownload={onDownloadUpdate}
                     onRestart={onRestartUpdate} onOpen={onOpenUpdate} />} />}

@@ -702,7 +702,7 @@ fn inject_text_with_policy(
             crate::frontmost::delivery_target_is_active(delivery_target)
                 && pasteboard_change_count() == Some(expected_pasteboard_change.0)
         };
-        let outcome = match post_paste_native_guarded(3, authority, final_check) {
+        let outcome = match post_paste_native_guarded(PASTE_KEY_HOLD_MS, authority, final_check) {
             Ok(decision) => post_decision_outcome(decision, || {
                 pasteboard_change_count() == Some(expected_pasteboard_change.0)
             }),
@@ -726,7 +726,7 @@ fn inject_text_with_policy(
                     // nothing else wrote the clipboard after Murmur. Never
                     // read arbitrary clipboard content on this path.
                     || pasteboard_change_count() == Some(expected_pasteboard_change.0),
-                    || post_paste_native_guarded(3, authority, final_check),
+                    || post_paste_native_guarded(PASTE_KEY_HOLD_MS, authority, final_check),
                     authority,
                 );
                 verification = retry_verification;
@@ -785,12 +785,23 @@ fn create_native_paste_events(
     Ok((key_down, key_up))
 }
 
+/// How long Cmd+V stays down before its key-up, for every native paste.
+///
+/// Some applications drop an instantaneous down/up burst, so the pair is spaced
+/// like hardware. Plain dictation paste has always used 3 ms. The smart
+/// destination paste used 10 ms, which was most of its 15 ms delivery stage
+/// (`keyHoldUs`), with no recorded reason for the difference, so both now share
+/// this one value. Every guard around the post (target, pasteboard generation,
+/// secure-field refusal) runs before key-down and is unchanged.
+#[cfg(target_os = "macos")]
+pub(crate) const PASTE_KEY_HOLD_MS: u64 = 3;
+
 #[cfg(target_os = "macos")]
 pub(crate) fn simulate_smart_paste_native_guarded(
     authority: Option<&PasteAttempt>,
     final_check: impl FnOnce() -> bool,
 ) -> Result<PostDecision, String> {
-    post_paste_native_guarded(10, authority, final_check)
+    post_paste_native_guarded(PASTE_KEY_HOLD_MS, authority, final_check)
 }
 
 #[cfg(target_os = "macos")]

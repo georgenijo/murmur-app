@@ -41,7 +41,9 @@ const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.020;
 const SAMPLE_AX_BUDGET: Duration = Duration::from_millis(50);
 const CAPTURE_AX_BUDGET: Duration = Duration::from_millis(200);
 const DELIVERY_AX_BUDGET: Duration = Duration::from_millis(500);
-const POST_SETTLE: Duration = Duration::from_millis(40);
+// 47 ms keeps the key-down-to-readback window at about 50 ms now that the
+// smart-paste Cmd+V hold is 3 ms (it was 10 ms with a 40 ms settle).
+const POST_SETTLE: Duration = Duration::from_millis(47);
 const UTF8_ENCODING: u32 = 0x0800_0100;
 const AX_VALUE_CFRANGE_TYPE: u32 = 4;
 const MAX_ANCESTOR_STEPS: usize = 40;

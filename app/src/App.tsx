@@ -73,7 +73,7 @@ import {
 } from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
-import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
+import { NO_SELF_MANAGEMENT_BUILD, SPEED_TEST_BADGE } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
 import { getMeetingAudioCaptureBusy } from './lib/meetingAudio';
 import {
@@ -90,7 +90,7 @@ import {
 
 const PERFORMANCE_BUILD_BADGE = import.meta.env.VITE_MURMUR_BUILD_ID?.startsWith('settings-phase2-')
   ? 'Use this · Phase 2 Perf'
-  : undefined;
+  : SPEED_TEST_BADGE;
 
 // Settings and Meetings are not on the first screen, so their code loads as
 // separate chunks. Settings is always mounted (hidden), so its chunk is requested
@@ -294,7 +294,7 @@ function App() {
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({
-    automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD,
+    automaticChecksEnabled: !NO_SELF_MANAGEMENT_BUILD,
     setupComplete: onboardingState === 'done' && modelReady === true,
   });
 
@@ -763,7 +763,7 @@ function App() {
         meetingElapsedMs={meetings.status.elapsedMs}
         showRecordControls={false}
         showStatusChip={mainDestination !== 'home'}
-        updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
+        updateIndicator={!NO_SELF_MANAGEMENT_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
             onDownload={startDownload}

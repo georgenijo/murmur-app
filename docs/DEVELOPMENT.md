@@ -172,7 +172,9 @@ so the script refuses it.
    `--require-identity` also fails when the variable is unset. Other options
    are `--debug`, `--skip-helpers`, `--sign-only` (re-sign the last bundle),
    and `--config app/src-tauri/tauri.refactor-test.conf.json` for the
-   refactor-test bundle. The script prints the Team ID and designated
+   refactor-test bundle. The [Speed Test variant](testing/speed-test-variant.md)
+   (`tauri.speed-test.conf.json`) is a labelled, non-updating copy for running a
+   branch on another Mac for a day. The script prints the Team ID and designated
    requirement it produced, and the bundle path as `DEV_APP=…`.
 
    Certificate signing adds a secure timestamp, so the build needs network

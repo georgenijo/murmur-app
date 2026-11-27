@@ -17,6 +17,13 @@ const OVERLAY_SPRING = 'cubic-bezier(0.34,1.56,0.64,1)';
 /** Fade/scale for the floating pill appearing and hiding (ms). */
 const OVERLAY_PILL_FADE_MS = 180;
 
+/**
+ * How long the floating pill keeps its "Done" cue after the text has landed (ms).
+ * It follows the paste, so it never delays delivery; it only decides when the
+ * pill gets out of the way.
+ */
+export const OVERLAY_DONE_HOLD_MS = 250;
+
 /** Sustained hover (ms) required on the island before the card opens. */
 export const HOVER_OPEN_DWELL_MS = 150;
 /** Delay (ms) after the cursor leaves before the card begins closing. */
