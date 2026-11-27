@@ -2348,6 +2348,7 @@ const HOST_EVENTS: &[&str] = &[
     "dictation-generation-started",
     "dictation-model-unavailable",
     "recording-cancelled",
+    "recording-interrupted",
     "recording-status-changed",
     "transcription-complete",
 ];

@@ -218,3 +218,21 @@ it.each([
   expect(container.textContent?.includes('Incomplete')).toBe(shown);
   await act(async () => root.unmount());
 });
+
+it('says cleanup is still in progress on the status line when a start is refused', async () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const base = {
+    status: 'idle' as const, stillConnecting: false, showTapMissed: false, startRefused: true,
+    disabled: false, autoPaste: true, fileOutputEnabled: false,
+    onToggleDisabled: vi.fn(), onToggleAutoPaste: vi.fn(), onOpenSettings: vi.fn(),
+  };
+  for (const geometry of [{ dropdownH: 34 } as OverlayGeometry, fixture.pillExpanded as OverlayGeometry]) {
+    await act(async () => root.render(<OverlayDropdown {...base} geometry={geometry} expanded />));
+    const status = container.querySelector('[role="status"]');
+    expect(status?.textContent).toBe('Cleanup still in progress');
+    // The controls row stays intact beside the status line.
+    expect(container.querySelectorAll('[data-testid="overlay-controls-row"] button')).toHaveLength(3);
+  }
+  await act(async () => root.unmount());
+});

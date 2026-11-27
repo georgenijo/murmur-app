@@ -8728,6 +8728,49 @@ where
     }
 }
 
+/// #1183: dispose of the capture an interrupted recording preserved when its auto-stop is
+/// refused at `Idle` or `Processing`. The take is destructive and per recording id (the supervisor keeps
+/// a capture only until `take_interrupted_dictation`), so after this the supervisor holds
+/// no PCM for the recording. Whoever took it earlier (the user's stop) already owns the
+/// outcome, so a take that finds nothing says nothing. A capture that was held is lost to
+/// the user, who was told it was being transcribed: the same `recording-interrupted`
+/// event is published again with `autoTranscribe: false` and `audioLost: true`, so the
+/// frontend replaces the "transcribing" notice. Called with T held and D released.
+fn purge_refused_auto_stop_capture(host: &dyn DictationHost, state: &State, recording_id: u64) {
+    let Some(capture) = host.supervisor().take_interrupted_dictation(recording_id) else {
+        return;
+    };
+    state.app_state.note_interrupted_taken(recording_id);
+    emit_audio_lost(host, recording_id, &capture);
+}
+
+/// The `recording-interrupted` re-emit that tells the user the audio was lost
+/// (`autoTranscribe: false`, `audioLost: true`), for the interrupted recording's id.
+fn emit_audio_lost(
+    host: &dyn DictationHost,
+    recording_id: u64,
+    capture: &audio_lifecycle::InterruptedCapture,
+) {
+    let delivered_samples = capture.samples.len() as u64;
+    let (status_code, action_code) = DictationPresentation::Interrupted {
+        partial_transcription: false,
+    }
+    .codes();
+    let _ = host.emit_event(
+        "recording-interrupted",
+        serde_json::json!({
+            "recordingId": recording_id,
+            "reason": AudioCancelReason::RuntimeFailure.as_str(),
+            "deliveredSamples": delivered_samples,
+            "durationMs": capture.duration_ms,
+            "autoTranscribe": false,
+            "audioLost": true,
+            "statusCode": status_code,
+            "actionCode": action_code,
+        }),
+    );
+}
+
 /// [`stop_native_recording_for`] for the self-dispatched stop of an interrupted
 /// capture (R215.2 `RS`), which carries the registered `AutoStop` owner.
 async fn stop_native_recording_owned(
@@ -8837,6 +8880,7 @@ async fn stop_native_recording_admitted(
     // consumed here (C1.4.1 rule 4). Its status does not branch anything; the stale
     // rule below runs whatever it was. Until here the op stayed outstanding, so a
     // task cancelled while it waited on T, or a panic, retires it through `Drop`.
+    let is_auto_stop = auto_stop_owner.is_some();
     if let Some(mut owner) = auto_stop_owner {
         owner.consume(|_status| ());
     }
@@ -8908,6 +8952,14 @@ async fn stop_native_recording_admitted(
             state.app_state.note_interrupted_taken(stale_recording_id);
         }
         input.interrupted = Some(taken.as_ref().map(interrupted_meta));
+        // #1183: an owned auto-stop that is stale (a newer recording started after the
+        // interruption) never transcribes the capture it just took: tell the user it
+        // was lost, under the interrupted recording's own id.
+        if is_auto_stop {
+            if let Some(capture) = taken.as_ref() {
+                emit_audio_lost(host, stale_recording_id, capture);
+            }
+        }
         drop(taken);
         let decision = stop_ports::decide(|| {
             core_stop::decide_stop_request_stale(input, now).expect("the stop is stale")
@@ -8989,7 +9041,28 @@ async fn stop_native_recording_admitted(
                 // release (`after_d` drops after `dictation`).
                 #[cfg(feature = "dictation-shadow")]
                 after_d.hold(flight_201.seal_d(&state.app_state, &dictation));
-                return reply_of(&decision, None, "");
+                // #1183: the auto-stop of an interrupted capture is refused. At `Idle`
+                // (R201.3) the recording ended without it (a cancel, or a stop that
+                // failed) and its context is gone. At `Processing` (R201.2) a user stop
+                // is parked in the supervisor's capture stop; the worker failed, so that
+                // stop is refused by the recovering supervisor. Neither stop path ever
+                // reads the preserved map (only the `Recovering` take, the stale take and
+                // the disposal do), so nothing can transcribe the capture and nothing
+                // else would take it: purge it and tell the user the recording was lost.
+                // A `Recovering` stop that already took it leaves nothing to purge.
+                let purge = is_auto_stop && matches!(decision.row.0, "R201.2" | "R201.3");
+                // The reply is rendered under D, as the default build does; the purge
+                // allocates, so it runs after D is released.
+                let reply = reply_of(&decision, None, "");
+                drop(dictation);
+                if purge {
+                    purge_refused_auto_stop_capture(
+                        host,
+                        state,
+                        expected_recording_id.unwrap_or(current_recording_id),
+                    );
+                }
+                return reply;
             }
             Verdict::Continue | Verdict::Stale(_) | Verdict::NeedObservation(_) => {
                 unreachable!(

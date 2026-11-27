@@ -44,6 +44,7 @@ export function bezelCue(
       const { phrase, action } = modelUnavailablePhrase(indicator.reason);
       return { glyph: 'warn', word: phrase, action };
     }
+    case 'startRefused': return { glyph: 'warn', word: 'Cleaning up' };
     case 'hotkeyMiss': return { glyph: 'warn', word: 'Tap missed' };
     case 'meeting':
       return indicator.processing ? { glyph: 'spinner', word: 'Finishing' } : { glyph: 'dot', word: 'Meeting' };

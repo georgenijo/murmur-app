@@ -56,7 +56,10 @@ export function useSoundCues(settings: SoundCueSettings, meetingPhase: MeetingRu
     subscribe('recording-status-changed', (payload) => payload === 'processing' ? 'stop' : null);
     subscribe('dictation-delivery-outcome', deliveryCue);
     subscribe('recording-initialization-failed', 'failure');
-    subscribe('recording-interrupted', 'failure');
+    // The audio-lost re-emit follows the first interruption of the same
+    // recording, which already played the cue.
+    subscribe('recording-interrupted', (payload) =>
+      (payload as { audioLost?: unknown } | null)?.audioLost === true ? null : 'failure');
     return () => {
       cancelled = true;
       unlistens.forEach((unlisten) => unlisten());

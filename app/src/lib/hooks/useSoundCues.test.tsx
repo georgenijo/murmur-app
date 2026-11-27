@@ -57,6 +57,13 @@ describe('useSoundCues', () => {
     expect(mocks.play.mock.calls.map(([cue]) => cue)).toEqual(['start', 'stop', 'success', 'failure']);
   });
 
+  it('plays the failure cue once for an interruption and its audio-lost re-emit', () => {
+    const payload = { recordingId: 3, statusCode: 'microphone_interrupted', actionCode: 'retry' };
+    mocks.listeners.get('recording-interrupted')?.({ payload });
+    mocks.listeners.get('recording-interrupted')?.({ payload: { ...payload, audioLost: true } });
+    expect(mocks.play.mock.calls.map(([cue]) => cue)).toEqual(['failure']);
+  });
+
   it('reports the start cue play-out only after the cue settles, when muting is on', async () => {
     settings = { ...settings, muteSpeakersWhileDictating: true };
     await act(async () => root.render(<Harness />));

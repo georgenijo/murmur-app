@@ -5,7 +5,7 @@ import { OVERLAY_FIT_EASE, OVERLAY_FIT_MS, OVERLAY_WAVE_FOLD_MS } from '../../li
 import type { DictationStatus } from '../../lib/types';
 import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
-import type { OverlayIndicator, OverlayVisual } from './deriveVisual';
+import { CLEANUP_REFUSED_LABEL, type OverlayIndicator, type OverlayVisual } from './deriveVisual';
 import { PILL_BORDER } from './OverlayIsland';
 import { bezelCue, type BezelGlyph } from './bezelCue';
 import { modelUnavailableLabel } from '../../lib/modelUnavailable';
@@ -184,6 +184,17 @@ function StatusIndicator({ visual, smartAutoSummary = null, deliveryCue = null }
           role="status"
           aria-live="assertive"
           aria-label={modelUnavailableLabel(indicator.reason)}
+          className="flex h-4 w-4 items-center justify-center text-warning"
+        >
+          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3.5L22 20.5H2z" /><path d="M12 10v4.5" /><path d="M12 17.6v.1" />
+          </svg>
+        </span>
+      ) : indicator.kind === 'startRefused' ? (
+        <span
+          role="status"
+          aria-live="polite"
+          aria-label={CLEANUP_REFUSED_LABEL}
           className="flex h-4 w-4 items-center justify-center text-warning"
         >
           <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
@@ -383,6 +394,7 @@ function indicatorA11y(indicator: OverlayIndicator, deliveryCue: OverlayDelivery
     case 'recording': return { role: 'img', 'aria-label': 'Recording' };
     case 'meeting': return { role: 'img', 'aria-label': indicator.processing ? 'finishing meeting transcript' : 'meeting capture active' };
     case 'recovering': return { role: 'img', 'aria-label': 'recovering microphone' };
+    case 'startRefused': return { role: 'status', 'aria-live': 'polite', 'aria-label': CLEANUP_REFUSED_LABEL };
     case 'modelUnavailable':
       return { role: 'status', 'aria-live': 'assertive', 'aria-label': modelUnavailableLabel(indicator.reason) };
     case 'microphoneFailure':
