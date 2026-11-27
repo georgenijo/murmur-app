@@ -20,6 +20,32 @@ and a manifest; unavailable audio is disclosed before saving. Playback and
 capture share native admission checks. The audio manifest and WAV readers keep
 all filesystem path resolution in Rust.
 
+The menu item appears only for meetings that retained audio. The native command
+also refuses a meeting with `retain_audio` off, so it never writes an empty
+archive. The `.zip` (`app/src-tauri/src/meeting_bundle.rs`) holds:
+
+- `review.<ext>`: the existing document export for the chosen format, byte for byte.
+- `audio/segment-<id>-<channel>.wav`: each retained segment, read through the
+  playback path and stored uncompressed exactly as recorded. Nothing is
+  transcoded or synthesized.
+- `manifest.json`: the document name and format, included segments with
+  timings and sizes, omitted segments, `complete`, and `notice`. It contains no
+  local paths or transcript text.
+
+Size contract: the 8 MiB document limit does not apply. Before the save dialog,
+the workspace shows the segment count and total audio size reported by Rust.
+Retained audio is capped at 2 GiB per bundle (`MAX_BUNDLE_AUDIO_BYTES`); larger
+meetings fail closed with an error instead of producing a truncated archive. The
+archive is streamed to a temporary file one segment at a time and renamed into
+place only after it finishes.
+
+Completeness contract: a segment whose WAV is already missing, pruned, malformed,
+or outside the owned audio folder is left out. It is listed under
+`omittedSegments` with `"complete": false` and a notice, and the save message
+gives the omitted count. A bundle with no readable audio is refused. If the
+meeting is deleted, pruned, or starts capturing mid-export, the export aborts and
+publishes nothing.
+
 Existing database schemas remain supported. Legacy derived documents and their
 search rows are retained but ignored. Reading a transcript does not deserialize
 that content, and speaker-label updates preserve its original bytes. No migration
