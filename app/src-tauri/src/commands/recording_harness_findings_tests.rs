@@ -1812,3 +1812,54 @@ pub(super) fn a_stale_auto_stop_after_a_newer_recording_purges_the_capture_and_r
         a_stale_owned_auto_stop_purges_the_interrupted_capture_and_reports_the_old_id,
     ));
 }
+
+// #1183, the Processing case: a user stop is parked in the supervisor's capture stop (status
+// `Processing`, T released) when the worker fails; `finish_attempt` stores the capture and the
+// auto-stop is scheduled. It is refused at R201.2 (`already_processing`), and the user's stop
+// then returns the supervisor's recovery refusal (R203.1). No stop path reads the preserved
+// capture, so the refused auto-stop purges it and reports the recording as lost.
+
+fn a_processing_refused_auto_stop_purges_the_capture(world: &Arc<World>) {
+    world.knobs().carry_auto_stop_owner = true;
+    recording(world);
+    world.knobs().stop_result = Err(REFUSED_STOP_IN_RECOVERY);
+    let stop = ParkedStop::start(world);
+    assert_eq!(status(world), DictationStatus::Processing);
+    world.runtime_failure(1);
+    world.finish_interrupted(1, 9_000);
+    assert_eq!(world.auto_stop_requests(), vec![1]);
+    let (_owner, mut auto_stop) = world.owned_auto_stop(1);
+    let refused = complete(&mut auto_stop);
+    world.reply("stop", &refused);
+    assert_eq!(
+        refused,
+        Ok(serde_json::json!({ "type": "already_processing", "state": "processing" })),
+        "the auto-stop is refused at Processing (R201.2)"
+    );
+    let reply = stop.finish();
+    world.reply("stop", &reply);
+    assert_eq!(reply, Err(REFUSED_STOP_IN_RECOVERY.to_string()));
+    assert_eq!(status(world), DictationStatus::Idle);
+    assert!(
+        audio_lifecycle::take_interrupted_dictation(1).is_none(),
+        "the capture is gone"
+    );
+    let lost = world
+        .trace()
+        .into_iter()
+        .filter(|line| {
+            line.starts_with("emit recording-interrupted ") && line.contains("\"audioLost\":true")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lost.len(), 1, "one audio-lost notice: {lost:#?}");
+    assert!(lost[0].contains("\"recordingId\":1"), "{lost:#?}");
+    world.release_owner_clear();
+}
+
+#[test]
+pub(super) fn a_processing_refused_auto_stop_purges_the_retained_capture_and_reports_it_lost() {
+    repeat(&sub(
+        "retiring capture (Processing): a parked user stop, a runtime failure, and the auto-stop refused at R201.2 purge the capture and report it lost",
+        a_processing_refused_auto_stop_purges_the_capture,
+    ));
+}

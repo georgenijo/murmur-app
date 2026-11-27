@@ -161,6 +161,18 @@ describe('useOverlayRuntime transient cues', () => {
     });
   }
 
+  it('does not re-flash the microphone-failure cue for the audio-lost re-emit', async () => {
+    await act(async () => {
+      mocks.handlers.get('recording-interrupted')?.({
+        payload: {
+          recordingId: 4, autoTranscribe: false, audioLost: true,
+          statusCode: 'microphone_interrupted', actionCode: 'retry',
+        },
+      });
+    });
+    expect(current?.showMicrophoneFailure).toBeNull();
+  });
+
   it('shows a typed device-unavailable cue for a bounded five seconds', async () => {
     expect(current?.showMicrophoneFailure).toBeNull();
 

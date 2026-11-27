@@ -8729,7 +8729,7 @@ where
 }
 
 /// #1183: dispose of the capture an interrupted recording preserved when its auto-stop is
-/// refused at `Idle`. The take is destructive and per recording id (the supervisor keeps
+/// refused at `Idle` or `Processing`. The take is destructive and per recording id (the supervisor keeps
 /// a capture only until `take_interrupted_dictation`), so after this the supervisor holds
 /// no PCM for the recording. Whoever took it earlier (the user's stop) already owns the
 /// outcome, so a take that finds nothing says nothing. A capture that was held is lost to
@@ -9041,12 +9041,16 @@ async fn stop_native_recording_admitted(
                 // release (`after_d` drops after `dictation`).
                 #[cfg(feature = "dictation-shadow")]
                 after_d.hold(flight_201.seal_d(&state.app_state, &dictation));
-                // #1183: the auto-stop of an interrupted capture found the app at `Idle`
-                // (R201.3): the recording ended without it (a cancel, or a stop that
-                // failed). The retained capture can no longer be transcribed (the
-                // context is gone), and nothing else would ever take it, so purge it
-                // and tell the user the recording was lost.
-                let purge = is_auto_stop && decision.row.0 == "R201.3";
+                // #1183: the auto-stop of an interrupted capture is refused. At `Idle`
+                // (R201.3) the recording ended without it (a cancel, or a stop that
+                // failed) and its context is gone. At `Processing` (R201.2) a user stop
+                // is parked in the supervisor's capture stop; the worker failed, so that
+                // stop is refused by the recovering supervisor. Neither stop path ever
+                // reads the preserved map (only the `Recovering` take, the stale take and
+                // the disposal do), so nothing can transcribe the capture and nothing
+                // else would take it: purge it and tell the user the recording was lost.
+                // A `Recovering` stop that already took it leaves nothing to purge.
+                let purge = is_auto_stop && matches!(decision.row.0, "R201.2" | "R201.3");
                 drop(dictation);
                 if purge {
                     purge_refused_auto_stop_capture(

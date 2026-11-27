@@ -660,6 +660,8 @@ export function useOverlayRuntime({
     }).catch(() => {});
     listen<unknown>('recording-interrupted', (event) => {
       const presentation = interruptedPresentationFromPayload(event.payload);
+      // The audio-lost re-emit repeats an interruption already flashed.
+      if ((event.payload as { audioLost?: unknown } | null)?.audioLost === true) return;
       const cue = presentation
         ? microphoneFailureCueFromAction(presentation.actionCode)
         : null;

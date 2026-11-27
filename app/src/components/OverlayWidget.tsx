@@ -143,7 +143,6 @@ export function OverlayWidget() {
     shown: activity !== 'idle', expanded, content: overlayContent, pillW: fitW ?? null,
   });
 
-
   const recordingControls = useRecordingControls({
     status, statusRef, disabledRef: runtime.disabledRef, expandedRef,
   });

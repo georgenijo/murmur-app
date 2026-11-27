@@ -450,6 +450,36 @@ describe('useRecordingState transition ordering', () => {
     );
   });
 
+  describe('audioLost for an older recording after a newer one started', () => {
+    const lost = {
+      recordingId: 5, autoTranscribe: false, reason: 'runtime_failure', audioLost: true,
+      statusCode: 'microphone_interrupted', actionCode: 'retry',
+    };
+    const LOST = 'Microphone capture was interrupted and the recording could not be transcribed. The audio was discarded.';
+
+    it('tells the user the older recording was lost', async () => {
+      await act(async () => {
+        mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 5 } });
+        mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 6 } });
+        mocks.listeners.get('recording-interrupted')?.({ payload: lost });
+      });
+      expect(current.error).toBe(LOST);
+    });
+
+    it('never replaces a notice that belongs to the newer recording', async () => {
+      await act(async () => {
+        mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 5 } });
+        mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 6 } });
+        mocks.listeners.get('recording-initialization-failed')?.({ payload: {
+          recordingId: 6, error: 'Microphone capture failed.', errorKind: 'backend_error',
+          statusCode: 'microphone_initialization_failed', actionCode: 'retry',
+        } });
+        mocks.listeners.get('recording-interrupted')?.({ payload: lost });
+      });
+      expect(current.error).toBe('Microphone capture failed.');
+    });
+  });
+
   it('keeps the smart destination scoped to the active recording generation', async () => {
     await act(async () => {
       mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });

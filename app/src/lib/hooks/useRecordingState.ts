@@ -43,6 +43,9 @@ interface PresentErrorOptions {
 /** How long the "cleanup is still in progress" notice for a refused start stays. */
 const REFUSAL_NOTICE_MS = 5000;
 
+const AUDIO_LOST_MESSAGE =
+  'Microphone capture was interrupted and the recording could not be transcribed. The audio was discarded.';
+
 /** A stall notice names its recording; the plain "in progress" refusal notice names none. */
 function isStallNotice(error: RecordingErrorPresentation | null): boolean {
   return error?.kind === 'cleanup' && error.recordingId !== undefined;
@@ -361,13 +364,22 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     listen<unknown>('recording-interrupted', (event) => {
       if (cancelled) return;
       const presentation = interruptedPresentationFromPayload(event.payload);
-      if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
+      if (!presentation) return;
       const payload = event.payload as Record<string, unknown>;
+      // A lost recording is always reported, even when a newer one has started
+      // since. The notice then carries no recording id (so the staleness guard
+      // admits it) and shows only when no notice is active: one that belongs to
+      // the current or a newer recording is never replaced.
+      if (payload.audioLost === true && presentation.recordingId < latestRecordingGenerationRef.current) {
+        if (!currentErrorRef.current) presentError(AUDIO_LOST_MESSAGE);
+        return;
+      }
+      if (!acceptPresentationGeneration(presentation.recordingId)) return;
       // `audioLost` is the re-emit after a refused auto-stop purged the retained
       // capture: it replaces the earlier "transcribing" notice, because nothing
       // is left to transcribe.
       presentError(payload.audioLost === true
-        ? 'Microphone capture was interrupted and the recording could not be transcribed. The audio was discarded.'
+        ? AUDIO_LOST_MESSAGE
         : payload.autoTranscribe === true
           ? 'Microphone capture was interrupted. Murmur is transcribing the audio received so far.'
           : 'Microphone capture was interrupted before enough audio was received.', {
