@@ -9051,6 +9051,9 @@ async fn stop_native_recording_admitted(
                 // else would take it: purge it and tell the user the recording was lost.
                 // A `Recovering` stop that already took it leaves nothing to purge.
                 let purge = is_auto_stop && matches!(decision.row.0, "R201.2" | "R201.3");
+                // The reply is rendered under D, as the default build does; the purge
+                // allocates, so it runs after D is released.
+                let reply = reply_of(&decision, None, "");
                 drop(dictation);
                 if purge {
                     purge_refused_auto_stop_capture(
@@ -9059,7 +9062,7 @@ async fn stop_native_recording_admitted(
                         expected_recording_id.unwrap_or(current_recording_id),
                     );
                 }
-                return reply_of(&decision, None, "");
+                return reply;
             }
             Verdict::Continue | Verdict::Stale(_) | Verdict::NeedObservation(_) => {
                 unreachable!(
