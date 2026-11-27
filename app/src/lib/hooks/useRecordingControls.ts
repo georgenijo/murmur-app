@@ -13,8 +13,13 @@ export interface UseRecordingControlsArgs {
   expandedRef: React.MutableRefObject<boolean>;
 }
 
+/** How long the overlay says a start was refused because cleanup is running. */
+export const START_REFUSED_FLASH_MS = 3000;
+
 export interface RecordingControls {
   lockedMode: boolean;
+  /** A start from the overlay was refused: the previous recording is still cleaning up. */
+  startRefused: boolean;
   handleClick: () => void;
   handleDoubleClick: () => void;
 }
@@ -32,6 +37,8 @@ export function useRecordingControls({
   const [lockedMode, setLockedMode] = useState(false);
   const lockedRef = useRef(lockedMode);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [startRefused, setStartRefused] = useState(false);
+  const startRefusedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
 
@@ -41,9 +48,20 @@ export function useRecordingControls({
     if (status === 'idle' || status === 'recovering') setLockedMode(false);
   }, [status]);
 
+  // Any status other than idle means the app moved on from the refusal.
+  useEffect(() => {
+    if (status === 'idle') return;
+    setStartRefused(false);
+    if (startRefusedTimerRef.current) {
+      clearTimeout(startRefusedTimerRef.current);
+      startRefusedTimerRef.current = null;
+    }
+  }, [status]);
+
   // Clear the pending single-click debounce timer on unmount.
   useEffect(() => () => {
     if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    if (startRefusedTimerRef.current) clearTimeout(startRefusedTimerRef.current);
   }, []);
 
   // Double-click: toggle locked mode. Cancel any pending single-click first.
@@ -93,6 +111,16 @@ export function useRecordingControls({
           });
           if (res.type !== 'recording_starting') {
             setLockedMode(false);
+            // Rust refuses a start while the previous recording is still
+            // tearing down and the app stays Idle: say so instead of a silent no-op.
+            if (res.type === 'audio_recovering') {
+              setStartRefused(true);
+              if (startRefusedTimerRef.current) clearTimeout(startRefusedTimerRef.current);
+              startRefusedTimerRef.current = setTimeout(() => {
+                startRefusedTimerRef.current = null;
+                setStartRefused(false);
+              }, START_REFUSED_FLASH_MS);
+            }
           }
         } catch {
           setLockedMode(false);
@@ -137,5 +165,5 @@ export function useRecordingControls({
     }, 250);
   }, [statusRef]);
 
-  return { lockedMode, handleClick, handleDoubleClick };
+  return { lockedMode, startRefused, handleClick, handleDoubleClick };
 }

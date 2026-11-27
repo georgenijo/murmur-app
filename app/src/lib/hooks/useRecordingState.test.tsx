@@ -429,6 +429,27 @@ describe('useRecordingState transition ordering', () => {
     expect(current.error).toBe('');
   });
 
+  it('replaces the transcribing notice when an interruption reports the audio was lost', async () => {
+    const interrupted = (extra: Record<string, unknown>) => ({
+      payload: {
+        recordingId: 5, statusCode: 'microphone_interrupted', ...extra,
+      },
+    });
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 5 } });
+      mocks.listeners.get('recording-interrupted')?.(interrupted({ autoTranscribe: true, actionCode: 'wait_for_partial_transcription' }));
+    });
+    expect(current.error).toContain('Murmur is transcribing the audio received so far');
+    await act(async () => {
+      mocks.listeners.get('recording-interrupted')?.(interrupted({
+        autoTranscribe: false, actionCode: 'retry', reason: 'runtime_failure', audioLost: true,
+      }));
+    });
+    expect(current.error).toBe(
+      'Microphone capture was interrupted and the recording could not be transcribed. The audio was discarded.',
+    );
+  });
+
   it('keeps the smart destination scoped to the active recording generation', async () => {
     await act(async () => {
       mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
@@ -583,6 +604,55 @@ describe('useRecordingState transition ordering', () => {
       await act(async () => { vi.advanceTimersByTime(200); });
       expect(current.error).toBe('');
       expect(current.status).toBe('idle');
+    });
+
+    it('does not overwrite an active stall notice, and the timer cannot drop it', async () => {
+      vi.useFakeTimers();
+      await act(async () => {
+        mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 7 } });
+        mocks.listeners.get('recording-recovery-stalled')?.({ payload: {
+          recordingId: 7, statusCode: 'microphone_cleanup_stalled', actionCode: 'restart_app',
+        } });
+      });
+      expect(current.error).toContain('Restarting Murmur');
+      mocks.startRecording.mockResolvedValueOnce({ type: 'audio_recovering', state: 'recovering' });
+      await act(async () => current.handleStart());
+      expect(current.error).toContain('Restarting Murmur');
+      await act(async () => { vi.advanceTimersByTime(20_000); });
+      expect(current.error).toContain('Restarting Murmur');
+      await act(async () => {
+        mocks.listeners.get('recording-cleanup-finished')?.({ payload: { recordingId: 7 } });
+      });
+      expect(current.error).toBe('');
+    });
+
+    it('keeps the stall notice when it arrives after a refusal whose timer is pending', async () => {
+      vi.useFakeTimers();
+      await refusedStart();
+      await act(async () => {
+        mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 7 } });
+        mocks.listeners.get('recording-recovery-stalled')?.({ payload: {
+          recordingId: 7, statusCode: 'microphone_cleanup_stalled', actionCode: 'restart_app',
+        } });
+      });
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+      expect(current.error).toContain('Restarting Murmur');
+    });
+
+    it('re-arms on each refused press and clears on recording-cleanup-finished', async () => {
+      vi.useFakeTimers();
+      await refusedStart();
+      await act(async () => { vi.advanceTimersByTime(4_000); });
+      await refusedStart();
+      // The first press's timer would have fired at 5 s; the second re-armed it.
+      await act(async () => { vi.advanceTimersByTime(4_000); });
+      expect(current.error).toContain('Microphone cleanup is still in progress');
+      await act(async () => {
+        mocks.listeners.get('recording-cleanup-finished')?.({ payload: { recordingId: 7 } });
+      });
+      expect(current.error).toBe('');
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+      expect(current.error).toBe('');
     });
 
     it('does not expire a newer distinct error', async () => {

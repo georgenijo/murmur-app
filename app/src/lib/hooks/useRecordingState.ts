@@ -43,6 +43,11 @@ interface PresentErrorOptions {
 /** How long the "cleanup is still in progress" notice for a refused start stays. */
 const REFUSAL_NOTICE_MS = 5000;
 
+/** A stall notice names its recording; the plain "in progress" refusal notice names none. */
+function isStallNotice(error: RecordingErrorPresentation | null): boolean {
+  return error?.kind === 'cleanup' && error.recordingId !== undefined;
+}
+
 export function useRecordingState({ addEntry, microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
@@ -132,6 +137,29 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     setErrorPresentation(null);
   }, []);
 
+  // The "cleanup is still in progress" notice for a refused start or stop. The
+  // refusal leaves the app Idle, so no status event follows it, and the
+  // supervisor clearing its owner (the end of that cleanup) notifies nothing
+  // after an interruption. `recording-cleanup-finished` ends the notice when it
+  // does arrive; the expiry covers the paths where it does not, so an idle app
+  // never keeps a stale "in progress" notice. A stall notice names its
+  // recording and carries the "Restarting Murmur" guidance: it outranks this
+  // one, so a refusal leaves it in place (and arms no timer that could drop
+  // it); only `recording-cleanup-finished` ends it.
+  const presentCleanupRefusal = useCallback((producerEpoch?: number) => {
+    const current = currentErrorRef.current;
+    if (isStallNotice(current)) return;
+    const noticeId = presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
+      kind: 'cleanup',
+      producerEpoch,
+    });
+    if (refusalNoticeTimerRef.current) clearTimeout(refusalNoticeTimerRef.current);
+    refusalNoticeTimerRef.current = null;
+    if (noticeId !== null) {
+      refusalNoticeTimerRef.current = setTimeout(() => clearError(noticeId), REFUSAL_NOTICE_MS);
+    }
+  }, [presentError, clearError]);
+
   const dismissError = useCallback(() => {
     const current = currentErrorRef.current;
     if (current) {
@@ -145,7 +173,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
 
   const beginErrorProducer = useCallback(() => {
     dismissedErrorRef.current = null;
-    clearError();
+    // A new start clears the previous attempt's error, but not a stall notice:
+    // its "Restarting Murmur" guidance is the only explanation for the refusal
+    // this start is about to get, and only recording-cleanup-finished ends it.
+    if (!isStallNotice(currentErrorRef.current)) clearError();
     return errorProducerEpochRef.current;
   }, [clearError]);
 
@@ -332,9 +363,14 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       const presentation = interruptedPresentationFromPayload(event.payload);
       if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
       const payload = event.payload as Record<string, unknown>;
-      presentError(payload.autoTranscribe === true
-        ? 'Microphone capture was interrupted. Murmur is transcribing the audio received so far.'
-        : 'Microphone capture was interrupted before enough audio was received.', {
+      // `audioLost` is the re-emit after a refused auto-stop purged the retained
+      // capture: it replaces the earlier "transcribing" notice, because nothing
+      // is left to transcribe.
+      presentError(payload.audioLost === true
+        ? 'Microphone capture was interrupted and the recording could not be transcribed. The audio was discarded.'
+        : payload.autoTranscribe === true
+          ? 'Microphone capture was interrupted. Murmur is transcribing the audio received so far.'
+          : 'Microphone capture was interrupted before enough audio was received.', {
         recordingId: presentation.recordingId,
       });
     }).then((fn) => {
@@ -512,20 +548,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           else if (res.type === 'busy_transforming') presentError('Wait for the transform to finish.', { producerEpoch });
           else if (res.type === 'busy_recording_corpus') presentError('Finish the corpus recording before starting dictation.', { producerEpoch });
           else if (res.type === 'audio_recovering') {
-            const noticeId = presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
-              kind: 'cleanup',
-              producerEpoch,
-            });
-            // The refusal leaves the app Idle, so no status event follows it, and
-            // the supervisor clearing its owner (the end of that cleanup) notifies
-            // nothing after an interruption. `recording-cleanup-finished` ends the
-            // notice when it does arrive; this expiry covers the paths where it
-            // does not, so an idle app never keeps a stale "in progress" notice.
-            if (refusalNoticeTimerRef.current) clearTimeout(refusalNoticeTimerRef.current);
-            refusalNoticeTimerRef.current = null;
-            if (noticeId !== null) {
-              refusalNoticeTimerRef.current = setTimeout(() => clearError(noticeId), REFUSAL_NOTICE_MS);
-            }
+            presentCleanupRefusal(producerEpoch);
           }
         }
         if (stopRequested && res.type === 'recording_starting' && !generationEnded) {
@@ -556,7 +579,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         startOperationRef.current = null;
       }
     }
-  }, [beginErrorProducer, presentError, clearError, canStart]);
+  }, [beginErrorProducer, presentError, presentCleanupRefusal, clearError, canStart]);
 
   // Admission checks must see dispatched starts before native confirmation or
   // a lifecycle event updates status. Read the synchronous refs, not a render.
@@ -582,9 +605,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         return;
       }
       if (statusRef.current === 'recovering') {
-        presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
-          kind: 'cleanup',
-        });
+        presentCleanupRefusal();
         return;
       }
       if (statusRef.current !== 'recording') {
@@ -616,7 +637,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     } finally {
       isStoppingRef.current = false;
     }
-  }, [presentError]);
+  }, [presentError, presentCleanupRefusal]);
 
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async (gestureToken?: string) => {

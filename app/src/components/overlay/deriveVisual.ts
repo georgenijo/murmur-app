@@ -12,6 +12,7 @@ import type { ModelUnavailableReason } from '../../lib/modelUnavailable';
 export type OverlayIndicator =
   | { kind: 'cancelled' }
   | { kind: 'hotkeyMiss' }
+  | { kind: 'startRefused' }
   | { kind: 'modelUnavailable'; reason: ModelUnavailableReason }
   | { kind: 'microphoneFailure'; failure: MicrophoneFailureCue }
   | { kind: 'starting'; slow: boolean }
@@ -23,8 +24,11 @@ export type OverlayIndicator =
   | { kind: 'clipboardOnly' }
   | { kind: 'idle'; dimmed: boolean };
 
+/** Said by the overlay when a start is refused while the last recording is still tearing down. */
+export const CLEANUP_REFUSED_LABEL = 'Cleanup still in progress';
+
 const PRIORITY_CUES = new Set<OverlayIndicator['kind']>([
-  'calibrating', 'cancelled', 'microphoneFailure', 'modelUnavailable', 'hotkeyMiss',
+  'calibrating', 'cancelled', 'microphoneFailure', 'modelUnavailable', 'hotkeyMiss', 'startRefused',
 ]);
 
 export interface OverlayVisual {
@@ -44,7 +48,7 @@ export interface OverlayVisual {
  * Pure derivation of the overlay's top-bar visual state from status, transient
  * flashes, and global-disable. No React or timers live here.
  *
- * Priority: calibration > cancelled > microphone failure > model unavailable > hotkey miss >
+ * Priority: calibration > cancelled > microphone failure > model unavailable > hotkey miss > start refused (cleanup running) >
  * meeting > starting > recording > recovering > processing > clipboard-only > idle.
  */
 export function deriveVisual(
@@ -58,6 +62,7 @@ export function deriveVisual(
   meetingPhase: MeetingRuntimePhase = 'idle',
   showClipboardOnly: boolean = false,
   modelUnavailable: ModelUnavailableReason | null = null,
+  startRefused: boolean = false,
 ): OverlayVisual {
   let indicator: OverlayIndicator;
   if (calibrating) {
@@ -70,6 +75,8 @@ export function deriveVisual(
     indicator = { kind: 'modelUnavailable', reason: modelUnavailable };
   } else if (showHotkeyMiss) {
     indicator = { kind: 'hotkeyMiss' };
+  } else if (startRefused) {
+    indicator = { kind: 'startRefused' };
   } else if (meetingPhase !== 'idle' && meetingPhase !== 'failed') {
     indicator = { kind: 'meeting', processing: meetingPhase === 'processing' };
   } else if (status === 'starting') {

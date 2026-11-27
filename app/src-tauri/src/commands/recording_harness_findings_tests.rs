@@ -305,12 +305,15 @@ pub(super) fn a_start_after_a_dropped_start_and_a_retained_runtime_failure_is_re
 // anything (R201.3, `NotRecording`). A start reads cleanup pending and takes R101.12: refused,
 // `Idle` stays. The owner clears, and every control works: before the fix the status stayed
 // `Recovering` and only the unscoped `stop_native_recording` IPC, which no control the user has
-// sends, restored `Idle` (D-S2b-15 (d)). The refused auto-stop's capture is not consumed (it
-// stays in the preserved store, as it did before the fix); the app is no longer stuck.
+// sends, restored `Idle` (D-S2b-15 (d)). The refused auto-stop purges the retained capture and emits the
+// audio-lost notice (#1183); the app is no longer stuck.
 
 const REFUSED_STOP_IN_RECOVERY: &str = "Audio is still recovering from the previous attempt";
 
 fn the_auto_stop_is_refused_at_idle_and_a_start_is_refused_then_accepted(world: &Arc<World>) {
+    // The bridge keeps the owned auto-stop task it schedules: the refused stop below is
+    // that task (production's `dispatch_auto_stop`), not a stop the fixture builds.
+    world.knobs().carry_auto_stop_owner = true;
     recording(world);
     world.knobs().stop_result = Err(REFUSED_STOP_IN_RECOVERY);
     // The user's stop: Processing, parked in the capture stop with T released.
@@ -352,13 +355,33 @@ fn the_auto_stop_is_refused_at_idle_and_a_start_is_refused_then_accepted(world: 
         vec![1],
         "the arm scheduled the auto-stop"
     );
-    // The auto-stop runs at `Idle`: refused, nothing taken.
-    let refused = stop_reply(world, Some(1));
+    // The auto-stop runs at `Idle`: refused (R201.3).
+    let (_owner, mut auto_stop) = world.owned_auto_stop(1);
+    let refused = complete(&mut auto_stop);
+    world.reply("stop", &refused);
     assert_eq!(
         refused,
         Ok(serde_json::json!({ "type": "not_recording", "state": "idle" })),
         "the auto-stop is refused at Idle (R201.3)"
     );
+    // #1183: the refused auto-stop purged the retained capture (the supervisor holds no
+    // PCM for the recording any more) and told the user the audio was lost: the
+    // `recording-interrupted` event is published again with `autoTranscribe: false`
+    // and `audioLost: true`, replacing the earlier "being transcribed" notice.
+    assert!(
+        audio_lifecycle::take_interrupted_dictation(1).is_none(),
+        "the refused auto-stop purged the retained capture"
+    );
+    let lost = world
+        .trace()
+        .into_iter()
+        .filter(|line| {
+            line.starts_with("emit recording-interrupted ") && line.contains("\"audioLost\":true")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lost.len(), 1, "one audio-lost notice: {lost:#?}");
+    assert!(lost[0].contains("\"autoTranscribe\":false"), "{lost:#?}");
+    assert!(lost[0].contains("\"recordingId\":1"), "{lost:#?}");
     assert_eq!(status(world), DictationStatus::Idle);
     // A start takes D while the owner is still `Recovering` (R101.12): refused, `Idle` stays.
     assert_eq!(start_reply(world), audio_recovering());
@@ -1720,4 +1743,72 @@ fn a_delivery_parked_in_a_failing_scenario_is_released_on_unwind() {
     spin_bounded("the parked delivery's release", || {
         world.state().app_state.dictation.try_lock().is_err()
     });
+}
+
+// #1183, the stale case: the owned auto-stop of an interrupted recording runs after a newer
+// recording has started. Its expected id (1) no longer matches the current id (2), so it is
+// refused as stale (R201.1) before any status read. The capture is still the interrupted
+// recording's: the stale path takes it by the expected id, never the current one, and the user
+// is told that recording 1's audio was lost.
+
+fn a_stale_owned_auto_stop_purges_the_interrupted_capture_and_reports_the_old_id(
+    world: &Arc<World>,
+) {
+    world.knobs().carry_auto_stop_owner = true;
+    recording(world);
+    world.knobs().stop_result = Err(REFUSED_STOP_IN_RECOVERY);
+    // The third entry's sequence: a user stop parks in the capture stop, the worker fails,
+    // the user cancels the processing recording (`Idle`), and the stop returns the refusal.
+    let stop = ParkedStop::start(world);
+    world.runtime_failure(1);
+    let mut cancel = world.cancel(None);
+    let cancel_reply = complete(&mut cancel);
+    world.reply_unit("cancel", &cancel_reply);
+    assert_eq!(cancel_reply, Ok(()));
+    let reply = stop.finish();
+    world.reply("stop", &reply);
+    assert_eq!(reply, Err(REFUSED_STOP_IN_RECOVERY.to_string()));
+    // The capture is stored and `Interrupted` schedules the auto-stop, which has not run.
+    world.finish_interrupted(1, 8_000);
+    assert_eq!(world.auto_stop_requests(), vec![1]);
+    // The owner clears and a newer recording starts.
+    world.release_owner_clear();
+    world.knobs().stop_result = Ok(16_000);
+    let started = start_reply(world);
+    assert_eq!(
+        started.as_ref().map(|v| v["recordingId"].clone()),
+        Ok(serde_json::json!(2)),
+        "the newer recording started: {started:?}"
+    );
+    let (_owner, mut auto_stop) = world.owned_auto_stop(1);
+    let reply = complete(&mut auto_stop);
+    world.reply("stop", &reply);
+    assert_eq!(
+        reply,
+        Ok(serde_json::json!({ "type": "recording_superseded", "state": "idle" })),
+        "the stale auto-stop is refused"
+    );
+    assert!(
+        audio_lifecycle::take_interrupted_dictation(1).is_none(),
+        "the interrupted recording's capture is gone"
+    );
+    let lost = world
+        .trace()
+        .into_iter()
+        .filter(|line| {
+            line.starts_with("emit recording-interrupted ") && line.contains("\"audioLost\":true")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lost.len(), 1, "one audio-lost notice: {lost:#?}");
+    assert!(lost[0].contains("\"recordingId\":1"), "{lost:#?}");
+    assert!(lost[0].contains("\"autoTranscribe\":false"), "{lost:#?}");
+}
+
+#[test]
+pub(super) fn a_stale_auto_stop_after_a_newer_recording_purges_the_capture_and_reports_the_old_id()
+{
+    repeat(&sub(
+        "retiring capture (stale auto-stop): a newer recording started; the auto-stop of the interrupted one is refused, purges its capture and reports its id",
+        a_stale_owned_auto_stop_purges_the_interrupted_capture_and_reports_the_old_id,
+    ));
 }

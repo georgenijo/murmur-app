@@ -139,3 +139,14 @@ describe('deriveVisual', () => {
     expect(visual.showTapMissedLabel).toBe(false);
   });
 });
+
+describe('deriveVisual start refused', () => {
+  it('shows the cleanup refusal on an idle overlay, below hotkey miss and above idle', () => {
+    expect(deriveVisual('idle', false, false, false, false, false, false, 'idle', false, null, true).indicator)
+      .toEqual({ kind: 'startRefused' });
+    expect(deriveVisual('idle', false, true, false, false, false, false, 'idle', false, null, true).indicator)
+      .toEqual({ kind: 'hotkeyMiss' });
+    expect(deriveVisual('idle', false, false, false, false, false, false, 'idle', false, null, false).indicator)
+      .toEqual({ kind: 'idle', dimmed: false });
+  });
+});

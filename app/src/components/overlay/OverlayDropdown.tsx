@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
+import { CLEANUP_REFUSED_LABEL } from './deriveVisual';
 import {
   smartDestinationLabel,
   type SmartDestinationStatus,
@@ -52,6 +53,8 @@ interface OverlayDropdownProps {
   status: DictationStatus;
   stillConnecting: boolean;
   showTapMissed: boolean;
+  /** A start was just refused because the last recording is still cleaning up. */
+  startRefused?: boolean;
   /** Short model-problem label for the status line; null when the model is fine. */
   modelLabel?: string | null;
   smartDestinationStatus?: SmartDestinationStatus | null;
@@ -76,6 +79,7 @@ export function OverlayDropdown({
   status,
   stillConnecting,
   showTapMissed,
+  startRefused = false,
   modelLabel = null,
   smartDestinationStatus = null,
   smartDestinationAppName = null,
@@ -137,9 +141,9 @@ export function OverlayDropdown({
     ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
     : null;
   const showStatus = status === 'recording' || (status === 'processing' && destinationLabel)
-    || status === 'starting' || status === 'recovering' || showTapMissed
+    || status === 'starting' || status === 'recovering' || showTapMissed || startRefused
     || (modelLabel !== null && !geometry.floating);
-  const statusQuiet = status === 'recording' && !showTapMissed && modelLabel === null;
+  const statusQuiet = status === 'recording' && !showTapMissed && !startRefused && modelLabel === null;
   const reveal = {
     height: geometry.dropdownH,
     opacity: expanded ? 1 : 0,
@@ -177,6 +181,7 @@ export function OverlayDropdown({
           <span role={statusQuiet ? undefined : 'status'} aria-live={statusQuiet ? undefined : 'polite'}
             className="bezel-status pointer-events-none">
             {showTapMissed ? 'Tap missed'
+              : startRefused ? CLEANUP_REFUSED_LABEL
               : status === 'recording' ? (
                 <>
                   <span className="tabular-nums">{formatElapsed(elapsed)}</span>
@@ -244,9 +249,9 @@ export function OverlayDropdown({
           className="max-w-full truncate text-center leading-none pointer-events-none"
         >
           {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}
-          {modelLabel || showTapMissed ? (
+          {modelLabel || showTapMissed || startRefused ? (
             <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
-              {modelLabel ?? 'Tap missed'}
+              {modelLabel ?? (showTapMissed ? 'Tap missed' : CLEANUP_REFUSED_LABEL)}
             </span>
           ) : status === 'recording' ? (
             <span className="text-white/60" style={{ fontSize: 11 }}>

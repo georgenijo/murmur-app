@@ -143,9 +143,11 @@ export function OverlayWidget() {
     shown: activity !== 'idle', expanded, content: overlayContent, pillW: fitW ?? null,
   });
 
+
   const recordingControls = useRecordingControls({
     status, statusRef, disabledRef: runtime.disabledRef, expandedRef,
   });
+  const { startRefused } = recordingControls;
 
   const visual = deriveVisual(
     status,
@@ -158,6 +160,7 @@ export function OverlayWidget() {
     meetingPhase,
     runtime.showClipboardOnly,
     runtime.modelUnavailable,
+    startRefused,
   );
 
   // While the model cue shows, a click on the pill opens the page that repairs
@@ -258,7 +261,7 @@ export function OverlayWidget() {
         geometry={geometry}
         expanded={expanded}
         active={activity !== 'idle'}
-        tapMissed={visual.showTapMissedLabel || modelCueActive}
+        tapMissed={visual.showTapMissedLabel || modelCueActive || startRefused}
         material={material}
         fitW={fitW}
         onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion || modelCueActive ? undefined : recordingControls.handleDoubleClick}
@@ -304,6 +307,7 @@ export function OverlayWidget() {
             status={status}
             stillConnecting={stillConnecting}
             showTapMissed={visual.showTapMissedLabel}
+            startRefused={startRefused && !visual.showTapMissedLabel}
             modelLabel={runtime.modelUnavailable ? modelUnavailableWord(runtime.modelUnavailable) : null}
             smartDestinationStatus={runtime.smartDestinationStatus}
             smartDestinationAppName={runtime.smartDestinationAppName}
