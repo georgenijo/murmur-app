@@ -38,6 +38,7 @@ assistant — you do not need to place model files by hand.
 ```bash
 # Dev
 cd app && npm run tauri:dev        # full app, isolated bundle/data, hot reload
+cd app && MURMUR_FAKE_PERMISSIONS=fresh npm run tauri:dev:fake-permissions  # scripted permission answers (see below)
 cd app && npm run dev              # frontend only (no Rust backend)
 cd app && npm run tauri build      # production .app and .dmg
 cd app && npm run tauri:build:local  # local release .app only, ~3.5x faster rebuilds (see below)
@@ -101,6 +102,80 @@ buttons under `tauri:dev`: their `tccutil` commands target the running bundle
 identifier, which is not the terminal's permission identity. Recovery guidance
 instead points to the launching terminal in System Settings. For a built
 `.app`, the Reset actions remain available and target that app only.
+
+### Fake permissions for native onboarding tests
+
+Computer Use cannot click the macOS permission alerts (a system process owns
+them), and enabling Accessibility needs an admin password, so the onboarding
+grant paths cannot be walked natively. The dev-only fake permission provider
+(issue #972) answers the permission commands from a script instead of macOS:
+
+```bash
+cd app && MURMUR_FAKE_PERMISSIONS=fresh npm run tauri:dev:fake-permissions
+```
+
+- **Dev builds only.** The provider is behind the `fake-permissions` cargo
+  feature, which only the `tauri:dev:fake-permissions` script enables. `lib.rs`
+  refuses to compile the feature without debug assertions, so no release build
+  can contain it. `fake_permissions_default_tests` pins that the feature is off
+  by default, that every hook is gated, and that the compiled default binary has
+  none of the provider's strings.
+- **Idle unless scripted.** With the feature but without
+  `MURMUR_FAKE_PERMISSIONS`, every command uses macOS as usual. When active,
+  the log has a `DEV FAKE PERMISSIONS ACTIVE` warning naming the faked
+  permissions, and the main window shows a red `DEV: fake permissions` badge.
+- **No real grant is touched.** A faked permission's Reset command is refused
+  instead of running `tccutil`. The fake changes only what the permission
+  commands report: dictation, paste, and meeting capture still need the real
+  grants, so use it to walk onboarding and the banners, not to record.
+
+`MURMUR_FAKE_PERMISSIONS` is a preset, inline JSON, or the path of a JSON file:
+
+| Preset | Every permission |
+| --- | --- |
+| `fresh` | starts undecided; requests are granted after 1 s |
+| `granted` | starts granted |
+| `denied` | starts undecided; requests are denied; Open Settings grants after 2 s |
+| `no-answer` | starts undecided; requests and Settings visits never answer |
+
+A script names only the permissions to fake (`microphone`, `accessibility`,
+`systemAudio`, `calendar`); the others use macOS. Every field is optional:
+
+```json
+{
+  "microphone":    { "start": "notDetermined", "request": "granted", "requestDelayMs": 1500 },
+  "accessibility": { "start": "denied", "settings": "granted", "settingsDelayMs": 3000 },
+  "systemAudio":   { "start": "notDetermined", "request": "denied" },
+  "calendar":      { "start": "restricted" },
+  "openSettingsPane": true
+}
+```
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `start` | `notDetermined`, `granted`, `denied`, `restricted` | `notDetermined` |
+| `request` | answer to the in-app request: `granted`, `denied`, `noAnswer` | `granted` |
+| `requestDelayMs` | how long the simulated dialog stays up | `1000` |
+| `settings` | what the user does after Open Settings: `granted`, `denied`, `noAnswer` | `granted` |
+| `settingsDelayMs` | how long the Settings visit takes | `2000` |
+| `openSettingsPane` (top level) | also open the real System Settings pane, so Murmur loses focus and the return path runs; opening a pane changes no grant | `true` |
+
+As on macOS, a request answers only while the permission is `notDetermined`;
+once decided, only an Open Settings visit changes it. For Accessibility,
+`notDetermined` means the first request "shows the dialog" (returns
+`prompted`), and `denied` means the dialog was already used, so a request opens
+Settings (`opened_settings`). The faked commands are
+`check_microphone_permission(_status)`, `request_microphone_access`,
+`request_microphone_permission`, `open_system_preferences`,
+`check_accessibility_permission`, `request_accessibility_permission`,
+`check_accessibility_restart_needed`, `get_system_audio_permission_status`,
+`request_system_audio_permission` (no tap is started),
+`open_system_audio_preferences`, `get_calendar_permission_status`,
+`request_calendar_permission`, `open_calendar_preferences`, and the three Reset
+commands (refused).
+
+To repeat a run from the start, quit and relaunch: the script is read once at
+process start, and onboarding progress lives in the dev bundle's data directory.
 
 ## Stable signing for dev bundles
 
