@@ -75,6 +75,36 @@ never changes recording, transcription, delivery or history. Reset statistics
 clears it. Source: `app/src/lib/personalBests.ts` and
 `app/src/components/home/PersonalBestsCard.tsx`.
 
+## When you dictate
+
+An opt-in **When you dictate** card sits below Personal bests. It is off by
+default (`showDictationHours: false`); off shows only its switch and a one-line
+explanation. On, it counts the spoken dictations retained in History by local
+hour of day and shows:
+
+- the busiest hour ("Most active 9 AM – 10 AM") and how many dictations the
+  figures come from; ties keep the earliest hour;
+- a 24-bar plot from midnight to 11 PM, with the busiest hour in the primary
+  colour and axis labels at 12 AM, 6 AM, 12 PM and 6 PM; each bar's tooltip
+  states its hour and count, and a visually hidden table gives every hour's
+  count to assistive technology;
+- each period's share: Morning (5 AM – 12 PM), Afternoon (12 – 5 PM),
+  Evening (5 – 10 PM) and Night (10 PM – 5 AM, across midnight). Shares are
+  whole percents, and a period with any dictation never shows 0%.
+
+Only spoken entries count: an imported file's timestamp is when it was
+transcribed, not when anyone spoke, so files are skipped, as are entries with
+an unusable timestamp. Because the card reads History, it covers only what
+History keeps (up to 200 transcripts, less with automatic deletion or after
+Clear History) and shows nothing new while Save Transcription History is off.
+With no spoken entries it invites a first dictation. It never shows transcript
+text.
+
+Like the other cards it is display only: it reads timestamps History already
+stores and never changes recording, transcription, delivery, history or
+statistics. Source: `app/src/lib/dictationHours.ts` and
+`app/src/components/home/DictationHoursCard.tsx`.
+
 ## Fixtures
 
 `visual-fixtures.html?state=insights` shows real populated components. Additional
@@ -82,7 +112,9 @@ states are `insights-speed`, `insights-more`, `insights-empty` (zero persisted
 fixture statistics), `insights-gap` (fourth recent day absent), and
 `insights-no-speed` (recordings without transcribed words), `insights-goal`
 (a 1,000-word goal in progress), `insights-goal-met` (a 500-word goal met), and
-`insights-bests` (personal bests on). Append
+`insights-bests` (personal bests on), `insights-hours` (time-of-day card on,
+32 synthetic spoken dictations peaking at 9 AM) and `insights-hours-empty`
+(the card on with no History). Append
 `appearance=light` or `appearance=dark`; use 1100×780 or 840×620 and scroll the
 compact content to its bottom. Screenshot capture requires no CSS/JS layer.
 Fixture lifetime totals and daily buckets are independently seeded synthetic

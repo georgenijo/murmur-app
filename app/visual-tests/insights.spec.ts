@@ -192,3 +192,68 @@ for (const appearance of ['light', 'dark'] as const) {
     });
   }
 }
+
+for (const appearance of ['light', 'dark'] as const) {
+  for (const viewport of [{ width: 1100, height: 780 }, { width: 840, height: 620 }]) {
+    test(`Insights time of day: ${appearance} ${viewport.width}`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
+      const view = page.locator('.insights-view');
+      const card = view.locator('.insights-hours');
+      await expect(card).toHaveAttribute('data-hours-state', 'off');
+      await expect(card.locator('.insights-hours-bars')).toHaveCount(0);
+
+      await page.goto(`/visual-fixtures.html?state=insights-hours-empty&appearance=${appearance}`);
+      await expect(card).toHaveAttribute('data-hours-state', 'empty');
+
+      await page.goto(`/visual-fixtures.html?state=insights-hours&appearance=${appearance}`);
+      await expect(card).toHaveAttribute('data-hours-state', 'on');
+      await card.scrollIntoViewIfNeeded();
+      await expect(card.locator('[data-peak]')).toHaveAttribute('data-hour', '9');
+      await expect(card.locator('.insights-hours-summary')).toContainText('From 32 dictations in History');
+      const layout = await view.evaluate(element => {
+        const rect = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+        const headline = rect('[data-stats="headline"]');
+        const hours = rect('.insights-hours');
+        const sections = rect('.usage-dashboard-sections');
+        const plot = rect('.insights-hours-bars');
+        const bars = Array.from(element.querySelectorAll('.insights-hours-bars > span')).map(bar => bar.getBoundingClientRect());
+        const axis = Array.from(element.querySelectorAll('.insights-hours-axis > span')).map(label => label.getBoundingClientRect());
+        const periods = Array.from(element.querySelectorAll('.insights-hours-periods > div')).map(cell => {
+          const box = cell.getBoundingClientRect();
+          return { left: box.left, right: box.right, dtRight: cell.querySelector('dt')!.getBoundingClientRect().right, ddLeft: cell.querySelector('dd')!.getBoundingClientRect().left };
+        });
+        return { headlineLeft: headline.left, headlineRight: headline.right, hoursLeft: hours.left, hoursRight: hours.right,
+          hoursTop: hours.top, sectionsBottom: sections.bottom, plotLeft: plot.left, plotRight: plot.right, plotBottom: plot.bottom,
+          bars: bars.map(bar => ({ left: bar.left, right: bar.right, bottom: bar.bottom, height: bar.height })),
+          axis: axis.map(label => ({ left: label.left, right: label.right })), periods,
+          overflow: element.scrollWidth - element.clientWidth };
+      });
+      expect(layout.hoursLeft).toBeCloseTo(layout.headlineLeft, 1);
+      expect(layout.hoursRight).toBeCloseTo(layout.headlineRight, 1);
+      expect(layout.sectionsBottom).toBeLessThanOrEqual(layout.hoursTop);
+      expect(layout.overflow).toBe(0);
+      // 24 bars in order, inside the plot, sharing a baseline; the peak is the tallest.
+      expect(layout.bars).toHaveLength(24);
+      for (let index = 1; index < 24; index += 1) expect(layout.bars[index].left).toBeGreaterThanOrEqual(layout.bars[index - 1].right);
+      expect(layout.bars[0].left).toBeGreaterThanOrEqual(layout.plotLeft - 0.5);
+      expect(layout.bars[23].right).toBeLessThanOrEqual(layout.plotRight + 0.5);
+      const heights = layout.bars.map(bar => bar.height);
+      expect(Math.max(...heights)).toBe(heights[9]);
+      expect(heights[0]).toBe(0);
+      // Axis labels start under their hour and never overlap each other.
+      expect(layout.axis).toHaveLength(4);
+      expect(layout.axis[0].left).toBeCloseTo(layout.bars[0].left, 0);
+      for (let index = 1; index < 4; index += 1) expect(layout.axis[index].left).toBeGreaterThan(layout.axis[index - 1].right);
+      // Period labels never run into their share.
+      expect(layout.periods).toHaveLength(4);
+      for (const cell of layout.periods) {
+        expect(cell.dtRight).toBeLessThanOrEqual(cell.ddLeft);
+        expect(cell.ddLeft).toBeLessThanOrEqual(cell.right);
+      }
+
+      await card.getByRole('switch', { name: 'Show when you dictate' }).click();
+      await expect(card).toHaveAttribute('data-hours-state', 'off');
+    });
+  }
+}

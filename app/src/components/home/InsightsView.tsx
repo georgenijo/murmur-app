@@ -6,6 +6,8 @@ import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
 import { DailyGoalCard } from './DailyGoalCard';
 import { PersonalBestsCard } from './PersonalBestsCard';
+import { DictationHoursCard } from './DictationHoursCard';
+import type { HistoryEntry } from '../../lib/history';
 import { DashboardStatGroup, WorkspacePageHeader, type DashboardStatItem } from '../ui/DashboardPrimitives';
 import '../../styles/insights.css';
 
@@ -19,10 +21,16 @@ interface InsightsViewProps {
   /** Opt-in personal bests (off by default). The card renders only with a change handler. */
   showPersonalBests?: boolean;
   onShowPersonalBestsChange?: (enabled: boolean) => void;
+  /** Opt-in time-of-day card (off by default), read from retained History. */
+  historyEntries?: readonly HistoryEntry[];
+  showDictationHours?: boolean;
+  onShowDictationHoursChange?: (enabled: boolean) => void;
   onBackToHome: () => void;
 }
 
-export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange, showPersonalBests = false, onShowPersonalBestsChange }: InsightsViewProps) {
+const NO_ENTRIES: readonly HistoryEntry[] = [];
+
+export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange, showPersonalBests = false, onShowPersonalBestsChange, historyEntries = NO_ENTRIES, showDictationHours = false, onShowDictationHoursChange }: InsightsViewProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
   const usage = useMemo(() => getUsageOverview(stats), [stats]);
   const activity = useMemo(() => getActivityInsights(stats), [stats]);
@@ -54,6 +62,7 @@ export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'word
       {onDailyWordGoalChange && <DailyGoalCard stats={stats} goal={dailyWordGoal} onGoalChange={onDailyWordGoalChange} />}
       <UsageDashboard statsVersion={statsVersion} displayMode="page" initialMetric={initialMetric} />
       {onShowPersonalBestsChange && <PersonalBestsCard stats={stats} enabled={showPersonalBests} onEnabledChange={onShowPersonalBestsChange} />}
+      {onShowDictationHoursChange && <DictationHoursCard entries={historyEntries} enabled={showDictationHours} onEnabledChange={onShowDictationHoursChange} />}
       {details.length > 0 && (
         <details className="insights-more-statistics" open={defaultMoreOpen || undefined}>
           <summary><ChevronRight aria-hidden="true" />More statistics</summary>
