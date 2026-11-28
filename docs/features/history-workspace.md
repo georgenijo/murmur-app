@@ -112,6 +112,25 @@ History already stores locally. The diff lives in `app/src/lib/transcriptDiff.ts
 
 ## Deleting
 
+### Automatic deletion (opt-in)
+
+Settings → Delivery → History → **Delete transcripts automatically** offers
+**Never** (the default), **After 1 day**, **After 7 days**, **After 30 days**, and
+**After 90 days** (`historyRetentionDays`). With a window set, an unpinned entry
+older than that rolling age is removed from React state, the localStorage cache,
+and `history.json` when the window is chosen, at launch, and hourly while the
+app stays open (`pruneExpiredHistory` in `history.ts`, swept by
+`useHistoryManagement`). Pinned entries are always kept, and entries with a
+future or unusable timestamp are kept rather than guessed at.
+
+Choosing a window that would delete transcripts already in History does not
+apply until the user confirms an inline prompt that names the count ("This
+deletes 12 transcripts older than 30 days now"); Cancel keeps the previous
+window. A window that deletes nothing right now, and switching back to Never,
+apply at once. Deletion never touches usage statistics, meetings (which have
+their own `meetingRetentionDays`), or `.txt`/`.wav` files written by file output,
+and it does not change delivered text.
+
 `Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
 
 When search or filters narrow the transcript list, **Delete shown** removes the
@@ -167,7 +186,8 @@ Cancelling the dialog is a no-op — no command call, no message.
 | `app/src/lib/history.ts` | Entry shape, trim/filter/sort, match segmentation, export rendering |
 | `app/src/lib/historyExport.ts` | Clipboard and save-dialog wrappers around the pure renderer |
 | `app/src/lib/transcriptDiff.ts` | Word diff and changed-stage labels for **Show what changed** |
-| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, pin, delete, clear |
+| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, pin, delete, clear, automatic-deletion sweep |
+| `app/src/components/settings/HistoryRetentionSetting.tsx` | Automatic-deletion window picker and its confirmation |
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
@@ -188,3 +208,9 @@ Cancelling the dialog is a no-op — no command call, no message.
   one-time localStorage migration, isolated failure, write-through, and clear.
 - `app/src/lib/hooks/useHistoryManagement.test.tsx` — disabled retention keeps
   existing entries while rejecting new transcript content.
+- `app/src/lib/historyRetention.test.ts` — the rolling-age boundary, pin/future/NaN
+  exemptions, stored-order preservation, and settings parsing fallback.
+- `app/src/lib/hooks/useHistoryRetention.test.tsx` — default Never leaves history alone,
+  enable-time and hourly sweeps persist, and switching back to Never stops sweeping.
+- `app/src/components/settings/HistoryRetentionSetting.test.tsx` — the confirmation
+  names the count, Cancel deletes nothing, and zero-impact choices apply directly.

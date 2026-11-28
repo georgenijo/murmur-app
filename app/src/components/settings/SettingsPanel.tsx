@@ -59,6 +59,8 @@ import {
 import { accessibilityOutcomeMessage, permissionErrorMessage } from '../../lib/permissionOutcome';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
+import { HistoryRetentionSetting } from './HistoryRetentionSetting';
+import type { HistoryRetentionDays } from '../../lib/history';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { playSoundCue, type SoundCue } from '../../lib/soundCues';
 import { AppearanceSettings } from './AppearanceSettings';
@@ -220,6 +222,8 @@ interface SettingsPanelProps {
   initialized: boolean;
   status: DictationStatus;
   onResetStats: () => void;
+  /** Transcripts an automatic-deletion window would remove now (for its confirmation). */
+  countExpiredTranscripts?: (days: HistoryRetentionDays) => number;
   onRerunSetup: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
@@ -301,6 +305,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls', keywords: 'destination focus media play pause next previous', macOSOnly: true },
   { page: 'delivery', target: 'file-output', title: 'Save to file', detail: 'Save transcript or audio files locally', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription history', detail: 'Keep completed dictations on this Mac', keywords: 'save retain local transcripts' },
+  { page: 'delivery', target: 'history-retention', title: 'Delete transcripts automatically', detail: 'Remove unpinned transcripts after a set number of days', keywords: 'auto delete expire retention privacy clean up old history days' },
   { page: 'delivery', target: 'history-changes', title: 'Show what Murmur changed', detail: 'Compare raw recognition with delivered text in History', keywords: 'original raw recognition diff compare cleanup corrections heard' },
   { page: 'delivery', target: 'app-overrides-manual', editorTab: 'app-overrides', title: 'App bundle ID', detail: 'Add an app override by its exact bundle ID', keywords: 'manual advanced profile' },
   { page: 'delivery', target: 'app-overrides', title: 'App overrides', detail: 'Customize delivery for individual apps', keywords: 'profile bundle id per app' },
@@ -383,6 +388,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   initialized,
   status,
   onResetStats,
+  countExpiredTranscripts,
   onRerunSetup,
   accessibilityGranted,
   onCheckForUpdate,
@@ -1392,6 +1398,11 @@ export const SettingsPanel = memo(function SettingsPanel({
               description="Save new transcripts on this Mac. Turning off keeps existing history."
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
+            />
+            <HistoryRetentionSetting
+              value={settings.historyRetentionDays}
+              onChange={(historyRetentionDays) => onUpdateSettings({ historyRetentionDays })}
+              countExpired={countExpiredTranscripts}
             />
             <SettingToggle
               targetId="history-changes"
