@@ -463,11 +463,13 @@ fn teardown_gap_starts_are_refused_and_the_app_ends_idle() {
     }
 }
 
-/// PD-20 has a pinned seed (PD-18, PD-19 and PD-21 to PD-24 are fixed), and the shell test that
-/// reproduces the sequence is named beside it (D-S2b-5, D-S2b-7). There is no "known findings"
-/// set: a behaviour outside C7.1 fails `seeds_hold_the_properties`.
+/// Every [`FINDING_SEEDS`] witness still takes its PD, and the shell test that reproduces the
+/// sequence is named beside it (D-S2b-5, D-S2b-7). The table is empty today: PD-18 to PD-24 are
+/// fixed, and PD-20's former witnesses are pinned as fixed in `FIXED_CANCEL_PROCESSING_SEEDS`. A
+/// newly preserved defect adds its row here. There is no "known findings" set: a behaviour
+/// outside C7.1 fails `seeds_hold_the_properties`.
 #[test]
-fn pd20_has_a_pinned_seed() {
+fn every_finding_seed_takes_its_pd() {
     for witness in &FINDING_SEEDS {
         let report = run_seed(gated(witness.seed));
         assert!(
@@ -553,11 +555,55 @@ fn a_cancel_of_a_processing_recording_completes_performance_with_its_terminal() 
     }
 }
 
+/// R204b.5: the pipeline failed, so its performance guard was never finished and its `Drop`
+/// completes the run as `Failed` (`NativeDictationPerformanceGuard::drop`). Seed 220,511's
+/// recording (the cancel lost its claim to R204b.5) ends with that completion, as the shell
+/// fixture `pd20_the_pipelines_failure_wins_the_terminal_and_the_cancel_completes_nothing`
+/// shows.
+#[test]
+fn the_pipeline_guards_drop_completes_a_failed_pipeline() {
+    let report = run_seed(gated(220_511));
+    assert!(
+        report
+            .hits
+            .cancel_lost_to
+            .get("R204b.5")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "{:?}",
+        report.hits
+    );
+    assert!(
+        report
+            .hits
+            .completed_by
+            .get("R204b.5")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "seed 220,511's failed pipeline completes no performance: {:?}",
+        report.hits
+    );
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+}
+
+/// After the cancel's `TERM` step: the world, whether the queue still holds a performance
+/// completion, and whether it holds the diagnostics half of the `TERM` (`TermDiag`).
+struct CancelStep {
+    w: World,
+    pending: bool,
+    diagnostics: bool,
+}
+
 /// Drive the cancel of a `Processing` recording 1 through its post-D effects, one queue step at
-/// a time, over a world where `claimed` already holds the recording's terminal (if any).
-/// Returns the world after the steps up to and including the `TERM` step, and whether the queue
-/// still holds a performance completion.
-fn run_cancel_to_its_terminal(claimed: Option<(TerminalOutcome, &'static str)>) -> (World, bool) {
+/// a time, over a world where `claimed` already holds the recording's terminal (if any) and
+/// `perf_taken` its performance outcome (another path's completion, if any). Stops after the
+/// step that runs the `TERM`.
+fn run_cancel_to_its_terminal(
+    claimed: Option<(TerminalOutcome, &'static str)>,
+    perf_taken: Option<(PerfOutcome, &'static str)>,
+) -> CancelStep {
     struct Steps(std::collections::VecDeque<QItem>);
     impl Queued for Steps {
         fn queue(&mut self) -> &mut std::collections::VecDeque<QItem> {
@@ -584,6 +630,9 @@ fn run_cancel_to_its_terminal(claimed: Option<(TerminalOutcome, &'static str)>) 
     };
     if let Some((outcome, row)) = claimed {
         assert!(w.claim_terminal(1, Terminal::new(outcome, ErrCode::None), row, won));
+    }
+    if let Some((outcome, row)) = perf_taken {
+        w.perf_complete(1, outcome, row, won);
     }
     let decision = crate::cancel::decide_cancel_request(
         &w.view(),
@@ -625,15 +674,28 @@ fn run_cancel_to_its_terminal(claimed: Option<(TerminalOutcome, &'static str)>) 
     let pending = steps.0.iter().any(|item| {
         matches!(item, QItem::Fx(_, placed) if matches!(placed.effect, Effect::PerfComplete(_)))
     });
-    (w, pending)
+    let diagnostics = steps
+        .0
+        .iter()
+        .any(|item| matches!(item, QItem::TermDiag(..)));
+    CancelStep {
+        w,
+        pending,
+        diagnostics,
+    }
 }
 
 /// PD-20, the step: the cancel's `Cancelled` completion is part of the step that claims its
 /// terminal, so nothing runs between the two ledgers' entries.
 #[test]
 fn the_cancels_completion_is_the_step_that_claims_its_terminal() {
-    let (w, pending) = run_cancel_to_its_terminal(None);
+    let CancelStep {
+        w,
+        pending,
+        diagnostics,
+    } = run_cancel_to_its_terminal(None, None);
     assert!(!pending, "the completion is its own queued step");
+    assert!(diagnostics, "a won claim completes the diagnostics capture");
     assert_eq!(
         w.ledger.claimed.get(&1).map(|(o, _, row)| (*o, *row)),
         Some((TerminalOutcome::UserCancelledProcessing, "R205.5"))
@@ -646,18 +708,26 @@ fn the_cancels_completion_is_the_step_that_claims_its_terminal() {
 }
 
 /// PD-20, the gate: a claim lost to the recording's own end completes nothing, and one lost to a
-/// stale-owner `Superseded` (PD-22 / PD-23's split) still completes.
+/// stale-owner `Superseded` (PD-5's split, R207.2 / R209.2) still completes. The pipeline's own
+/// `Cancelled` (R204b.6's `UserCancelledProcessing`) is the recording's end, as the shell's
+/// ledger treats it. A lost claim never completes the diagnostics capture (PD-11).
 #[test]
 fn the_cancels_completion_follows_a_claim_that_stands() {
-    for outcome in [
-        TerminalOutcome::TooShort,
-        TerminalOutcome::NoSpeech,
-        TerminalOutcome::StopFailure,
-        TerminalOutcome::PipelineFailure,
-        TerminalOutcome::CaptureInitFailure,
-        TerminalOutcome::Success,
+    for (outcome, row) in [
+        (TerminalOutcome::TooShort, "R203.pre"),
+        (TerminalOutcome::NoSpeech, "R203.pre"),
+        (TerminalOutcome::StopFailure, "R203.pre"),
+        (TerminalOutcome::PipelineFailure, "R204b.5"),
+        (TerminalOutcome::CaptureInitFailure, "R213.2"),
+        (TerminalOutcome::Success, "R204b.6"),
+        (TerminalOutcome::UserCancelledProcessing, "R204b.6"),
     ] {
-        let (w, _) = run_cancel_to_its_terminal(Some((outcome, "R203.pre")));
+        let CancelStep { w, diagnostics, .. } =
+            run_cancel_to_its_terminal(Some((outcome, row)), None);
+        assert!(
+            !diagnostics,
+            "a claim lost to {outcome:?} completes no diagnostics capture"
+        );
         assert_eq!(
             w.ledger.claimed.get(&1).map(|(o, _, _)| *o),
             Some(outcome),
@@ -670,12 +740,47 @@ fn the_cancels_completion_follows_a_claim_that_stands() {
         );
         assert!(w.perf.dropped.contains(&(1, "R205.5")));
     }
-    let (w, _) = run_cancel_to_its_terminal(Some((TerminalOutcome::Superseded, "R211.2")));
+    let CancelStep { w, diagnostics, .. } =
+        run_cancel_to_its_terminal(Some((TerminalOutcome::Superseded, "R207.2")), None);
     assert_eq!(
         w.perf.outcome.get(&1),
         Some(&(PerfOutcome::Cancelled, "R205.5")),
-        "a stale-owner supersede is PD-22's and PD-23's, not this row's to drop"
+        "a stale-owner supersede is PD-5's split, not this row's to drop"
     );
+    assert!(!diagnostics, "the claim lost: no diagnostics capture");
+}
+
+/// PD-20, the whole pair: with nothing in the ledger but the performance claim already taken by
+/// another path, the pair loses as a whole (the shell's `claim_terminal_with_performance` checks
+/// the performance claim before it claims the terminal): no terminal, no completion, no
+/// diagnostics, and the terminal is left for the path that completed.
+#[test]
+fn the_cancels_pair_loses_as_a_whole_to_a_taken_performance_claim() {
+    let CancelStep {
+        w,
+        pending,
+        diagnostics,
+    } = run_cancel_to_its_terminal(None, Some((PerfOutcome::NoSpeech, "R203.5")));
+    assert!(!pending);
+    assert!(!diagnostics, "a pair that lost completes no diagnostics");
+    assert_eq!(
+        w.ledger.claimed.get(&1),
+        None,
+        "the terminal stays unclaimed"
+    );
+    assert_eq!(
+        w.ledger
+            .tries
+            .get(&1)
+            .map(|tries| tries.iter().map(|t| (t.row, t.won)).collect::<Vec<_>>()),
+        Some(vec![("R205.5", false)])
+    );
+    assert_eq!(
+        w.perf.outcome.get(&1),
+        Some(&(PerfOutcome::NoSpeech, "R203.5"))
+    );
+    assert!(w.perf.dropped.contains(&(1, "R205.5")));
+    assert!(w.perf.late.is_empty(), "the pair's completion never ran");
 }
 
 /// The fixed PD-24: the supervisor's `Recovering` arm out of `Starting` completes performance

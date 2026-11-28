@@ -47,6 +47,9 @@ pub struct RunHits {
     /// The cancel of a processing recording (R205.5) lost its terminal claim and completed no
     /// performance, by the row whose claim won (PD-20's fix: the winner's own path completes).
     pub cancel_lost_to: BTreeMap<&'static str, u32>,
+    /// Every recording's recorded performance outcome at the end of the run, by the row whose
+    /// completion it is (R204b.5: the pipeline guard's `Drop` after the pipeline failed).
+    pub completed_by: BTreeMap<&'static str, u32>,
     /// Every decision the flights acted on, by row: the rows the gate must see.
     pub decided: BTreeMap<&'static str, u32>,
     /// Every `NeedObservation` round a flight answered, by the row the verdict names.
@@ -569,6 +572,9 @@ impl Checker {
                     *self.hits.cancel_lost_to.entry(winner).or_default() += 1;
                 }
             }
+        }
+        for (_, row) in w.perf.outcome.values() {
+            *self.hits.completed_by.entry(row).or_default() += 1;
         }
         for (rid, row) in &w.perf.late {
             let cancelled = |ledger_row: Option<&&'static str>| ledger_row == Some(&"R205.5");

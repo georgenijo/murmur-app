@@ -183,6 +183,14 @@ pub(crate) struct PortFailure;
 /// What a port returns.
 pub(crate) type PortResult = Result<(), PortFailure>;
 
+/// [`Ports::terminal_then_perf`] for a port whose decisions never carry a paired completion
+/// (only the cancel's R205.5 does, `CancelPorts`): both effects fail. Two ungated calls in a
+/// row would let another path complete performance between the claims (PD-20), so a port that
+/// has no ledger to share fails closed rather than running them.
+pub(crate) fn no_paired_terminal() -> (PortResult, PortResult) {
+    (Err(PortFailure), Err(PortFailure))
+}
+
 /// The effect ports: production's implementation is today's code, the tests'
 /// is a recorder. One method per effect family; the executor picks the family
 /// from the effect and the dispatch kind from [`dispatch_kind`]. The field
@@ -215,11 +223,9 @@ pub(crate) trait Ports {
     /// between them (**PD-20**, the cancel of a `Processing` recording, R205.5). The results
     /// are the terminal's and the performance's, in that order; a completion the pair
     /// declines (the claim does not stand) still reports `Ok`: the effect ran and completed
-    /// nothing. The default runs the two calls in order, for a port with no ledger to
-    /// share.
-    fn terminal_then_perf(&self, terminal: &Effect, perf: &Effect) -> (PortResult, PortResult) {
-        (self.terminal(terminal), self.perf(perf))
-    }
+    /// nothing. There is no default: every port states how it runs the pair, and one whose
+    /// decisions never carry it returns [`no_paired_terminal`].
+    fn terminal_then_perf(&self, terminal: &Effect, perf: &Effect) -> (PortResult, PortResult);
     /// `KB` (Sync).
     fn keyboard(&self, effect: &Effect) -> PortResult;
     /// `GA`, `PCC`, `PH`, `TS`, `TI`, `SPEC`, `REL`, `TL`, `ACC`, `OBS` (Sync).
@@ -743,9 +749,9 @@ impl<'a> Executor<'a> {
                         // point between the two claims (they are one step).
                         #[cfg(test)]
                         crate::barrier_hook::at(perf.code());
-                        // Through the executor's own ports, not an observing flight's wrapper:
-                        // the wrapper only forwards `TERM` and `PC` and notes nothing for them.
-                        let (terminal, performance) = self.ports.terminal_then_perf(effect, &perf);
+                        // The observing flight's wrapper forwards the pair to the executor's
+                        // own ports and notes nothing for it, as for a lone `TERM` or `PC`.
+                        let (terminal, performance) = ports.terminal_then_perf(effect, &perf);
                         self.record_port(index, effect, terminal);
                         self.record_port(index + 1, &perf, performance);
                         self.cursor += 1;
@@ -871,6 +877,9 @@ impl Ports for ObservingPorts<'_> {
     }
     fn perf(&self, effect: &Effect) -> PortResult {
         self.inner.perf(effect)
+    }
+    fn terminal_then_perf(&self, terminal: &Effect, perf: &Effect) -> (PortResult, PortResult) {
+        self.inner.terminal_then_perf(terminal, perf)
     }
     fn keyboard(&self, effect: &Effect) -> PortResult {
         self.inner.keyboard(effect)

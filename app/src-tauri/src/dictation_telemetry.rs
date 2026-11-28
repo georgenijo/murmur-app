@@ -246,17 +246,19 @@ impl DictationTelemetry {
     ///
     /// The ledger's lock is held across `take_performance`, which takes the performance claim
     /// (the begin coordinator's `entries` lock, then released) and answers whether it took it.
-    /// **Lock order: this ledger's lock, then the coordinator's `entries` lock; both are leaf
-    /// locks** (the coordinator never calls back into the ledger, `take_performance` must not),
-    /// and neither is held across anything that blocks. A path that completes performance
+    /// **Lock order: this ledger's lock, then the coordinator's `entries` lock.** The ledger's
+    /// lock is not a leaf here: it nests `entries`, which is a leaf (the coordinator never calls
+    /// back into the ledger, and `take_performance` must not), and neither is held across
+    /// anything that blocks. A path that completes performance
     /// without this lock (a stop's rows, the pipeline guard) either took the claim before
     /// `take_performance`, so this pair loses as a whole (no terminal claimed, nothing
     /// completed), or comes after it and finds the claim taken.
     ///
     /// The claim stands for the pair while the ledger holds nothing for the id, or a stale-owner
-    /// `Superseded` (PD-22's split: the cancel still completes performance); a terminal of the
-    /// recording's own end (a stop's or the pipeline's) is that path's to complete, so the
-    /// pair claims and completes nothing.
+    /// `Superseded` (PD-5's split, R207.2 / R209.2: the cancel still completes performance); a
+    /// terminal of the recording's own end (a stop's or the pipeline's, including the
+    /// pipeline's own `UserCancelledProcessing`) is that path's to complete, so the pair claims
+    /// and completes nothing.
     pub(crate) fn claim_terminal_with_performance(
         &self,
         recording_id: u64,
@@ -327,6 +329,12 @@ impl DictationTelemetry {
             .attempts
             .get(&recording_id)
             .and_then(|attempt| attempt.terminal)
+    }
+
+    /// Test builds only: whether another call holds the ledger's lock right now (never waits).
+    #[cfg(test)]
+    pub(crate) fn ledger_locked_for_test(&self) -> bool {
+        self.inner.try_lock_or_recover().is_none()
     }
 
     /// `terminal_for_test` that never waits for the ledger's lock (`None` while another
@@ -448,9 +456,19 @@ mod tests {
         const CODE: DictationErrorCode = DictationErrorCode::CancelledProcessing;
         let telemetry = DictationTelemetry::default();
 
-        // Nothing in the ledger yet and the performance claim is free: both are taken.
+        // Nothing in the ledger yet and the performance claim is free: both are taken, and the
+        // ledger's lock is held across the performance claim (one critical section).
         telemetry.accepted(1);
-        let won = telemetry.claim_terminal_with_performance(1, CANCEL, CODE, || true);
+        assert!(!telemetry.ledger_locked_for_test());
+        let held = Cell::new(false);
+        let won = telemetry.claim_terminal_with_performance(1, CANCEL, CODE, || {
+            held.set(telemetry.ledger_locked_for_test());
+            true
+        });
+        assert!(
+            held.get(),
+            "the ledger's lock is held across the claim that wins"
+        );
         assert_eq!(
             won,
             PairedClaim {
@@ -463,7 +481,15 @@ mod tests {
         // The performance claim was already taken by another path: the pair loses as a whole,
         // and the terminal stays unclaimed for that path to take.
         telemetry.accepted(2);
-        let lost = telemetry.claim_terminal_with_performance(2, CANCEL, CODE, || false);
+        let held = Cell::new(false);
+        let lost = telemetry.claim_terminal_with_performance(2, CANCEL, CODE, || {
+            held.set(telemetry.ledger_locked_for_test());
+            false
+        });
+        assert!(
+            held.get(),
+            "the ledger's lock is held across the claim that loses"
+        );
         assert_eq!(
             lost,
             PairedClaim {
@@ -497,7 +523,7 @@ mod tests {
         assert!(!ran.get());
 
         // A stale-owner `Superseded` holds the terminal: the cancel's terminal loses, its
-        // performance completion still runs (PD-22).
+        // performance completion still runs (PD-5's split, R207.2 / R209.2).
         telemetry.accepted(4);
         assert!(telemetry.claim_terminal(
             4,

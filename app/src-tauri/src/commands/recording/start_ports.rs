@@ -362,6 +362,11 @@ impl<'a> StartPorts<'a> {
 }
 
 impl Ports for StartPorts<'_> {
+    // Only the cancel's R205.5 pairs a `TERM` with its `PC` (PD-20).
+    fn terminal_then_perf(&self, _terminal: &Effect, _perf: &Effect) -> (PortResult, PortResult) {
+        crate::dictation_executor::executor::no_paired_terminal()
+    }
+
     fn app_state(&self) -> &AppState {
         &self.state.app_state
     }

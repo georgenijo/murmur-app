@@ -409,20 +409,13 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
             }
         }
         Effect::PerfComplete(complete) => {
-            // `only_if_run` (PD-24): the coordinator answers `NoRun` for an id with no
-            // registered or begun run and claims nothing.
-            let run = cx.w.perf.registered.contains(&fx.rid) || cx.w.perf.begun.contains(&fx.rid);
-            // `follows_terminal` (PD-20): the second half of the terminal claim just before it,
-            // only while that claim stands (it won, or it lost to a stale-owner supersede).
+            // `follows_terminal` (PD-20) is the second half of the terminal claim just before
+            // it, and `drain_one` runs the two as one step (`apply_pair`), deciding the claim's
+            // standing before the claim. A lone one finds its own claim made already: it stands
+            // only on a stale-owner supersede.
+            debug_assert!(!complete.follows_terminal, "a paired PC outside its pair");
             let stands = !complete.follows_terminal || cx.w.terminal_stands(fx.rid);
-            if !stands {
-                cx.w.perf.dropped.insert((fx.rid, fx.row));
-            } else if run || !complete.only_if_run {
-                let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
-                cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
-            } else {
-                cx.w.perf.dropped.insert((fx.rid, fx.row));
-            }
+            perf_complete_effect(cx, fx, complete, stands);
         }
         Effect::PipelineGuardFinish(outcome) => {
             let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
@@ -484,6 +477,92 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
         | Effect::PipelineEnter(_)
         | Effect::SmartDestinationEmit => {}
     }
+    record_effect(cx, fx, at, effect, before, accepted, claim);
+    true
+}
+
+/// A `PerfComplete`'s state change: dropped when the terminal claim it follows does not stand
+/// (`follows_terminal`, PD-20) or when `only_if_run` finds no run (PD-24), else completed.
+fn perf_complete_effect(
+    cx: &mut Cx<'_>,
+    fx: &FxCtx,
+    complete: &crate::effects::PerfComplete,
+    stands: bool,
+) {
+    // `only_if_run` (PD-24): the coordinator answers `NoRun` for an id with no
+    // registered or begun run and claims nothing.
+    let run = cx.w.perf.registered.contains(&fx.rid) || cx.w.perf.begun.contains(&fx.rid);
+    if stands && (run || !complete.only_if_run) {
+        let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
+        cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
+    } else {
+        cx.w.perf.dropped.insert((fx.rid, fx.row));
+    }
+}
+
+/// PD-20's pair, R205.5's `TERM` and the `PerfComplete` that follows it, as **one** step,
+/// decided as the shell's `DictationTelemetry::claim_terminal_with_performance` decides it: the
+/// ledger and the performance claim are read before either claim is made.
+///
+/// * The id was never accepted (PD-10): no terminal is claimed; the completion stands alone.
+/// * A stale-owner `Superseded` holds the terminal: the claim loses, the completion runs.
+/// * The recording's own end holds the terminal: the claim loses and nothing completes.
+/// * Nothing is claimed but another path holds the performance claim: the pair loses as a
+///   whole (no terminal is claimed, nothing completes), and the terminal is left to that path.
+/// * Otherwise both are claimed.
+///
+/// Returns whether the terminal claim won: only a won claim completes the diagnostics capture
+/// (`emit_dictation_terminal_with_performance`, PD-11).
+fn apply_pair(
+    cx: &mut Cx<'_>,
+    fx: &FxCtx,
+    at: Placement,
+    term: &Effect,
+    pc_fx: &FxCtx,
+    pc_at: Placement,
+    pc: &Effect,
+) -> bool {
+    let (Effect::Terminal(_), Effect::PerfComplete(complete)) = (term, pc) else {
+        unreachable!("a pair is a TERM and its PC: {term:?}, {pc:?}");
+    };
+    // `In` would complete the diagnostics under the claim whatever it decided.
+    debug_assert_ne!(at, Placement::In, "R205.5's pair runs after D");
+    let rid = fx.rid;
+    let accepted = cx.w.ledger.accepted.contains(&rid);
+    let stands = cx.w.terminal_stands(rid);
+    if accepted && !cx.w.ledger.claimed.contains_key(&rid) && cx.w.perf_claim_taken(rid) {
+        let before = cx.w.status;
+        cx.w.pair_lost_whole(rid, fx.row);
+        record_effect(cx, fx, at, term, before, accepted, Some(false));
+        cx.w.perf.dropped.insert((rid, pc_fx.row));
+        let accepted = cx.w.ledger.accepted.contains(&pc_fx.rid);
+        record_effect(cx, pc_fx, pc_at, pc, before, accepted, None);
+        return false;
+    }
+    apply(cx, fx, at, term);
+    let won = cx
+        .out
+        .effects
+        .last()
+        .and_then(|event| event.claim)
+        .unwrap_or(false);
+    let before = cx.w.status;
+    let accepted = cx.w.ledger.accepted.contains(&pc_fx.rid);
+    perf_complete_effect(cx, pc_fx, complete, stands);
+    record_effect(cx, pc_fx, pc_at, pc, before, accepted, None);
+    won
+}
+
+/// The trace entry of an effect that ran.
+fn record_effect(
+    cx: &mut Cx<'_>,
+    fx: &FxCtx,
+    at: Placement,
+    effect: &Effect,
+    before: Status,
+    accepted: bool,
+    claim: Option<bool>,
+) {
     let step = cx.w.step;
     cx.out.effects.push(EffectEv {
         tid: fx.tid,
@@ -499,7 +578,6 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
         accepted,
         step,
     });
-    true
 }
 
 /// The `In` effects of a decision, atomically (one D section).
@@ -608,23 +686,36 @@ pub fn drain_one<F: Queued>(flight: &mut F, cx: &mut Cx<'_>) -> Option<Poll> {
                     return Some(Poll::Blocked);
                 }
             } else {
-                apply(cx, &fx, placed.at, &placed.effect);
-                // A completion that follows its terminal claim (PD-20) is the same step: no
-                // other actor runs between the claim and the completion.
-                if matches!(placed.effect, Effect::Terminal(_)) {
-                    let paired = matches!(
+                // A completion that follows its terminal claim (PD-20) at the same placement is
+                // the same step: no other actor runs between the claim and the completion.
+                let paired = matches!(placed.effect, Effect::Terminal(_))
+                    && matches!(
                         flight.queue().get(1),
                         Some(QItem::Fx(_, next))
-                            if matches!(&next.effect, Effect::PerfComplete(pc) if pc.follows_terminal)
+                            if next.at == placed.at
+                                && matches!(&next.effect, Effect::PerfComplete(pc) if pc.follows_terminal)
                     );
-                    if paired {
-                        if let Some(QItem::Fx(paired_fx, next)) = flight.queue().remove(1) {
-                            apply(cx, &paired_fx, next.at, &next.effect);
-                        }
-                    }
-                }
+                // Whether the diagnostics half of a split `TERM` follows: a pair that lost
+                // completes no diagnostics (PD-11, as `emit_dictation_terminal_with_performance`).
+                let diagnostics = if paired {
+                    let Some(QItem::Fx(paired_fx, next)) = flight.queue().remove(1) else {
+                        unreachable!("the pair was matched above");
+                    };
+                    apply_pair(
+                        cx,
+                        &fx,
+                        placed.at,
+                        &placed.effect,
+                        &paired_fx,
+                        next.at,
+                        &next.effect,
+                    )
+                } else {
+                    apply(cx, &fx, placed.at, &placed.effect);
+                    true
+                };
                 if let Effect::Terminal(terminal) = placed.effect {
-                    if placed.at != Placement::In {
+                    if placed.at != Placement::In && diagnostics {
                         flight.queue().insert(1, QItem::TermDiag(fx, terminal));
                     }
                 }

@@ -19,7 +19,7 @@ inventory table below were refreshed at `main` @ `ce5041ad`. `recording.rs` mean
 | `active_context` | std mutex | `state.rs:416` | Per-recording context snapshot. `clear_active_context` (`state.rs:561`) takes it and, inside it, `vad_stream` (`state.rs:391`) and `stream_reuse` (`state.rs:389`). |
 | `last_transcription_at`, `model_idle_policy` | std mutexes | `state.rs:381-382` | Idle-unload bookkeeping. |
 | backend mutex | `ModelRuntimeManager.inner` | `model_runtime.rs:860` (in `unload`) | Held by any decode, model load or unload. |
-| `dictation_telemetry`, diagnostics store, performance `entries` | std mutexes | `dictation_telemetry.rs`, `recording.rs` | Terminal-claim and performance bookkeeping. Leaves. |
+| `dictation_telemetry`, diagnostics store, performance `entries` | std mutexes | `dictation_telemetry.rs`, `recording.rs` | Terminal-claim and performance bookkeeping. The diagnostics store and `entries` are leaves. The `dictation_telemetry` ledger nests one lock: `claim_terminal_with_performance` (the cancel of a `Processing` recording, PD-20) holds it while it takes `entries` (ledger, then `entries`; never the reverse). |
 | supervisor `PublicState.owner`, `hal_boundary`, `INTERRUPTED_CAPTURES` | std mutexes | `al:675` (`hal_boundary`), `al:2706` (`INTERRUPTED_CAPTURES`) | Supervisor-side state. Leaves, except that `hal_boundary` is held across `sink.notify` on the supervisor thread (`al:1455`). |
 | keyboard detectors, `HOLD_PROMOTION` | std mutexes | `keyboard.rs:1574`, `:1784-1786` | Taken after D when both are needed (see below). |
 | `PREPARATION` | std mutex | `audio_prepare.rs:261` | Capture-preparation slot. Leaf. |
