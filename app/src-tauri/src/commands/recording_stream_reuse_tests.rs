@@ -538,7 +538,7 @@ fn single_piece_incomplete_plan_routes_directly_to_whole_clip_without_duplicate_
     assert_eq!(result.attempt.text, "Whole clip decoded once.");
     assert_eq!(stop.decoded, [filtered.len()]);
     let outcome = result.reuse.unwrap();
-    assert_eq!(outcome.code, "zero_offset");
+    assert_eq!(outcome.code, "no_commit");
     assert_eq!(outcome.pieces, 1);
     assert_eq!(outcome.decoded_ms, (filtered.len() / 16) as u64);
     assert_eq!(outcome.mismatch_kind, None);

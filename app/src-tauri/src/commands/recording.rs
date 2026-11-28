@@ -4339,25 +4339,27 @@ fn decode_final_transcript(
             transcription.smart_punctuation,
         )
     };
-    let fallback = |backend: &mut dyn transcriber::TranscriptionBackend,
-                    reason: Reason,
-                    pieces: u32,
-                    overlap_words: u64,
-                    tail_samples: usize,
-                    mismatch_kind: Option<&'static str>| {
-        whole_clip(backend).map(|attempt| FinalDecode {
-            attempt,
-            reuse: Some(Outcome {
-                code: reason.as_str(),
-                pieces,
-                // Time spent at stop: a tail decode that was then discarded,
-                // plus the whole-clip decode that replaced it.
-                decoded_ms: samples_to_ms(tail_samples + filtered.len()),
-                overlap_words,
-                mismatch_kind,
-            }),
-        })
-    };
+    let fallback =
+        |backend: &mut dyn transcriber::TranscriptionBackend,
+         reason: Reason,
+         pieces: u32,
+         overlap_words: u64,
+         tail_samples: usize,
+         #[allow(unused_variables)] mismatch_kind: Option<&'static str>| {
+            whole_clip(backend).map(|attempt| FinalDecode {
+                attempt,
+                reuse: Some(Outcome {
+                    code: reason.as_str(),
+                    pieces,
+                    // Time spent at stop: a tail decode that was then discarded,
+                    // plus the whole-clip decode that replaced it.
+                    decoded_ms: samples_to_ms(tail_samples + filtered.len()),
+                    overlap_words,
+                    #[cfg(test)]
+                    mismatch_kind,
+                }),
+            })
+        };
     let plan = match reuse {
         Ok(None) => {
             return whole_clip(backend).map(|attempt| FinalDecode {
@@ -4378,6 +4380,7 @@ fn decode_final_transcript(
             pieces: plan.pieces,
             decoded_ms: samples_to_ms(decoded_samples),
             overlap_words: plan.overlap_words as u64,
+            #[cfg(test)]
             mismatch_kind: None,
         }),
     };
@@ -4411,10 +4414,11 @@ fn decode_final_transcript(
             .map(|attempt| FinalDecode {
                 attempt,
                 reuse: Some(Outcome {
-                    code: Reason::ZeroOffset.as_str(),
+                    code: Reason::NoCommit.as_str(),
                     pieces: plan.pieces,
                     decoded_ms: samples_to_ms(filtered.len()),
                     overlap_words: plan.overlap_words as u64,
+                    #[cfg(test)]
                     mismatch_kind: None,
                 }),
             }),

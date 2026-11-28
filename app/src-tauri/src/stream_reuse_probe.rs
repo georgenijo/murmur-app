@@ -190,7 +190,7 @@ fn stream_reuse_accuracy_probe() {
             Err(reason) => (None, reason.as_str(), 0.0, None),
             Ok(plan) => match plan.complete_text() {
                 Some(text) => (Some(text), "reused_complete", 0.0, None),
-                None if plan.start == 0 => (None, Reason::ZeroOffset.as_str(), 0.0, None),
+                None if plan.start == 0 => (None, "zero_offset", 0.0, None),
                 None => {
                     let (tail, took) = decode(backend.as_mut(), &filtered[plan.start..]);
                     match plan.stitch(&tail) {
