@@ -111,6 +111,27 @@
 .insights-view .insights-bests-grid dd { display: flex; flex-shrink: 0; align-items: baseline; gap: 6px; margin: 0 0 0 auto; white-space: nowrap; }
 .insights-view .insights-bests-grid strong { color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; font-variant-numeric: tabular-nums; }
 .insights-view .insights-bests-grid small { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+/* Opt-in "When you dictate" card: same card shape as personal bests, a 24-bar hour plot when on. */
+.insights-view .insights-hours { flex-shrink: 0; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-card); background: var(--ui-tint-raised); }
+.insights-view .insights-hours-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.insights-view .insights-hours-header h2 { margin: 0; min-width: 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; }
+.insights-view .insights-hours-hint { margin: 4px 0 0; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.insights-view .insights-hours-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin: 4px 0 0; color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
+.insights-view .insights-hours-summary strong { font-weight: 600; font-variant-numeric: tabular-nums; }
+.insights-view .insights-hours-summary small { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.insights-view .insights-hours-plot { margin-top: 8px; }
+.insights-view .insights-hours-bars { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); align-items: end; gap: 2px; height: 64px; border-bottom: 1px solid var(--ui-hairline); }
+.insights-view .insights-hours-bars > span { display: block; height: 0; min-height: 0; border-radius: 2px 2px 0 0; background: var(--ui-chart-2); }
+.insights-view .insights-hours-bars > span[data-peak] { background: var(--murmur-primary); }
+.insights-view .insights-hours-axis { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); margin-top: 3px; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); font-variant-numeric: tabular-nums; }
+.insights-view .insights-hours-axis > span { grid-row: 1; grid-column-end: span 6; justify-self: start; white-space: nowrap; }
+.insights-view .insights-hours-periods { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 16px; margin: 8px 0 0; }
+.insights-view .insights-hours-periods > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; min-height: 28px; border-top: 1px solid var(--ui-hairline); padding-top: 4px; }
+.insights-view .insights-hours-periods dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.insights-view .insights-hours-periods dd { margin: 0; color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (max-width: 950px) {
+  .insights-view .insights-hours-periods { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .insights-view :is(button, summary):focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
 [data-appearance="dark"] .insights-view {
   --ui-chart-1: color-mix(in srgb, var(--murmur-primary) 35%, var(--murmur-background));

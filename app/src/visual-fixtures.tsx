@@ -614,6 +614,7 @@ const fixtureSettings = {
   vocabularySuggestions: fixtureVocabularySuggestions,
   dailyWordGoal: requestedState === 'insights-goal' ? 1000 : requestedState === 'insights-goal-met' ? 500 : 0,
   showPersonalBests: requestedState === 'insights-bests',
+  showDictationHours: requestedState === 'insights-hours' || requestedState === 'insights-hours-empty',
   vocabularyEntries: [{
     id: 'fixture-term',
     written: 'Murmur',
@@ -649,6 +650,18 @@ if (fixtureVocabularySuggestions) {
     'Mateo wants Zustand in the onboarding prototype.',
   ].map((text, index) => ({ schemaVersion: 2, id: `suggestion-${index}`, text, timestamp: Date.UTC(2026, 10, 20 + index), duration: 6, source: 'recording', pinned: false }))));
 }
+// Synthetic spoken dictations spread over the day for the opt-in time-of-day card:
+// a morning peak at 9 AM, a smaller afternoon rise and a few late entries.
+const dictationHoursEntries: HistoryEntry[] = [
+  [8, 3], [9, 7], [10, 4], [11, 2], [13, 2], [14, 3], [15, 5], [16, 2], [19, 2], [21, 1], [23, 1],
+].flatMap(([hour, count]) => Array.from({ length: count }, (_, index): HistoryEntry => ({
+  schemaVersion: 2,
+  id: `hours-${hour}-${index}`,
+  text: 'Synthetic fixture dictation for the time-of-day card.',
+  timestamp: fixtureTimestamp(-index, hour, 10 + index),
+  duration: 8,
+  source: 'recording',
+})));
 const insightsEmpty = requestedState === 'insights-empty';
 if (requestedState === 'insights-gap') {
   const missingDay = Object.keys(fixtureBuckets)[3];
@@ -832,6 +845,9 @@ function VisualFixture() {
                 onDailyWordGoalChange={(dailyWordGoal) => setSettings((current) => ({ ...current, dailyWordGoal }))}
                 showPersonalBests={settings.showPersonalBests}
                 onShowPersonalBestsChange={(showPersonalBests) => setSettings((current) => ({ ...current, showPersonalBests }))}
+                historyEntries={requestedState === 'insights-hours-empty' ? [] : requestedState === 'insights-hours' ? dictationHoursEntries : historyEntries}
+                showDictationHours={settings.showDictationHours}
+                onShowDictationHoursChange={(showDictationHours) => setSettings((current) => ({ ...current, showDictationHours }))}
                 onBackToHome={backToHome}
               />
             ) : destination === 'meetings' ? (

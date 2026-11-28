@@ -617,6 +617,17 @@ describe('loadSettings', () => {
     expect(loadSettings().showPersonalBests).toBe(false);
   });
 
+  it('keeps the time-of-day card off unless explicitly enabled', () => {
+    expect(DEFAULT_SETTINGS.showDictationHours).toBe(false);
+    for (const [stored, expected] of [[true, true], [false, false], ['true', false], [1, false], [null, false]] as const) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, showDictationHours: stored }));
+      expect(loadSettings().showDictationHours).toBe(expected);
+    }
+    const { showDictationHours: _omitted, ...legacy } = DEFAULT_SETTINGS;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().showDictationHours).toBe(false);
+  });
+
   it('validates the opt-in hotkey timing feedback setting', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
