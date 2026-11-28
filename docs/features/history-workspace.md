@@ -84,6 +84,35 @@ filters still evaluate the complete retained history before this presentation
 window is applied, and exports include the complete filtered result set rather
 than only the currently mounted batch.
 
+## Select to combine
+
+A thought dictated in several takes can be copied back as one block. **Select
+transcripts to combine…** in the history overflow menu turns on selection mode;
+nothing about History changes until it is chosen, and it is never remembered
+between visits.
+
+- Each row gains a checkbox and its hover actions are hidden. Clicking a row, or
+  pressing Space or Enter on a focused row, toggles it instead of copying it.
+- A bar pinned to the bottom of the list shows the count and offers **Select all
+  N shown** / **Select none**, **Copy combined**, **Copy as Markdown**, and
+  **Done**. Like **Copy N shown** in the export menu, **Select all** covers the
+  whole filtered set, including rows past the mounted batch. Copy feedback appears in the bar, which stays in view while older
+  rows are chosen. Escape on a row or in the bar, or **Done**, leaves the mode and
+  clears the selection.
+- **Copy combined** writes plain text: each selected transcript's stored text,
+  trimmed of surrounding whitespace, oldest first, separated by one blank line.
+  Blank transcripts are skipped. Order follows time, not click order.
+- **Copy as Markdown** uses the existing Markdown export, so it keeps that
+  format's newest-first order and per-entry headings.
+- Only rows that are still shown count. A search, filter, or deletion that hides
+  a selected row removes it from the count and from what is copied.
+- Selection never edits, reorders, or deletes stored history, and it only writes
+  to the clipboard when a copy button is pressed. Delivered dictation text is
+  untouched.
+
+`combineHistoryText` in `app/src/lib/history.ts` is the pure join; the panel
+owns the selection state.
+
 ## Show what Murmur changed
 
 Settings → Delivery → History → **Show what Murmur changed** is off by
@@ -199,7 +228,8 @@ Cancelling the dialog is a no-op — no command call, no message.
 - `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the retired teaching-context exclusion.
 - `app/src/lib/transcriptDiff.test.ts` — diff segments, replacement counting, spacing folding, line breaks, the size bound, and stage labels.
 - `app/visual-tests/history-changes.spec.ts` — comparison panel geometry in light and dark, and its absence while the setting is off.
-- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, and the two-step clear.
+- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, the two-step clear, and select-to-combine (toggle, keyboard, order, narrowing, exit).
+- `app/visual-tests/history-select-combine.spec.ts` — selection-mode column geometry and bottom-bar bounds in light and dark at two window sizes.
 - `app/src/lib/hooks/useFileTranscription.test.tsx` — newly enqueued files publish synchronously and enter the sequential drain exactly once.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.
 - `app/src-tauri/src/commands/settings_store.rs` — history/stats/settings shape

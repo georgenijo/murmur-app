@@ -906,4 +906,118 @@ describe('HistoryPanel', () => {
     expect(container.textContent).not.toContain('Apply mode');
     expect(container.querySelector('.transcript-copy')).toBeNull();
   });
+  describe('select to combine', () => {
+    const selectionBar = () => container.querySelector('[data-testid="history-selection-bar"]') as HTMLElement | null;
+    const barButton = (label: string) => Array.from(selectionBar()?.querySelectorAll('button') ?? []).find((b) => b.textContent === label) as HTMLButtonElement | undefined;
+    const cards = () => Array.from(container.querySelectorAll<HTMLElement>('article'));
+    const cardFor = (text: string) => cards().find((card) => card.textContent?.includes(text))!;
+
+    async function startSelecting() {
+      await act(async () => moreActions().click());
+      await act(async () => byText('Select transcripts to combine…')!.click());
+    }
+
+    it('is off until chosen from the overflow menu', async () => {
+      await render();
+      expect(selectionBar()).toBeNull();
+      expect(container.querySelector('.transcript-select')).toBeNull();
+      await startSelecting();
+      expect(selectionBar()).not.toBeNull();
+      expect(container.querySelectorAll('.transcript-select')).toHaveLength(3);
+      expect(barButton('Copy combined')!.disabled).toBe(true);
+      expect(selectionBar()!.textContent).toContain('Select transcripts to combine');
+    });
+
+    it('toggles rows instead of copying and copies them oldest first as one block', async () => {
+      const entries = [
+        entry({ id: 'a', text: '  First take.  ', timestamp: Date.UTC(2026, 6, 18, 9) }),
+        entry({ id: 'b', text: 'Unrelated note.', timestamp: Date.UTC(2026, 6, 18, 10) }),
+        entry({ id: 'c', text: 'Second take.', timestamp: Date.UTC(2026, 6, 18, 11) }),
+      ];
+      await render({ entries });
+      await startSelecting();
+      // Click the newer one first: order follows time, not click order.
+      await act(async () => cardFor('Second take.').click());
+      await act(async () => cardFor('First take.').click());
+      expect(writeText).not.toHaveBeenCalled();
+      expect(cardFor('Second take.').dataset.selected).toBe('true');
+      expect(cardFor('Unrelated note.').dataset.selected).toBe('false');
+      expect(selectionBar()!.textContent).toContain('2 selected');
+
+      await act(async () => barButton('Copy combined')!.click());
+      expect(writeText).toHaveBeenCalledWith('First take.\n\nSecond take.');
+      expect(selectionBar()!.textContent).toContain('Copied 2 transcripts as one block.');
+    });
+
+    it('toggles with Space from the keyboard and from the checkbox', async () => {
+      await render();
+      await startSelecting();
+      const card = cardFor('remember the invariant');
+      await act(async () => {
+        card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      });
+      expect(card.dataset.selected).toBe('true');
+      expect(card.getAttribute('aria-label')).toContain('selected. Press Space to deselect');
+      const box = cardFor('imported meeting audio').querySelector('input.transcript-select') as HTMLInputElement;
+      await act(async () => box.click());
+      expect(box.checked).toBe(true);
+      expect(selectionBar()!.textContent).toContain('2 selected');
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('copies the selection as Markdown in the export order (newest first)', async () => {
+      await render();
+      await startSelecting();
+      await act(async () => barButton('Select all 3 shown')!.click());
+      await act(async () => barButton('Copy as Markdown')!.click());
+      const markdown = writeText.mock.calls[0][0] as string;
+      expect(markdown).toContain('# Murmur transcript history');
+      expect(markdown).toContain('imported meeting audio');
+      expect(markdown.indexOf('remember the invariant')).toBeLessThan(markdown.indexOf('ship the Tauri release notes'));
+    });
+
+    it('counts only rows still shown after a search narrows the list', async () => {
+      await render();
+      await startSelecting();
+      await act(async () => barButton('Select all 3 shown')!.click());
+      expect(selectionBar()!.textContent).toContain('3 selected');
+      await type('tauri');
+      expect(selectionBar()!.textContent).toContain('1 selected');
+      await act(async () => barButton('Copy combined')!.click());
+      expect(writeText).toHaveBeenCalledWith('ship the Tauri release notes');
+    });
+
+    it('hides row actions while selecting and restores copy-on-click after Done', async () => {
+      await render();
+      await startSelecting();
+      expect(container.querySelector<HTMLElement>('.transcript-actions')!.hidden).toBe(true);
+      await act(async () => cardFor('remember the invariant').click());
+      await act(async () => barButton('Done')!.click());
+      expect(selectionBar()).toBeNull();
+      expect(container.querySelector<HTMLElement>('.transcript-actions')!.hidden).toBe(false);
+      await act(async () => cardFor('remember the invariant').click());
+      expect(writeText).toHaveBeenCalledWith('remember the invariant');
+      // Re-entering starts from an empty selection.
+      await startSelecting();
+      expect(selectionBar()!.textContent).toContain('Select transcripts to combine');
+    });
+
+    it('leaves selection mode with Escape on a row', async () => {
+      await render();
+      await startSelecting();
+      await act(async () => {
+        cards()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      expect(selectionBar()).toBeNull();
+    });
+
+    it('reports a clipboard failure in the bar', async () => {
+      writeText.mockRejectedValueOnce(new Error('denied'));
+      await render();
+      await startSelecting();
+      await act(async () => cards()[0].click());
+      await act(async () => barButton('Copy combined')!.click());
+      expect(selectionBar()!.textContent).toContain('Could not copy to the clipboard.');
+    });
+  });
 });
