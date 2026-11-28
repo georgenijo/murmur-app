@@ -109,6 +109,57 @@ describe('useRecordingState transition ordering', () => {
     expect(current.status).toBe('recovering');
   });
 
+  // #486: in double-tap mode the hotkey arrives as a toggle. During cleanup it
+  // must still send no IPC, but it may not be a silent no-op.
+  it('shows the cleanup notice for a toggle while recovering, without any IPC', async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+    });
+
+    await act(async () => current.toggleRecording('keyboard-7'));
+
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+    expect(mocks.stopRecording).not.toHaveBeenCalled();
+    expect(mocks.cancelRecording).not.toHaveBeenCalled();
+    expect(current.status).toBe('recovering');
+    expect(current.error).toBe('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+
+    // Recovery reaching Idle takes the notice away, as for a refused start.
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+    });
+    expect(current.error).toBe('');
+  });
+
+  it('keeps a stall notice when a toggle arrives while recovering', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 7 } });
+      mocks.listeners.get('recording-recovery-stalled')?.({ payload: {
+        recordingId: 7, statusCode: 'microphone_cleanup_stalled', actionCode: 'restart_app',
+      } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+    });
+    expect(current.error).toContain('Restarting Murmur');
+
+    await act(async () => current.toggleRecording());
+
+    expect(current.error).toContain('Restarting Murmur');
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+  });
+
+  it('ignores a toggle while processing, with no notice and no IPC', async () => {
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
+    });
+
+    await act(async () => current.toggleRecording());
+
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+    expect(mocks.stopRecording).not.toHaveBeenCalled();
+    expect(current.error).toBe('');
+  });
+
   it('cancels promptly while microphone initialization is still starting', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',
