@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-11-28
+
+<!-- Release notes generated using configuration in .github/release.yml at d3d97bb4b983c628b2f9a53da22fd24e207736bf -->
+
+## What's Changed
+### Other Changes
+* fix: purge refused auto-stop capture; overlay feedback on refused start (#1183, #1184) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1223
+* docs: state the meeting audio-bundle size and completeness contracts (Refs #735) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1225
+* feat(dev): fake permission provider for native onboarding tests (Refs #972) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1226
+* fix(dictation): an unwinding stop or pipeline guard claims its terminal (PD-13, Refs #1191) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1227
+* test: pre-scan visual-fixtures deps so a cold Vite server never reloads mid-test (Refs #1224) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1228
+* test(dictation): cover the PD-25 earlier-take tombstone writes and its bound (Refs #1186) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1230
+* fix(dictation): a double-tap during microphone cleanup shows the cleanup notice (Refs #486) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1233
+* test(capture): offline AEC3 feasibility evaluation for meeting echo — no-go for shipped config (Refs #594) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1235
+* feat(history): opt-in "Show what Murmur changed" comparison per transcript by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1236
+* feat(insights): opt-in daily word goal with progress and streak by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1237
+* fix(dictation): an unwinding stop or pipeline guard emits idle (Refs #1231) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1232
+* feat(history): opt-in automatic deletion of old transcripts by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1238
+* feat(history): select several transcripts and copy them as one block by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1239
+* feat(vocabulary): opt-in saved-spelling suggestions from local history by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1240
+* feat(history): opt-in app-profile tag and App filter in History by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1241
+* feat(insights): opt-in personal bests card by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1242
+* feat(palette): opt-in transcript search in the command palette by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1243
+* feat(insights): opt-in "When you dictate" hour-of-day card by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1244
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.68.4...v0.69.0
+
 ## [0.68.4] - 2026-11-24
 
 <!-- Release notes generated using configuration in .github/release.yml at 62d9270dfc745d9bfd03c7333070c3d582509296 -->
