@@ -140,6 +140,19 @@ describe('loadSettings', () => {
     expect(loadSettings().historyShowRecognition).toBe(false);
   });
 
+  it('keeps the History app-profile view off by default and persists the opt-in', () => {
+    expect(DEFAULT_SETTINGS.historyShowProfile).toBe(false);
+    saveSettings({ ...DEFAULT_SETTINGS, historyShowProfile: true });
+    expect(loadSettings().historyShowProfile).toBe(true);
+
+    const { historyShowProfile: _omitted, ...older } = DEFAULT_SETTINGS;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(older));
+    expect(loadSettings().historyShowProfile).toBe(false);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, historyShowProfile: 1 }));
+    expect(loadSettings().historyShowProfile).toBe(false);
+  });
+
   it('persists the explicit meeting-suggestion opt-in and rejects malformed consent', () => {
     saveSettings({ ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true });
     expect(loadSettings().meetingSuggestionsEnabled).toBe(true);

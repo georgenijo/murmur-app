@@ -559,6 +559,16 @@ const entries: HistoryEntry[] = [
           ],
         },
       } : {}),
+      ...(requestedState === 'home-history-profile' && source === 'recording' && index % 3 !== 2 ? {
+        recording: {
+          recordingId: 60 + index,
+          modelId: 'parakeet-v3',
+          profileId: dayOffset === 0
+            ? 'Work notes for the quarterly planning review and launch checklist'
+            : index % 2 === 0 ? 'Slack' : 'Code editor',
+          stages: [],
+        },
+      } : {}),
     };
   }),
   {
@@ -577,6 +587,10 @@ const entries: HistoryEntry[] = [
     timestamp: fixtureTimestamp(0, 15, 26),
     duration: 8,
     source: 'recording',
+    ...(requestedState === 'home-history-profile' ? {
+      pinned: true,
+      recording: { recordingId: 80, modelId: 'parakeet-v3', profileId: 'Slack', stages: [] },
+    } : {}),
   },
 ];
 
@@ -586,6 +600,7 @@ const fixturePasteLastShortcut: Settings['pasteLastShortcut'] = shortcutFixtureE
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
   historyShowRecognition: requestedState === 'home-history-changes',
+  historyShowProfile: requestedState === 'home-history-profile',
   smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
   smartAutoProbeEnabled: requestedState === 'settings-smart-auto',
   smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto' || requestedState === 'settings-smart-auto-no-probes'

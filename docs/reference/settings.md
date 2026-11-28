@@ -94,6 +94,7 @@ interface Settings {
   pasteLastShortcut: PasteLastShortcut | null;
   retainHistory: boolean;
   historyShowRecognition: boolean;        // display-only History comparison
+  historyShowProfile: boolean;            // display-only History profile tag and App filter
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
@@ -175,6 +176,7 @@ export const DEFAULT_SETTINGS: Settings = {
   smartPunctuation: true,
   retainHistory: true,
   historyShowRecognition: false,
+  historyShowProfile: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,

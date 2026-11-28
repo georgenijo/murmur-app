@@ -110,6 +110,33 @@ The feature is display-only. It never changes delivered text, the clipboard
 on delivery, history writes, statistics, or logs, and it reads only data
 History already stores locally. The diff lives in `app/src/lib/transcriptDiff.ts`.
 
+## Show app profile
+
+Settings → Delivery → History → **Show app profile in History** is off by
+default. When it is on, a live dictation that resolved an
+[app profile](per-app-profiles.md) at recording start shows that profile's
+label as a neutral tag on its metadata line, and the Filter menu gains an
+**App** section: **Any app**, one choice per profile label in history, and
+**No app profile** (global settings, imported files, and entries saved before
+v2 recorded a profile).
+
+- The label comes from `recording.profileId`, the profile label History already
+  stores for each v2 live dictation. Nothing new is recorded, and no bundle ID
+  or app name is read; whitespace-only labels count as no profile.
+- Profiles are listed most-used first (ties by name), capped at 8 so the menu
+  stays bounded. The section is hidden when no entry has a profile.
+- The App choice composes with Show, From, Pinned, and search, appears in the
+  trigger label and its accessible name, and is included in **Showing N of M**,
+  Export, and **Delete shown** exactly like the other filters.
+- A profile choice never outlives its menu: turning the setting off, or the
+  profile leaving the menu (its last entry deleted or rolled off, or it falls
+  out of the top 8), resets it to **Any app**, and turning the setting back on
+  does not restore it.
+- Long labels truncate on one line in both the tag and the menu.
+
+The feature is display-only. It never changes delivered text, delivery,
+history writes, statistics, logs, or export formats.
+
 ## Deleting
 
 `Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
@@ -171,7 +198,7 @@ Cancelling the dialog is a no-op — no command call, no message.
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
-| `app/src/components/history/HistoryFilterMenu.tsx` | The single Filter menu and its trigger label |
+| `app/src/components/history/HistoryFilterMenu.tsx` | The single Filter menu (including the opt-in App section) and its trigger label |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
 ## Tests

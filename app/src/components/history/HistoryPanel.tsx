@@ -3,7 +3,10 @@ import { Copy, GitCompareArrows, Star, Trash2 } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
   entrySource,
+  entryProfile,
   filterHistory,
+  historyProfiles,
+  profileFilterLabel,
   formatTimestamp,
   formatHistoryExport,
   historyDayKey,
@@ -15,6 +18,7 @@ import {
   type HistoryFilter,
   type HistoryDateFilter,
   type HistoryPinnedFilter,
+  type HistoryProfileFilter,
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { changedStageLabels, countDiffChanges, diffTranscript } from '../../lib/transcriptDiff';
@@ -45,6 +49,8 @@ interface HistoryPanelProps {
   onTranscribeFile?: () => void;
   /** Offer the opt-in comparison of raw recognition with delivered text. */
   showRecognition?: boolean;
+  /** Opt-in: tag rows with their app profile and offer an App filter. Display-only. */
+  showProfile?: boolean;
 }
 
 const HISTORY_RENDER_BATCH = 30;
@@ -160,6 +166,7 @@ function HistoryPanelComponent({
   focusSearchToken,
   onTranscribeFile = () => {},
   showRecognition = false,
+  showProfile = false,
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<HistoryEntry | null>(null);
@@ -169,6 +176,7 @@ function HistoryPanelComponent({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [dateFilter, setDateFilter] = useState<HistoryDateFilter>('all');
   const [pinnedFilter, setPinnedFilter] = useState<HistoryPinnedFilter>('all');
+  const [selectedProfileFilter, setProfileFilter] = useState<HistoryProfileFilter>('any');
   const [filterNow, setFilterNow] = useState(() => Date.now());
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -218,11 +226,23 @@ function HistoryPanelComponent({
     noticeTimerRef.current = setTimeout(() => setNotice(null), 4000);
   }, []);
 
+  const profiles = useMemo(() => (showProfile ? historyProfiles(entries) : []), [entries, showProfile]);
+  // A profile filter never outlives its menu: turning the setting off, or the
+  // profile leaving the offered list, falls back to any app.
+  const selectedProfile = profileFilterLabel(selectedProfileFilter);
+  const profileFilter: HistoryProfileFilter = !showProfile || profiles.length === 0
+    || (selectedProfile !== null && !profiles.includes(selectedProfile))
+    ? 'any'
+    : selectedProfileFilter;
+  useEffect(() => {
+    // Forget a dropped choice so it cannot silently return with the setting.
+    if (profileFilter !== selectedProfileFilter) setProfileFilter('any');
+  }, [profileFilter, selectedProfileFilter]);
   const visible = useMemo(
     // The clock state triggers rollover/resume refreshes; each new entry must
     // still be compared with the current time, not the last refresh time.
-    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, pinnedFilter, now: Date.now() })),
-    [entries, query, filter, dateFilter, pinnedFilter, filterNow],
+    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, pinnedFilter, profileFilter, now: Date.now() })),
+    [entries, query, filter, dateFilter, pinnedFilter, profileFilter, filterNow],
   );
   const rendered = useMemo(
     () => visible.slice(0, renderLimit),
@@ -230,7 +250,7 @@ function HistoryPanelComponent({
   );
   useEffect(() => {
     setRenderLimit(HISTORY_RENDER_BATCH);
-  }, [query, filter, dateFilter, pinnedFilter]);
+  }, [query, filter, dateFilter, pinnedFilter, profileFilter]);
   // The newest entry in the whole history, not the first row on screen:
   // sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
@@ -305,11 +325,12 @@ function HistoryPanelComponent({
     setQuery('');
   };
 
-  const filtersActive = filter !== 'all' || dateFilter !== 'all' || pinnedFilter !== 'all';
+  const filtersActive = filter !== 'all' || dateFilter !== 'all' || pinnedFilter !== 'all' || profileFilter !== 'any';
   const clearFilters = () => {
     setFilter('all');
     setDateFilter('all');
     setPinnedFilter('all');
+    setProfileFilter('any');
   };
   // Show all removes the note or empty state that holds its own button, so focus moves to search.
   const showAll = () => {
@@ -328,8 +349,8 @@ function HistoryPanelComponent({
       deleteEntryTokensRef.current.set(entry, created);
       return created;
     });
-    return JSON.stringify({ query, filter, dateFilter, pinnedFilter, entryTokens });
-  }, [query, filter, dateFilter, pinnedFilter, visible]);
+    return JSON.stringify({ query, filter, dateFilter, pinnedFilter, profileFilter, entryTokens });
+  }, [query, filter, dateFilter, pinnedFilter, profileFilter, visible]);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden" data-empty={entries.length === 0}>
@@ -459,6 +480,9 @@ function HistoryPanelComponent({
             onFilterChange={setFilter}
             onDateFilterChange={setDateFilter}
             onPinnedFilterChange={setPinnedFilter}
+            profiles={profiles}
+            profileFilter={profileFilter}
+            onProfileFilterChange={setProfileFilter}
             onClear={clearFilters}
           />
 
@@ -492,6 +516,7 @@ function HistoryPanelComponent({
           const isNewest = entry.id === newestId;
           const showDayLabel = index === 0 || historyDayKey(entry.timestamp) !== historyDayKey(rendered[index - 1].timestamp);
           const endsDay = index === rendered.length - 1 || historyDayKey(entry.timestamp) !== historyDayKey(rendered[index + 1].timestamp);
+          const profile = showProfile ? entryProfile(entry) : null;
           return (
             <Fragment key={entry.id}>
               {showDayLabel && <p className="history-date-label">{historyDayLabel(entry.timestamp)}</p>}
@@ -516,7 +541,7 @@ function HistoryPanelComponent({
                 {formatTimestamp(entry.timestamp)}
               </time>
               <div className="transcript-body">
-                {(entrySource(entry) === 'file' || entry.pinned || entry.interruption) && (
+                {(entrySource(entry) === 'file' || entry.pinned || entry.interruption || profile !== null) && (
                   <div className="transcript-meta">
                     {entrySource(entry) === 'file' ? (
                       <span title={entry.sourceName} className="inline-flex max-w-[12rem] min-w-0 items-center gap-0.5 rounded-full bg-primary/11 px-1.5 text-[10.5px] font-semibold text-primary">
@@ -524,6 +549,12 @@ function HistoryPanelComponent({
                         <span className="truncate">{entry.sourceName || 'File'}</span>
                       </span>
                     ) : null}
+                    {profile !== null && (
+                      <span title={`App profile: ${profile}`} className="transcript-profile-tag">
+                        <span className="ui-visually-hidden">App profile: </span>
+                        <span className="truncate">{profile}</span>
+                      </span>
+                    )}
                     {entry.pinned && (
                       <span title="Pinned" className="inline-flex shrink-0 text-warning">
                         <Star size={11} aria-hidden="true" className="fill-current" />

@@ -272,6 +272,8 @@ export interface Settings {
   retainHistory: boolean;
   /** Offer a History action comparing raw recognition with delivered text. Display-only. */
   historyShowRecognition: boolean;
+  /** Tag History rows with their app profile and offer an App filter. Display-only. */
+  historyShowProfile: boolean;
   /** Keep meeting chunk WAV files after their durable transcript commits. */
   meetingRetainAudio: boolean;
   /** Opt in to local, session-scoped labels for remote meeting speakers. */
@@ -534,6 +536,7 @@ export const DEFAULT_SETTINGS: Settings = {
   smartPunctuation: true,
   retainHistory: true,
   historyShowRecognition: false,
+  historyShowProfile: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
@@ -1107,6 +1110,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       }
       if (typeof parsed.historyShowRecognition !== 'boolean') {
         parsed.historyShowRecognition = DEFAULT_SETTINGS.historyShowRecognition;
+      }
+      if (typeof parsed.historyShowProfile !== 'boolean') {
+        parsed.historyShowProfile = DEFAULT_SETTINGS.historyShowProfile;
       }
       if (typeof parsed.meetingRetainAudio !== 'boolean') {
         parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;
