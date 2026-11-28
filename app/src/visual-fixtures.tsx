@@ -56,6 +56,7 @@ import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
+const fixtureVocabularySuggestions = query.get('suggestions') === '1';
 const longSpeakerLabels = query.get('speaker-labels') === 'long';
 const homeFixture = query.get('proposal') ?? requestedState;
 const copyFixture = requestedState === 'settings-copy';
@@ -610,6 +611,7 @@ const fixtureSettings = {
     ? ['fixture-built-in']
     : [],
   pasteLastShortcut: fixturePasteLastShortcut,
+  vocabularySuggestions: fixtureVocabularySuggestions,
   dailyWordGoal: requestedState === 'insights-goal' ? 1000 : requestedState === 'insights-goal-met' ? 500 : 0,
   vocabularyEntries: [{
     id: 'fixture-term',
@@ -637,6 +639,15 @@ const fixtureBuckets = Object.fromEntries(Array.from({ length: 7 }, (_, index) =
 
 // Explicit Insights states seed the production data path; no screenshot-time layer.
 const fixtureStats = loadStats();
+if (fixtureVocabularySuggestions) {
+  // Synthetic transcripts for the opt-in Suggestions from history card.
+  localStorage.setItem('dictation-history', JSON.stringify([
+    'Ask Priya to review the GitHub branch before the Kubernetes rollout.',
+    'Priya says the Kubernetes job needs the new GitHub token scope.',
+    'Send the Zustand notes to Priya and the GitHub link to Mateo.',
+    'Mateo wants Zustand in the onboarding prototype.',
+  ].map((text, index) => ({ schemaVersion: 2, id: `suggestion-${index}`, text, timestamp: Date.UTC(2026, 10, 20 + index), duration: 6, source: 'recording', pinned: false }))));
+}
 const insightsEmpty = requestedState === 'insights-empty';
 if (requestedState === 'insights-gap') {
   const missingDay = Object.keys(fixtureBuckets)[3];

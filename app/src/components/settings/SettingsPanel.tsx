@@ -59,6 +59,8 @@ import {
 import { accessibilityOutcomeMessage, permissionErrorMessage } from '../../lib/permissionOutcome';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
+import { HistoryRetentionSetting } from './HistoryRetentionSetting';
+import type { HistoryRetentionDays } from '../../lib/history';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { playSoundCue, type SoundCue } from '../../lib/soundCues';
 import { AppearanceSettings } from './AppearanceSettings';
@@ -220,6 +222,8 @@ interface SettingsPanelProps {
   initialized: boolean;
   status: DictationStatus;
   onResetStats: () => void;
+  /** Transcripts an automatic-deletion window would remove now (for its confirmation). */
+  countExpiredTranscripts?: (days: HistoryRetentionDays) => number;
   onRerunSetup: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
@@ -301,6 +305,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls', keywords: 'destination focus media play pause next previous', macOSOnly: true },
   { page: 'delivery', target: 'file-output', title: 'Save to file', detail: 'Save transcript or audio files locally', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription history', detail: 'Keep completed dictations on this Mac', keywords: 'save retain local transcripts' },
+  { page: 'delivery', target: 'history-retention', title: 'Delete transcripts automatically', detail: 'Remove unpinned transcripts after a set number of days', keywords: 'auto delete expire retention privacy clean up old history days' },
   { page: 'delivery', target: 'history-changes', title: 'Show what Murmur changed', detail: 'Compare raw recognition with delivered text in History', keywords: 'original raw recognition diff compare cleanup corrections heard' },
   { page: 'delivery', target: 'history-profile', title: 'Show app profile in History', detail: 'Tag transcripts with their app profile and filter by app', keywords: 'per app profile override filter tag slack editor which app' },
   { page: 'delivery', target: 'app-overrides-manual', editorTab: 'app-overrides', title: 'App bundle ID', detail: 'Add an app override by its exact bundle ID', keywords: 'manual advanced profile' },
@@ -313,6 +318,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'punctuation', title: 'Smart punctuation', detail: 'Add punctuation and sentence capitalization', keywords: 'automatic punctuation' },
   { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
   { page: 'text', target: 'vocabulary', title: 'Vocabulary', detail: 'Review identifiers retained from project scans', keywords: 'names spelling project scan developer terms' },
+  { page: 'text', target: 'vocabulary-suggestions', editorTab: 'aliases', title: 'Suggestions from history', detail: 'Suggest saved spellings from terms in your transcripts', keywords: 'vocabulary dictionary names learn frequent words history suggest' },
   { page: 'text', target: 'aliases', title: 'Aliases', detail: 'Map spoken variants to canonical spellings', keywords: 'spoken variants canonical spellings replacement' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at login', detail: 'Start Murmur when you sign in', keywords: 'startup autostart' },
@@ -384,6 +390,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   initialized,
   status,
   onResetStats,
+  countExpiredTranscripts,
   onRerunSetup,
   accessibilityGranted,
   onCheckForUpdate,
@@ -1393,6 +1400,11 @@ export const SettingsPanel = memo(function SettingsPanel({
               description="Save new transcripts on this Mac. Turning off keeps existing history."
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
+            />
+            <HistoryRetentionSetting
+              value={settings.historyRetentionDays}
+              onChange={(historyRetentionDays) => onUpdateSettings({ historyRetentionDays })}
+              countExpired={countExpiredTranscripts}
             />
             <SettingToggle
               targetId="history-changes"

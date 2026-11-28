@@ -84,6 +84,35 @@ filters still evaluate the complete retained history before this presentation
 window is applied, and exports include the complete filtered result set rather
 than only the currently mounted batch.
 
+## Select to combine
+
+A thought dictated in several takes can be copied back as one block. **Select
+transcripts to combine…** in the history overflow menu turns on selection mode;
+nothing about History changes until it is chosen, and it is never remembered
+between visits.
+
+- Each row gains a checkbox and its hover actions are hidden. Clicking a row, or
+  pressing Space or Enter on a focused row, toggles it instead of copying it.
+- A bar pinned to the bottom of the list shows the count and offers **Select all
+  N shown** / **Select none**, **Copy combined**, **Copy as Markdown**, and
+  **Done**. Like **Copy N shown** in the export menu, **Select all** covers the
+  whole filtered set, including rows past the mounted batch. Copy feedback appears in the bar, which stays in view while older
+  rows are chosen. Escape on a row or in the bar, or **Done**, leaves the mode and
+  clears the selection.
+- **Copy combined** writes plain text: each selected transcript's stored text,
+  trimmed of surrounding whitespace, oldest first, separated by one blank line.
+  Blank transcripts are skipped. Order follows time, not click order.
+- **Copy as Markdown** uses the existing Markdown export, so it keeps that
+  format's newest-first order and per-entry headings.
+- Only rows that are still shown count. A search, filter, or deletion that hides
+  a selected row removes it from the count and from what is copied.
+- Selection never edits, reorders, or deletes stored history, and it only writes
+  to the clipboard when a copy button is pressed. Delivered dictation text is
+  untouched.
+
+`combineHistoryText` in `app/src/lib/history.ts` is the pure join; the panel
+owns the selection state.
+
 ## Show what Murmur changed
 
 Settings → Delivery → History → **Show what Murmur changed** is off by
@@ -138,6 +167,25 @@ The feature is display-only. It never changes delivered text, delivery,
 history writes, statistics, logs, or export formats.
 
 ## Deleting
+
+### Automatic deletion (opt-in)
+
+Settings → Delivery → History → **Delete transcripts automatically** offers
+**Never** (the default), **After 1 day**, **After 7 days**, **After 30 days**, and
+**After 90 days** (`historyRetentionDays`). With a window set, an unpinned entry
+older than that rolling age is removed from React state, the localStorage cache,
+and `history.json` when the window is chosen, at launch, and hourly while the
+app stays open (`pruneExpiredHistory` in `history.ts`, swept by
+`useHistoryManagement`). Pinned entries are always kept, and entries with a
+future or unusable timestamp are kept rather than guessed at.
+
+Choosing a window that would delete transcripts already in History does not
+apply until the user confirms an inline prompt that names the count ("This
+deletes 12 transcripts older than 30 days now"); Cancel keeps the previous
+window. A window that deletes nothing right now, and switching back to Never,
+apply at once. Deletion never touches usage statistics, meetings (which have
+their own `meetingRetentionDays`), or `.txt`/`.wav` files written by file output,
+and it does not change delivered text.
 
 `Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
 
@@ -194,7 +242,8 @@ Cancelling the dialog is a no-op — no command call, no message.
 | `app/src/lib/history.ts` | Entry shape, trim/filter/sort, match segmentation, export rendering |
 | `app/src/lib/historyExport.ts` | Clipboard and save-dialog wrappers around the pure renderer |
 | `app/src/lib/transcriptDiff.ts` | Word diff and changed-stage labels for **Show what changed** |
-| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, pin, delete, clear |
+| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, pin, delete, clear, automatic-deletion sweep |
+| `app/src/components/settings/HistoryRetentionSetting.tsx` | Automatic-deletion window picker and its confirmation |
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
@@ -206,7 +255,8 @@ Cancelling the dialog is a no-op — no command call, no message.
 - `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the retired teaching-context exclusion.
 - `app/src/lib/transcriptDiff.test.ts` — diff segments, replacement counting, spacing folding, line breaks, the size bound, and stage labels.
 - `app/visual-tests/history-changes.spec.ts` — comparison panel geometry in light and dark, and its absence while the setting is off.
-- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, and the two-step clear.
+- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, the two-step clear, and select-to-combine (toggle, keyboard, order, narrowing, exit).
+- `app/visual-tests/history-select-combine.spec.ts` — selection-mode column geometry and bottom-bar bounds in light and dark at two window sizes.
 - `app/src/lib/hooks/useFileTranscription.test.tsx` — newly enqueued files publish synchronously and enter the sequential drain exactly once.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.
 - `app/src-tauri/src/commands/settings_store.rs` — history/stats/settings shape
@@ -215,3 +265,9 @@ Cancelling the dialog is a no-op — no command call, no message.
   one-time localStorage migration, isolated failure, write-through, and clear.
 - `app/src/lib/hooks/useHistoryManagement.test.tsx` — disabled retention keeps
   existing entries while rejecting new transcript content.
+- `app/src/lib/historyRetention.test.ts` — the rolling-age boundary, pin/future/NaN
+  exemptions, stored-order preservation, and settings parsing fallback.
+- `app/src/lib/hooks/useHistoryRetention.test.tsx` — default Never leaves history alone,
+  enable-time and hourly sweeps persist, and switching back to Never stops sweeping.
+- `app/src/components/settings/HistoryRetentionSetting.test.tsx` — the confirmation
+  names the count, Cancel deletes nothing, and zero-impact choices apply directly.

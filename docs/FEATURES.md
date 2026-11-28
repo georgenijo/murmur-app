@@ -149,6 +149,7 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 - **Code-vocabulary scan** — breadth-first walk of a chosen project folder (caps: 1000 files / 32 MB / 512 KB per file), extracting identifiers with live progress, a searchable view-all pop-out, and a cap warning. Top 96 terms feed Whisper's token-bound prompt; top 500 feed Smart Correction.
 - **Smart Correction** — post-model correction applied to *every* backend's output. Tier 1 exact map, Tier 2 phonetic "sounds-like" restricted to structured identifiers (camelCase / snake_case / digit) so ordinary English isn't rewritten.
 - **Explicit spoken aliases** — [features/vocabulary-aliases.md](features/vocabulary-aliases.md). Map exact recognized variants ("Tori", "Tory") to a canonical written term ("Tauri"). Ambiguity, cycles, and conflicts with built-in spoken phrases are rejected atomically.
+- **Suggestions from history** — opt-in (`vocabularySuggestions`, off by default). Lists recurring names and identifiers from saved transcripts that are not yet saved spellings, for an explicit Add or Dismiss. Computed in memory on this Mac; delivered text is unchanged unless the user adds a term.
 - **Context-cued variants** — built-in fixes such as `Tori` → `Tauri`, `Postgres SQL` → `PostgreSQL`, and `Maine` → `main` apply only in a Technical/Terminal register, with project context, or near a cue word. Counter-cues fail closed, so a person named Tori is untouched.
 
 ### Per-app dictation context — [features/per-app-profiles.md](features/per-app-profiles.md)
@@ -205,12 +206,16 @@ file-transcription toasts remain available.
 The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
 sessions, supports copy/text export, and deletes one or all sessions locally.
+Opt-in **Delete transcripts automatically** (Never by default; 1/7/30/90 days)
+removes unpinned transcripts past that age, after confirming any immediate deletion.
 Opt-in **Show what Murmur changed** (off by default) adds a per-transcript
 comparison of the raw recognition with the delivered text: a word diff, the
 stages that changed it, and Copy what was heard. Display-only.
 Opt-in **Show app profile in History** (off by default) tags live dictations
 with the app profile they resolved at recording start and adds an App section
 to the Filter menu. Display-only.
+Select transcripts to combine (overflow menu) copies several takes as one
+plain-text block, oldest first, without changing stored history.
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings → General, and `⌘L` opens Settings → Performance.
 

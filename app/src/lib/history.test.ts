@@ -3,6 +3,7 @@ import {
   addHistoryEntry,
   clearHistory,
   entryProfile,
+  combineHistoryText,
   entrySource,
   filterHistory,
   historyProfiles,
@@ -516,5 +517,31 @@ describe('formatHistoryExport', () => {
   it('handles an empty selection', () => {
     expect(formatHistoryExport([], 'text', exportedAt)).toBe('\n');
     expect(JSON.parse(formatHistoryExport([], 'json', exportedAt)).count).toBe(0);
+  });
+});
+
+describe('combineHistoryText', () => {
+  it('joins oldest first with one blank line, trimming each take', () => {
+    const later = entry({ id: 'b', text: 'second part\n', timestamp: 2 });
+    const earlier = entry({ id: 'a', text: '  first part', timestamp: 1 });
+    expect(combineHistoryText([later, earlier])).toBe('first part\n\nsecond part');
+  });
+
+  it('skips blank entries and keeps internal line breaks', () => {
+    expect(combineHistoryText([
+      entry({ id: 'a', text: 'line one\nline two', timestamp: 1 }),
+      entry({ id: 'b', text: '   ', timestamp: 2 }),
+      entry({ id: 'c', text: 'end', timestamp: 3 }),
+    ])).toBe('line one\nline two\n\nend');
+  });
+
+  it('keeps stored order for equal timestamps', () => {
+    const one = entry({ id: 'one', text: 'one', timestamp: 5 });
+    const two = entry({ id: 'two', text: 'two', timestamp: 5 });
+    expect(combineHistoryText([two, one], [one, two])).toBe('one\n\ntwo');
+  });
+
+  it('returns an empty string for no entries', () => {
+    expect(combineHistoryText([])).toBe('');
   });
 });

@@ -5,6 +5,7 @@ import {
   readLegacyModeState,
   stripLegacyModeKeys,
 } from './legacyModes';
+import { DEFAULT_HISTORY_RETENTION_DAYS, isHistoryRetentionDays, type HistoryRetentionDays } from './history';
 import { sanitizeDailyWordGoal } from './dailyGoal';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
@@ -266,10 +267,14 @@ export interface Settings {
   /** @deprecated Migration-only mirror; structured entries are authoritative. */
   customVocabulary: string;
   vocabularyEntries: VocabularyEntry[];
+  /** Opt in to vocabulary suggestions computed locally from saved history. */
+  vocabularySuggestions: boolean;
   disabled: boolean;
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
   retainHistory: boolean;
+  /** Opt-in automatic deletion of unpinned transcripts older than this many days; 0 = never. */
+  historyRetentionDays: HistoryRetentionDays;
   /** Offer a History action comparing raw recognition with delivered text. Display-only. */
   historyShowRecognition: boolean;
   /** Tag History rows with their app profile and offer an App filter. Display-only. */
@@ -532,9 +537,11 @@ export const DEFAULT_SETTINGS: Settings = {
   capturePreRollMs: 450,
   customVocabulary: '',
   vocabularyEntries: [],
+  vocabularySuggestions: false,
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
   historyShowRecognition: false,
   historyShowProfile: false,
   meetingRetainAudio: false,
@@ -1105,8 +1112,14 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.meetingSoundCuesEnabled = DEFAULT_SETTINGS.meetingSoundCuesEnabled;
       }
 
+      if (typeof parsed.vocabularySuggestions !== 'boolean') {
+        parsed.vocabularySuggestions = DEFAULT_SETTINGS.vocabularySuggestions;
+      }
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
+      }
+      if (!isHistoryRetentionDays(parsed.historyRetentionDays)) {
+        parsed.historyRetentionDays = DEFAULT_SETTINGS.historyRetentionDays;
       }
       if (typeof parsed.historyShowRecognition !== 'boolean') {
         parsed.historyShowRecognition = DEFAULT_SETTINGS.historyShowRecognition;

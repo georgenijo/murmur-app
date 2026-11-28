@@ -69,6 +69,32 @@ exact duplicates, and conflicts before applying anything. Conflicting IDs or
 written terms are never overwritten; invalid, corrupted, or oversized files
 are rejected without changing Settings.
 
+## Suggestions from history
+
+The Aliases editor has an opt-in **Suggestions from history** card
+(`vocabularySuggestions`, off by default). When it is on, Murmur reads the
+main window's local history cache once and lists up to 12 terms you say often
+that are not yet saved spellings. Each row offers **Add**, which creates an
+enabled global entry through the editor's normal validation, and **Dismiss**.
+Suggestions never change delivered text; only an added entry takes part in
+recognition hints and Smart Correction, exactly like a hand-typed one.
+
+A term is suggested when it appears in at least two distinct saved transcripts
+and either has an identifier shape (camelCase or PascalCase with an inner
+capital such as `GitHub`, snake_case, a letter-digit mix such as `gpt5`, or an
+acronym of two or more capitals) or is capitalized mid-sentence and never
+appears in lowercase. Sentence-start capitals, common capitalized words, weekdays,
+months, pure numbers, possessive `'s`, email addresses, URLs and paths are
+excluded, as are written forms and aliases already saved in any scope. Each
+transcript is scanned up to its first 20,000 characters. Ranking is
+deterministic: most transcripts, then most occurrences, then alphabetical.
+
+Dismissed terms are stored normalized in this window's `localStorage`
+(`murmur.vocabularySuggestions.dismissed`, newest 200) and can be restored from
+the card. Nothing is logged, sent, or written to history or statistics. Turning
+off **Save transcription history** leaves the existing history as the only
+source.
+
 ## Preview and privacy
 
 Settings includes a local in-memory preview that uses the production Rust matcher and can optionally include final CLI formatting. Preview input, output, aliases, canonical terms, bundle identifiers, and project roots are never logged. Configuration telemetry contains counts and booleans only. Alias processing does not read the clipboard or screen and does not change final-only clipboard/paste delivery.
