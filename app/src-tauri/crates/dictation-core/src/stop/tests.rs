@@ -823,30 +823,36 @@ fn r204a_6_a_dropped_guard_never_emits_and_never_terminates() {
 }
 
 /// R204a.7, the PD-13 fix (#1191): a guard dropped while its thread unwinds claims the
-/// recording's terminal before `CX-`, for the current recording and a stale one alike, and
-/// never emits `idle`. The shell's `Pre` phase runs the same list.
+/// recording's terminal before `CX-`, for the current recording and a stale one alike. With
+/// the shell's unwind emit (`closure_emit`, the production stop and pipeline guards) it also
+/// emits `idle` for the current recording, and never for a stale one. The shell's `Pre` phase
+/// runs the same list.
 #[test]
 fn r204a_7_an_unwinding_guard_claims_a_worker_panicked_terminal() {
     for status in ALL {
         for current in [RID, NEWER] {
-            let decided = decide_guard_finish(
-                &core(status, current),
-                guard(RID, GuardOrigin::Unwound, false),
-                NOW,
-            );
-            assert_eq!(decided.row, RowId("R204a.7"));
-            let expected: &[&str] = if current == RID {
-                &[
-                    "Pre:TERM(PipelineFailure/WorkerPanicked)",
-                    "Pre:CX-(7)",
-                    "In:ST→Idle",
-                    "In:KB(false)",
-                ]
-            } else {
-                &["Pre:TERM(PipelineFailure/WorkerPanicked)", "Pre:CX-(7)"]
-            };
-            assert_eq!(tags(&decided), expected, "{status:?} current={}", current.0);
-            assert_valid(&decided);
+            for emit in [false, true] {
+                let decided = decide_guard_finish(
+                    &core(status, current),
+                    guard(RID, GuardOrigin::Unwound, emit),
+                    NOW,
+                );
+                assert_eq!(decided.row, RowId("R204a.7"));
+                let mut expected = vec!["Pre:TERM(PipelineFailure/WorkerPanicked)", "Pre:CX-(7)"];
+                if current == RID {
+                    expected.extend(["In:ST→Idle", "In:KB(false)"]);
+                    if emit {
+                        expected.push("In:EM(idle)");
+                    }
+                }
+                assert_eq!(
+                    tags(&decided),
+                    expected,
+                    "{status:?} current={} emit={emit}",
+                    current.0
+                );
+                assert_valid(&decided);
+            }
         }
     }
     assert_eq!(

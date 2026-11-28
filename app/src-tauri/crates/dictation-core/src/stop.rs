@@ -351,9 +351,10 @@ fn row_204a(core: &DictationCore, input: &GuardFinishInput) -> &'static str {
 /// **PD-6** R204a.3 `Recovering→Idle`). R204a.4 (`Starting`/`Recording` with the
 /// guard's own id) cannot occur; the code would still write `Idle`, so that is
 /// what the row does. `Dropped` (an early return): R204a.6, no `EM` and no `TERM`,
-/// because the caller claims the terminal. `Unwound` (a panic): R204a.7, no `EM`, and
+/// because the caller claims the terminal. `Unwound` (a panic): R204a.7,
 /// `Pre:TERM(PipelineFailure, WorkerPanicked)` ahead of `CX-`, fresh or stale (PD-13
-/// fixed, #1191).
+/// fixed, #1191), and `EM(idle)` iff `closure_emit`: the production stop and pipeline
+/// guards carry an unwind emit, because the tail that would emit `idle` never runs.
 ///
 /// History (H2 `ret rid`, H1 `ret op_pl` for `PipelineExit` / `Dropped`) is the
 /// shell's bookkeeping after this returns.

@@ -895,6 +895,19 @@ fn a_panicked_stop_then_the_supervisors_idle_ends_with_the_guards_terminal() {
     assert!(report.violations.is_empty(), "{:?}", report.violations);
 }
 
+/// The unwinding guard of the same seed also emits `idle` for the current recording
+/// (R204a.7 `In:EM(idle)`): the panicked stop's tail, whose 204b section would have
+/// emitted it, never runs, so without it the windows keep the recording's `processing`.
+#[test]
+fn a_panicked_stop_emits_idle_from_its_unwinding_guard() {
+    let (_, trace) = run_seed_with(gated(PANICKED_STOP_IDLE_SEED), true);
+    let emits: Vec<_> = trace
+        .iter()
+        .filter(|line| line.contains("fx R204a.7 In EmitStatus { status: Idle"))
+        .collect();
+    assert_eq!(emits.len(), 1, "{trace:#?}");
+}
+
 #[test]
 fn a_seed_is_one_run() {
     for seed in [0u64, 59, 886, 4903, 9_980] {
