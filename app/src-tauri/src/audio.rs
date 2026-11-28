@@ -2974,7 +2974,10 @@ fn run_backend(
             }
             // last_setup_step "entered" without "completed" names the exact
             // native call the worker is stuck in (see CaptureSetupStep docs
-            // for the step -> Core Audio call mapping).
+            // for the step -> Core Audio call mapping). `none` also covers a
+            // prepared helper that stalled creating its bare audio unit after
+            // the preparation ack: that happens before Start is read, so no
+            // setup step can name it.
             tracing::warn!(
                 target: "audio",
                 event_code = "audio.capture_backend_timeout",
@@ -3407,6 +3410,25 @@ fn run_backend(
                     };
                 }
                 last_setup_step = Some((step, transition));
+                if step == CaptureSetupStep::AudioUnitAdopted
+                    && transition == SetupTransition::Completed
+                {
+                    // Content-free info event (like `audio.helper_prepare_*`): it is
+                    // unregistered, so it reaches the event ring, events.jsonl and log
+                    // shipping unsanitized. Add fields only after registering a code.
+                    // Absent on a start that created its own instance; read it
+                    // next to the run record's `audioUnitNewMs`.
+                    tracing::info!(
+                        target: "audio",
+                        event_code = "audio.audio_unit_adopted",
+                        capture_id,
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        backend = backend_label(backend),
+                        start_elapsed_ms = start_sent_at.elapsed().as_millis() as u64,
+                        "capture helper adopted the audio unit prepared before Start"
+                    );
+                }
                 let step_elapsed_ms = match transition {
                     SetupTransition::Entered => {
                         setup_step_entered = Some((step, Instant::now()));
@@ -5197,6 +5219,34 @@ mod tests {
             tracker.observe_setup(CaptureSetupStep::DeviceResolution, SetupTransition::Entered,)
         );
         tracker
+    }
+
+    #[test]
+    fn the_adoption_marker_is_accepted_only_after_device_resolution_completes() {
+        let mut tracker = started_resolution_tracker();
+        // Before resolution completes the marker is out of order.
+        assert!(
+            !tracker.observe_setup(CaptureSetupStep::AudioUnitAdopted, SetupTransition::Entered,)
+        );
+        let mut tracker = started_resolution_tracker();
+        assert!(tracker.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+        assert!(tracker.observe_setup(
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        for step in [
+            CaptureSetupStep::AudioUnitNew,
+            CaptureSetupStep::AudioUnitAdopted,
+        ] {
+            for transition in [SetupTransition::Entered, SetupTransition::Completed] {
+                assert!(tracker.observe_setup(step, transition));
+            }
+        }
     }
 
     #[test]

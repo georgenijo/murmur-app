@@ -484,10 +484,22 @@ In Double Tap or Both mode, a first clean release of the double-tap key may
 silently prepare an idle capture helper. Preparation verifies its signature,
 spawns it, completes hello, then sends a distinct `PrepareInput` command for
 bounded, nonopening HAL input-UID/default lookup. Both host and helper require
-an existing microphone grant; neither requests permission. No Audio Unit is
-created, configured, initialized, or started, no Start is sent, and no PCM or
-Murmur UI exists before confirmation. The contract is indicator- and prompt-free;
-final native interaction on the rebuilt signed helper must verify that contract.
+an existing microphone grant; neither requests permission. After acknowledging
+the lookup, the helper may create one bare HAL output component instance
+(`AudioComponentInstanceNew`) that a confirmed AUHAL Start adopts. The lookup's
+HAL reads run first, so the instance creation is not the process's first Core
+Audio call; its cost was 18-30 ms in isolation and is **unmeasured in this
+position** until George's MacBook diagnostics report it. The bare instance is
+not hardware-free: an uninitialized HAL output unit reports the default
+**output** device as its current device, with output IO enabled and input
+disabled. Nothing is initialized, configured, bound to input, or started, no
+Start is sent, and no PCM or Murmur UI exists before confirmation. At adoption
+the instance is kept only while its current device still equals the default
+output device; otherwise (an output device dropped during the hold) the Start
+creates a fresh one. A prepared CPAL Start releases it once its stream has
+started. The contract is indicator- and prompt-free; final native interaction
+on the rebuilt signed helper (an abandoned first tap lighting no orange
+indicator and raising no prompt) must verify it, and has not been done yet.
 Preparation runs only while audio is idle, with no dictation starting/recording
 and no live standby. Admission and the preparation-slot claim hold the same
 `recording_transition` as capture claims. Every launch still verifies the signature.
@@ -544,7 +556,17 @@ clears them, so a fallback never mixes steps from two backends. The helper
 duration fields still sum across attempts. Older records omit these five fields
 and `helperPreparation`. A missing value is unavailable, never zero.
 
-All AUHAL brackets run after confirmed Start. Creation uses the pinned safe
+All AUHAL brackets run after confirmed Start. For an adopted prepared helper the
+`AudioUnitNew` bracket only takes the held instance, so `audioUnitNewMs` is near
+zero there, and the helper emits a zero-duration `AudioUnitAdopted` step that
+the host logs as `audio.audio_unit_adopted` (an unregistered info event, so it
+also reaches the event ring and `events.jsonl`; content-free: capture id, owner,
+backend, elapsed). No adoption log with `helperPreparation = adopted` means the
+start used CPAL, or the held instance was missing or no longer current and the
+Start created its own, paying the creation (plus disposing a rejected instance)
+inside `AudioUnitNew`. A hang while creating the
+held instance happens before Start is read, so a timeout there reports
+`last_setup_step = none`. Creation uses the pinned safe
 owning `coreaudio-rs 0.14.2` uninitialized constructor; its separate `initialize`
 call immediately follows, preserving the old new → initialize → IO/device/format
 configuration → callback → start order. The legacy HAL inventory helpers stay
@@ -559,7 +581,8 @@ initialization was ~3.9 ms, and pre-initialize/hold delayed the later start.
 RunningSomewhere stayed zero and callbacks absent during holds, but visual
 orange-indicator proof was incomplete. These scratch observations are not a
 production latency gain or an indicator-free proof. Therefore only passive lookup
-is prepared; configuration, initialization, and capture remain post-confirmation.
+and the bare instance are prepared; configuration, initialization, device binding,
+and capture remain post-confirmation.
 
 SQLite `user_version = 5` reserves the optional gesture companion separately
 from #919's v4 `homophoneContext` stage. The transactional 4 → 5 metadata step

@@ -183,7 +183,9 @@ pub enum ProductionHostMessage {
     Hello,
     Enumerate,
     /// Bounded passive HAL input lookup only, under an existing microphone
-    /// grant. Creates no Audio Unit and must be followed by a separate Start.
+    /// grant. After acknowledging it the helper may create one bare HAL output
+    /// instance for the Start to adopt: nothing is initialized, configured,
+    /// bound to input, or started. Must be followed by a separate Start.
     PrepareInput,
     /// Installs passive Core Audio topology/default-input listeners in the
     /// isolated worker. Listener callbacks never enumerate or open devices.
@@ -346,6 +348,10 @@ pub enum CaptureSetupStep {
     DeviceResolution,
     AudioUnitCreation,
     AudioUnitNew,
+    /// Zero-duration marker emitted right after `AudioUnitNew` when this start
+    /// adopted the instance a prepared helper created after its preparation ack
+    /// instead of creating one. Absent means the start created its own.
+    AudioUnitAdopted,
     #[serde(rename = "audioUnitInitialize")]
     AudioUnitInit,
     EnableInputIo,
@@ -369,6 +375,7 @@ impl CaptureSetupStep {
             Self::DeviceResolution => "device_resolution",
             Self::AudioUnitCreation => "audio_unit_creation",
             Self::AudioUnitNew => "audio_unit_new",
+            Self::AudioUnitAdopted => "audio_unit_adopted",
             Self::AudioUnitInit => "audio_unit_initialize",
             Self::EnableInputIo => "enable_input_io",
             Self::DisableOutputIo => "disable_output_io",
@@ -1052,6 +1059,7 @@ mod tests {
         );
         for (step, name) in [
             (CaptureSetupStep::AudioUnitNew, "audio_unit_new"),
+            (CaptureSetupStep::AudioUnitAdopted, "audio_unit_adopted"),
             (CaptureSetupStep::AudioUnitInit, "audio_unit_initialize"),
             (CaptureSetupStep::StreamStart, "stream_start"),
         ] {

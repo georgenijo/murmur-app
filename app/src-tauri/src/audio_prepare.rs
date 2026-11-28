@@ -3,8 +3,9 @@
 //! A first clean double-tap release may spawn, signature-verify, and hello an
 //! idle capture helper so the confirmed start skips that work. A separate
 //! PrepareInput command performs bounded passive HAL UID/default lookup under
-//! an existing TCC grant. It creates/initializes/starts no Audio Unit, writes no
-//! Start, and receives no audio before the confirmed start adopts it. Abandoned
+//! an existing TCC grant. After the ack a bare HAL output instance may exist in
+//! the helper; nothing is initialized, bound to input, or started, no Start is
+//! written, and no audio is received before the confirmed start adopts it. Abandoned
 //! preparations are torn down with
 //! confirmed termination. Nothing here records key labels, device identifiers,
 //! or user content.
