@@ -47,6 +47,14 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  // With rollupOptions.input set, Vite's dev dependency scan crawls only those
+  // pages, so deps imported only by visual-fixtures.html (@tauri-apps/api/mocks)
+  // were discovered on first request. Vite then re-optimized and full-reloaded
+  // every open page, wiping state mid-test in a cold CI container (#1224).
+  // Scan every HTML entry up front. Dev-server only; builds are unaffected.
+  optimizeDeps: {
+    entries: ["*.html"],
+  },
   // Multi-page production windows. Vite serves visual-fixtures.html in dev for
   // Playwright, but it is deliberately excluded from packaged builds.
   build: {
