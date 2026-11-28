@@ -372,6 +372,12 @@ fn the_auto_stop_is_refused_at_idle_and_a_start_is_refused_then_accepted(world: 
         audio_lifecycle::take_interrupted_dictation(1).is_none(),
         "the refused auto-stop purged the retained capture"
     );
+    // #1186: the purge's take found the capture, so it writes the earlier-take tombstone
+    // (a later stale stop for this id finds it taken and claims no terminal, PD-25).
+    assert!(
+        world.state().app_state.interrupted_taken_earlier(1),
+        "the purge's take is noted"
+    );
     let lost = world
         .trace()
         .into_iter()
@@ -1843,6 +1849,10 @@ fn a_processing_refused_auto_stop_purges_the_capture(world: &Arc<World>) {
     assert!(
         audio_lifecycle::take_interrupted_dictation(1).is_none(),
         "the capture is gone"
+    );
+    assert!(
+        world.state().app_state.interrupted_taken_earlier(1),
+        "#1186: the purge's take is noted"
     );
     let lost = world
         .trace()
