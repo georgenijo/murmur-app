@@ -328,6 +328,89 @@ describe('HistoryPanel', () => {
     expect(onDeleteEntries).toHaveBeenCalledWith([target]);
   });
 
+  describe('Show what Murmur changed', () => {
+    const recorded = entry({
+      id: 'recorded',
+      text: 'So we ship on Friday.',
+      rawText: 'um so we ship on friday',
+      recording: {
+        recordingId: 4,
+        modelId: 'parakeet-v3',
+        profileId: null,
+        stages: [
+          { stage: 'cleanup', outcome: 'applied', changed: true },
+          { stage: 'smart_correction', outcome: 'applied', changed: false },
+        ],
+      },
+    });
+    const exact = entry({ id: 'exact', text: 'leave it alone', rawText: 'leave it alone' });
+    const legacy = entry({ id: 'legacy', text: 'older entry without raw text' });
+
+    const cardFor = (text: string) => Array.from(container.querySelectorAll<HTMLElement>('[data-testid="transcript-card"]'))
+      .find((card) => card.textContent?.includes(text))!;
+    const menuItems = () => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).map((item) => item.textContent);
+    async function openMenu(text: string) {
+      await act(async () => (cardFor(text).querySelector('[aria-label="More transcript actions"]') as HTMLElement).click());
+    }
+    async function chooseItem(label: string) {
+      const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((node) => node.textContent === label)!;
+      await act(async () => item.click());
+    }
+
+    it('is absent while the setting is off (the default)', async () => {
+      await render({ entries: [recorded] });
+      await openMenu('So we ship on Friday.');
+      expect(menuItems()).not.toContain('Show what changed');
+      expect(container.querySelector('[aria-label="What Murmur changed"]')).toBeNull();
+    });
+
+    it('shows a word diff, the changing stages, and copies what was heard', async () => {
+      await render({ entries: [recorded], showRecognition: true });
+      await openMenu('So we ship on Friday.');
+      await chooseItem('Show what changed');
+
+      const panel = container.querySelector('[aria-label="What Murmur changed"]') as HTMLElement;
+      expect(panel.textContent).toContain('2 changes from what was heard.');
+      expect(panel.textContent).toContain('Changed by Cleanup.');
+      expect(Array.from(panel.querySelectorAll('del')).map((node) => node.textContent)).toEqual(['removed: um so', 'removed: friday']);
+      expect(Array.from(panel.querySelectorAll('ins')).map((node) => node.textContent)).toEqual(['added: So', 'added: Friday.']);
+      // The delivered transcript itself is unchanged.
+      expect(cardFor('So we ship on Friday.').querySelector('.transcript-text')!.textContent).toBe('So we ship on Friday.');
+
+      await act(async () => (Array.from(panel.querySelectorAll('button')).find((b) => b.textContent === 'Copy what was heard')!).click());
+      expect(writeText).toHaveBeenCalledWith('um so we ship on friday');
+      expect(container.textContent).toContain('Copied what was heard.');
+
+      await openMenu('So we ship on Friday.');
+      await chooseItem('Hide what changed');
+      expect(container.querySelector('[aria-label="What Murmur changed"]')).toBeNull();
+    });
+
+    it('does not copy the card when the comparison panel is clicked', async () => {
+      await render({ entries: [recorded], showRecognition: true });
+      await openMenu('So we ship on Friday.');
+      await chooseItem('Show what changed');
+      writeText.mockClear();
+      await act(async () => (container.querySelector('[aria-label="What Murmur changed"]') as HTMLElement).click());
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('says an unchanged dictation was delivered as recognized', async () => {
+      await render({ entries: [exact], showRecognition: true });
+      await openMenu('leave it alone');
+      await chooseItem('Show what changed');
+      const panel = container.querySelector('[aria-label="What Murmur changed"]') as HTMLElement;
+      expect(panel.textContent).toBe('Delivered exactly as recognized.');
+      expect(panel.querySelector('button')).toBeNull();
+    });
+
+    it('offers nothing for entries saved without raw recognition', async () => {
+      await render({ entries: [legacy], showRecognition: true });
+      await openMenu('older entry without raw text');
+      expect(menuItems()).not.toContain('Show what changed');
+    });
+  });
+
   it('deletes the exact filtered subset, including a pin, without matching duplicate ids', async () => {
     vi.useFakeTimers();
     const matching = entry({ id: 'duplicate', text: 'remove alpha', pinned: true });

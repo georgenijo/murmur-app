@@ -59,6 +59,12 @@ compile_error!(
 );
 #[cfg(feature = "dictation-shadow")]
 mod dictation_shadow;
+// Dev-only scripted permission answers for native onboarding tests (#972). Only
+// `npm run tauri:dev:fake-permissions` enables the feature, it refuses to build
+// without debug assertions, and it is idle unless MURMUR_FAKE_PERMISSIONS is set.
+// `fake_permissions_default_tests` pins that a default build has none of it.
+#[cfg(all(feature = "fake-permissions", not(debug_assertions)))]
+compile_error!("the `fake-permissions` feature is dev-only: it must never be in a release build");
 #[cfg(all(test, not(feature = "dictation-shadow")))]
 mod dictation_shadow_default_tests;
 #[cfg(test)]
@@ -67,6 +73,10 @@ mod dictation_telemetry;
 mod dock_watch;
 pub mod evaluation;
 mod events;
+#[cfg(feature = "fake-permissions")]
+mod fake_permissions;
+#[cfg(all(test, not(feature = "fake-permissions")))]
+mod fake_permissions_default_tests;
 mod file_output;
 mod frontmost;
 mod hang_diagnostics;
@@ -294,6 +304,17 @@ pub fn run() {
     #[cfg(feature = "internal-benchmark")]
     let builder = builder.plugin(commands::corpus::plugin());
 
+    // Dev fake permissions (#972): a visible marker in the main window.
+    #[cfg(feature = "fake-permissions")]
+    let builder = builder.on_page_load(|webview, payload| {
+        if webview.label() == "main"
+            && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            && fake_permissions::is_active()
+        {
+            let _ = webview.eval(fake_permissions::MARKER_SCRIPT);
+        }
+    });
+
     let app = builder
         .manage(State {
             app_state: AppState::default(),
@@ -516,6 +537,8 @@ pub fn run() {
             telemetry::init(app.handle().clone());
             #[cfg(feature = "dictation-shadow")]
             dictation_shadow::start();
+            #[cfg(feature = "fake-permissions")]
+            fake_permissions::announce();
             // After telemetry and Tauri's event loop. Off unless the Diagnostics
             // setting or MURMUR_MAIN_THREAD_WATCH arms it; then it observes every
             // main-thread busy span and labels the app's own main-thread work.

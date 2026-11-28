@@ -3,8 +3,9 @@
 //! and not a claim.
 //!
 //! The table below is the list of row ids in the C3 tables (`R<site>.<n>`,
-//! C3.1-C3.7), in appendix order, 141 rows over 24 sites (the 140 of the appendix tables and R301.6, the import's own
-//! Smart Destination section, added by Stage 2a-5). It names no behaviour:
+//! C3.1-C3.7), in appendix order, 142 rows over 24 sites (the 140 of the appendix tables, R301.6, the import's own
+//! Smart Destination section, added by Stage 2a-5, and R204a.7, the unwinding guard's terminal claim that fixes
+//! PD-13, #1191). It names no behaviour:
 //! it only pins that each row id exists once, belongs to exactly one site, and
 //! that every site is both reachable by an [`crate::inputs::Input`] and owns at
 //! least one row. A `Decision` carries its row as a [`crate::decision::RowId`];
@@ -98,6 +99,7 @@ pub const C3_ROWS: &[(&str, SiteId)] = &[
     ("R204a.5d", SiteId::GuardFinish),
     ("R204a.5e", SiteId::GuardFinish),
     ("R204a.6", SiteId::GuardFinish),
+    ("R204a.7", SiteId::GuardFinish),
     ("R204b.1", SiteId::PipelineIdleEmit),
     ("R204b.2", SiteId::PipelineIdleEmit),
     ("R204b.3", SiteId::PipelineIdleEmit),
@@ -193,7 +195,7 @@ mod tests {
         (SiteId::StopContext, 3),
         (SiteId::StopContextNoLock, 2),
         (SiteId::StopCaptureResult, 21),
-        (SiteId::GuardFinish, 10),
+        (SiteId::GuardFinish, 11),
         (SiteId::PipelineIdleEmit, 10),
         (SiteId::CancelRequest, 5),
         (SiteId::CancelCaptureResult, 2),
@@ -217,7 +219,7 @@ mod tests {
         for (id, _) in C3_ROWS {
             assert!(seen.insert(*id), "duplicate row id {id}");
         }
-        assert_eq!(C3_ROWS.len(), 141);
+        assert_eq!(C3_ROWS.len(), 142);
     }
 
     #[test]

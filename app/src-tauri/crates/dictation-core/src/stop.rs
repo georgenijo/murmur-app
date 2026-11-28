@@ -35,7 +35,8 @@
 //!
 //! Rows that reproduce a preserved defect keep it: PD-3 (R202.3/.4), PD-6
 //! (R203.2r, R203.5r, R203.7r, R204a.3, R204b.2), PD-7 (R202.2, R203.2,
-//! R203.3, R203.10), PD-13 (R204a.6), PD-15 (R201.1, R201.7).
+//! R203.3, R203.10), PD-15 (R201.1, R201.7). PD-13 (a panic claimed no
+//! terminal) is fixed: an unwinding guard claims one (R204a.7, #1191).
 
 use crate::decision::{
     ContKind, ContinuationSpec, Decision, ObsKind, Refusal, RowId, StaleKind, Verdict,
@@ -297,14 +298,29 @@ pub fn decide_stop_context(core: &DictationCore, input: StopContextInput, now: N
 
 // --------------------------------------------------------------------- 204a
 
-/// The `Pre` effect of `IdleGuard::finish` (1063): `CX-` runs before D is taken.
-pub fn guard_finish_pre_effects(rid: RecordingId) -> Vec<Placed> {
-    vec![clear_context(At::Pre, rid)]
+/// The `Pre` effects of `IdleGuard::finish` / `Drop` (1063): `CX-` runs before D is
+/// taken. An unwinding guard (`Unwound`, R204a.7) first claims the recording's
+/// terminal, `PipelineFailure/WorkerPanicked`: the task that would have claimed one is
+/// gone (PD-13, #1191). The claim is first-wins, so a terminal claimed before the
+/// panic keeps winning.
+pub fn guard_finish_pre_effects(rid: RecordingId, origin: GuardOrigin) -> Vec<Placed> {
+    let mut effects = Vec::with_capacity(2);
+    if origin == GuardOrigin::Unwound {
+        effects.push(terminal(
+            At::Pre,
+            TerminalOutcome::PipelineFailure,
+            ErrCode::WorkerPanicked,
+        ));
+    }
+    effects.push(clear_context(At::Pre, rid));
+    effects
 }
 
 fn row_204a(core: &DictationCore, input: &GuardFinishInput) -> &'static str {
-    if input.origin == GuardOrigin::Dropped {
-        return "R204a.6";
+    match input.origin {
+        GuardOrigin::Dropped => return "R204a.6",
+        GuardOrigin::Unwound => return "R204a.7",
+        GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::LegacyParse => {}
     }
     if input.rid == core.current_id {
         match core.status {
@@ -334,13 +350,16 @@ fn row_204a(core: &DictationCore, input: &GuardFinishInput) -> &'static str {
 /// `EM`. The status is written whatever it is (R204a.2 duplicate `idle`;
 /// **PD-6** R204a.3 `Recovering→Idle`). R204a.4 (`Starting`/`Recording` with the
 /// guard's own id) cannot occur; the code would still write `Idle`, so that is
-/// what the row does. `Dropped` (**PD-13**): R204a.6, no `EM`, **no `TERM`**.
+/// what the row does. `Dropped` (an early return): R204a.6, no `EM` and no `TERM`,
+/// because the caller claims the terminal. `Unwound` (a panic): R204a.7, no `EM`, and
+/// `Pre:TERM(PipelineFailure, WorkerPanicked)` ahead of `CX-`, fresh or stale (PD-13
+/// fixed, #1191).
 ///
 /// History (H2 `ret rid`, H1 `ret op_pl` for `PipelineExit` / `Dropped`) is the
 /// shell's bookkeeping after this returns.
 pub fn decide_guard_finish(core: &DictationCore, input: GuardFinishInput, _now: Now) -> Decision {
     let row = row_204a(core, &input);
-    let mut effects = guard_finish_pre_effects(input.rid);
+    let mut effects = guard_finish_pre_effects(input.rid, input.origin);
     if input.rid != core.current_id {
         return decision(
             Verdict::Stale(StaleKind::StaleRecording),
@@ -407,7 +426,10 @@ pub fn stop_capture_pre_effects(input: &StopCaptureResultInput) -> Vec<Placed> {
         (StopCaptureResult::Err, _) => unreachable!("Err is Capture::Failed"),
     };
     let mut effects = vec![terminal(At::Pre, outcome, code)];
-    effects.extend(guard_finish_pre_effects(input.rid));
+    effects.extend(guard_finish_pre_effects(
+        input.rid,
+        GuardOrigin::StopCapture,
+    ));
     effects
 }
 

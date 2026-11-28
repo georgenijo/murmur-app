@@ -88,6 +88,7 @@ export function HomeDashboard({
             pinnedCount={historyEntries.filter((entry) => entry.pinned === true).length}
             focusSearchToken={focusSearchToken}
             onTranscribeFile={onTranscribeFile}
+            showRecognition={settings.historyShowRecognition}
           />
         </section>
       </div>

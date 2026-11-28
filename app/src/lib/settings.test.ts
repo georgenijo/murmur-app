@@ -127,6 +127,19 @@ describe('loadSettings', () => {
     expect(settings.meetingSuggestionsEnabled).toBe(false);
   });
 
+  it('keeps the History comparison off by default and persists the opt-in', () => {
+    expect(DEFAULT_SETTINGS.historyShowRecognition).toBe(false);
+    saveSettings({ ...DEFAULT_SETTINGS, historyShowRecognition: true });
+    expect(loadSettings().historyShowRecognition).toBe(true);
+
+    const { historyShowRecognition: _omitted, ...older } = DEFAULT_SETTINGS;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(older));
+    expect(loadSettings().historyShowRecognition).toBe(false);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, historyShowRecognition: 'yes' }));
+    expect(loadSettings().historyShowRecognition).toBe(false);
+  });
+
   it('persists the explicit meeting-suggestion opt-in and rejects malformed consent', () => {
     saveSettings({ ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true });
     expect(loadSettings().meetingSuggestionsEnabled).toBe(true);
@@ -567,6 +580,17 @@ describe('loadSettings', () => {
     expect(settings.autoPaste).toBe(DEFAULT_SETTINGS.autoPaste);
     expect(settings.recordingMode).toBe('double_tap');
     expect(settings.hotkeyMissFeedback).toBe(false);
+  });
+
+  it('keeps the daily word goal off by default and sanitizes stored goals', () => {
+    expect(DEFAULT_SETTINGS.dailyWordGoal).toBe(0);
+    for (const [stored, expected] of [[500, 500], [749.6, 750], [-5, 0], ['500', 0], [null, 0], [1e9, 100_000]] as const) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, dailyWordGoal: stored }));
+      expect(loadSettings().dailyWordGoal).toBe(expected);
+    }
+    const { dailyWordGoal: _omitted, ...legacy } = DEFAULT_SETTINGS;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().dailyWordGoal).toBe(0);
   });
 
   it('validates the opt-in hotkey timing feedback setting', () => {

@@ -419,6 +419,12 @@ pub fn get_meeting_status(state: tauri::State<'_, State>) -> MeetingRuntimeStatu
 pub fn get_system_audio_permission_status(
     state: tauri::State<'_, State>,
 ) -> SystemAudioPermissionState {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(fake) =
+        crate::fake_permissions::state(crate::fake_permissions::Permission::SystemAudio)
+    {
+        return crate::fake_permissions::system_audio_state(fake);
+    }
     state.meetings.permission_status()
 }
 
@@ -427,6 +433,17 @@ pub async fn request_system_audio_permission(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<SystemAudioAccess, String> {
+    // Dev fake permissions (#972): answer from the script without starting a
+    // real tap, so no capture, ownership claim, or audio device is touched.
+    #[cfg(feature = "fake-permissions")]
+    if let Some(fake) =
+        crate::fake_permissions::request_and_wait(crate::fake_permissions::Permission::SystemAudio)
+            .await
+    {
+        let access = crate::fake_permissions::system_audio_access(fake);
+        let _ = app.emit("system-audio-permission-changed", &access);
+        return Ok(access);
+    }
     {
         let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
             &app,

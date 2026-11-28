@@ -31,6 +31,12 @@ pub fn get_calendar_permission_status(
     window: tauri::WebviewWindow,
 ) -> Result<CalendarPermissionStatus, String> {
     require_main_window(window.label())?;
+    #[cfg(feature = "fake-permissions")]
+    if let Some(state) =
+        crate::fake_permissions::state(crate::fake_permissions::Permission::Calendar)
+    {
+        return Ok(crate::fake_permissions::calendar_state(state));
+    }
     Ok(calendar::permission_status())
 }
 
@@ -40,12 +46,23 @@ pub async fn request_calendar_permission(
     window: tauri::WebviewWindow,
 ) -> Result<CalendarPermissionStatus, String> {
     require_main_window(window.label())?;
+    #[cfg(feature = "fake-permissions")]
+    if let Some(state) =
+        crate::fake_permissions::request_and_wait(crate::fake_permissions::Permission::Calendar)
+            .await
+    {
+        return Ok(crate::fake_permissions::calendar_state(state));
+    }
     calendar::request_permission(&app).await
 }
 
 #[tauri::command]
 pub async fn reset_calendar_permission(window: tauri::WebviewWindow) -> Result<(), String> {
     require_main_window(window.label())?;
+    #[cfg(feature = "fake-permissions")]
+    if crate::fake_permissions::state(crate::fake_permissions::Permission::Calendar).is_some() {
+        return Err(crate::fake_permissions::RESET_REFUSED.to_string());
+    }
     let _operation = CalendarOperation::acquire()?;
     let bundle_id = super::permissions::current_bundle_identifier().ok_or(calendar::UNAVAILABLE)?;
     let mut command = tokio::process::Command::new("/usr/bin/tccutil");
@@ -76,6 +93,14 @@ pub async fn reset_calendar_permission(window: tauri::WebviewWindow) -> Result<(
 #[tauri::command]
 pub fn open_calendar_preferences(window: tauri::WebviewWindow) -> Result<(), String> {
     require_main_window(window.label())?;
+    #[cfg(feature = "fake-permissions")]
+    if let Some(result) = super::permissions::fake_open_settings(
+        crate::fake_permissions::Permission::Calendar,
+        "Privacy_Calendars",
+    ) {
+        return result
+            .map_err(|_| "Open System Settings, then Privacy & Security, then Calendars.".into());
+    }
     super::permissions::open_system_preference_pane("Privacy_Calendars")
         .map_err(|_| "Open System Settings, then Privacy & Security, then Calendars.".into())
 }

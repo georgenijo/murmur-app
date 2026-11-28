@@ -4,6 +4,7 @@ import { loadStats } from '../../lib/stats';
 import { ASSUMED_TYPING_WPM, getActivityInsights } from '../../lib/activityStats';
 import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
+import { DailyGoalCard } from './DailyGoalCard';
 import { DashboardStatGroup, WorkspacePageHeader, type DashboardStatItem } from '../ui/DashboardPrimitives';
 import '../../styles/insights.css';
 
@@ -11,10 +12,13 @@ interface InsightsViewProps {
   statsVersion: number;
   initialMetric?: 'words' | 'wpm';
   defaultMoreOpen?: boolean;
+  /** Opt-in daily word goal (0 = off). The card renders only with a change handler. */
+  dailyWordGoal?: number;
+  onDailyWordGoalChange?: (goal: number) => void;
   onBackToHome: () => void;
 }
 
-export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false }: InsightsViewProps) {
+export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange }: InsightsViewProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
   const usage = useMemo(() => getUsageOverview(stats), [stats]);
   const activity = useMemo(() => getActivityInsights(stats), [stats]);
@@ -43,6 +47,7 @@ export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'word
           { id: 'typing-time', label: 'Estimated typing time saved', value: usage.totalRecordings ? unit(Math.round(activity.typingMinutesSaved).toLocaleString(), 'min') : '–', detail: `All time · vs typing at ${ASSUMED_TYPING_WPM} wpm` },
         ]}
       />
+      {onDailyWordGoalChange && <DailyGoalCard stats={stats} goal={dailyWordGoal} onGoalChange={onDailyWordGoalChange} />}
       <UsageDashboard statsVersion={statsVersion} displayMode="page" initialMetric={initialMetric} />
       {details.length > 0 && (
         <details className="insights-more-statistics" open={defaultMoreOpen || undefined}>

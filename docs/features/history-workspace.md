@@ -84,6 +84,32 @@ filters still evaluate the complete retained history before this presentation
 window is applied, and exports include the complete filtered result set rather
 than only the currently mounted batch.
 
+## Show what Murmur changed
+
+Settings → Delivery → History → **Show what Murmur changed** is off by
+default. When it is on, a transcript's overflow menu offers **Show what
+changed** for live dictations whose entry kept the raw recognition (schema v2
+entries; migrated and imported-file entries have none, so the action is
+absent). The action toggles a panel under the transcript that compares what
+the model heard with what Murmur delivered:
+
+- a word-level diff, with removed words struck through and added words
+  underlined (colour is secondary), and an added line break shown as `⏎`;
+- a count of edits (an adjacent removal and addition counts as one
+  replacement) and the names of the transform stages whose recorded outcome
+  says they changed the text, in pipeline order;
+- **Copy what was heard**, which copies the stored raw recognition to the
+  clipboard on that explicit click.
+
+Spacing-only differences are not shown as edits. A pair whose token grid
+exceeds 250,000 cells is not diffed; the panel shows the raw text instead so a
+very long dictation cannot block the main thread. An unchanged dictation reads
+“Delivered exactly as recognized.”
+
+The feature is display-only. It never changes delivered text, the clipboard
+on delivery, history writes, statistics, or logs, and it reads only data
+History already stores locally. The diff lives in `app/src/lib/transcriptDiff.ts`.
+
 ## Deleting
 
 ### Automatic deletion (opt-in)
@@ -159,6 +185,7 @@ Cancelling the dialog is a no-op — no command call, no message.
 |------|------|
 | `app/src/lib/history.ts` | Entry shape, trim/filter/sort, match segmentation, export rendering |
 | `app/src/lib/historyExport.ts` | Clipboard and save-dialog wrappers around the pure renderer |
+| `app/src/lib/transcriptDiff.ts` | Word diff and changed-stage labels for **Show what changed** |
 | `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, pin, delete, clear, automatic-deletion sweep |
 | `app/src/components/settings/HistoryRetentionSetting.tsx` | Automatic-deletion window picker and its confirmation |
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
@@ -170,6 +197,8 @@ Cancelling the dialog is a no-op — no command call, no message.
 ## Tests
 
 - `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the retired teaching-context exclusion.
+- `app/src/lib/transcriptDiff.test.ts` — diff segments, replacement counting, spacing folding, line breaks, the size bound, and stage labels.
+- `app/visual-tests/history-changes.spec.ts` — comparison panel geometry in light and dark, and its absence while the setting is off.
 - `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, and the two-step clear.
 - `app/src/lib/hooks/useFileTranscription.test.tsx` — newly enqueued files publish synchronously and enter the sequential drain exactly once.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.

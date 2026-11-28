@@ -116,6 +116,7 @@ R204a.5c | Recording  | [stale] -
 R204a.5d | Recovering | [stale] -
 R204a.5e | Processing | [stale] -
 R204a.6  | *          | [fresh] ST:Processing>Idle / [fresh] ST:Idle>Idle / [fresh] ST:Recovering>Idle / [fresh] - / [stale] -
+R204a.7  | *          | [fresh] TERM:PipelineFailure/WorkerPanicked ST:Processing>Idle / [fresh] TERM:PipelineFailure/WorkerPanicked ST:Idle>Idle / [fresh] TERM:PipelineFailure/WorkerPanicked ST:Recovering>Idle / [fresh] TERM:PipelineFailure/WorkerPanicked / [stale] TERM:PipelineFailure/WorkerPanicked
 
 R204b.1  | Idle       | -
 R204b.2  | Recovering | -
