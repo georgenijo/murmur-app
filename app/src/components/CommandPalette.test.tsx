@@ -15,9 +15,9 @@ describe('CommandPalette', () => {
   const selectedRow = () => container.querySelector('[aria-selected="true"]');
   const input = () => container.querySelector('input') as HTMLInputElement;
 
-  async function render(isOpen = true) {
+  async function render(isOpen = true, extraResults?: (query: string) => PaletteCommand[]) {
     await act(async () => {
-      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} />);
+      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} extraResults={extraResults} />);
     });
   }
 
@@ -235,4 +235,71 @@ describe('CommandPalette', () => {
     expect(runs.record).toHaveBeenCalledOnce();
   });
 
+  describe('extra results (opt-in transcript search)', () => {
+    let copy: Mock<(text: string) => void>;
+    const extra = (query: string): PaletteCommand[] => (
+      query.length < 2 ? [] : [{
+        id: 'transcript-a',
+        title: 'Ship the delivery notes today',
+        section: 'Transcripts',
+        meta: 'Today · 3:26 PM',
+        actionVerb: 'copy',
+        run: () => copy('Ship the delivery notes today, full text'),
+      }]
+    );
+
+    beforeEach(() => { copy = vi.fn(); });
+
+    it('lists extra rows after the matching commands under their own heading', async () => {
+      await render(true, extra);
+      await type('delivery');
+      expect(rows().map((row) => row.id)).toEqual(['command-delivery', 'command-transcript-a']);
+      expect(container.textContent).toContain('Transcripts');
+      expect(rows()[1].querySelector('.palette-meta')?.textContent).toBe('Today · 3:26 PM');
+      // A meta label is plain text, not a keycap.
+      expect(rows()[1].querySelector('kbd')).toBeNull();
+    });
+
+    it('shows the row verb in the footer and runs the selected extra row', async () => {
+      await render(true, extra);
+      await type('delivery');
+      const footer = () => container.querySelector('.palette-footer')?.textContent ?? '';
+      expect(footer()).toContain('run');
+      await press('ArrowDown');
+      expect(selectedRow()?.id).toBe('command-transcript-a');
+      expect(footer()).toContain('copy');
+      expect(input().getAttribute('aria-activedescendant')).toBe('command-transcript-a');
+      await press('Enter');
+      expect(copy).toHaveBeenCalledWith('Ship the delivery notes today, full text');
+      expect(runs.delivery).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledOnce();
+    });
+
+    it('names transcripts in the placeholder and empty state only when enabled', async () => {
+      await render();
+      expect(input().placeholder).toBe('Type a command…');
+      await type('zzzz');
+      expect(container.textContent).toContain('No matching command');
+      expect(container.textContent).not.toContain('transcript');
+
+      await render(true, () => []);
+      expect(input().placeholder).toBe('Type a command or search transcripts…');
+      expect(container.textContent).toContain('No matching command or transcript');
+    });
+
+    it('highlights the query in a row that asks for it, and only there', async () => {
+      const highlighted = (query: string): PaletteCommand[] => extra(query).map((row) => ({ ...row, highlightMatches: true }));
+      await render(true, highlighted);
+      await type('delivery');
+      const marks = (index: number) => Array.from(rows()[index].querySelectorAll('mark')).map((mark) => mark.textContent);
+      expect(marks(1)).toEqual(['delivery']);
+      expect(rows()[1].querySelector('span.truncate')?.textContent).toBe('Ship the delivery notes today');
+      expect(marks(0)).toEqual([]);
+    });
+
+    it('an empty query lists commands only', async () => {
+      await render(true, extra);
+      expect(rows().map((row) => row.id)).toEqual(['command-record', 'command-logs', 'command-delivery']);
+    });
+  });
 });

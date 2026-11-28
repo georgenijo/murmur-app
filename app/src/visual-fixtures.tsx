@@ -52,6 +52,7 @@ import { useMeetings } from './lib/hooks/useMeetings';
 import type { MeetingSession } from './lib/meetings';
 import { DEFAULT_THEME, OPENCODE_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import { VoiceIslandFixture } from './visual-fixtures/VoiceIslandFixture';
+import { transcriptPaletteCommands } from './lib/paletteTranscripts';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -859,8 +860,12 @@ function VisualFixture() {
         </div>
       )}
       <CommandPalette
-        isOpen={requestedState === 'palette'}
+        isOpen={requestedState === 'palette' || requestedState === 'palette-transcripts'}
         onClose={() => {}}
+        initialQuery={requestedState === 'palette-transcripts' ? (query.get('q') ?? 'transcript') : ''}
+        extraResults={requestedState === 'palette-transcripts'
+          ? (paletteQuery) => transcriptPaletteCommands(entries, paletteQuery, () => {})
+          : undefined}
         commands={[
           { id: 'record', title: 'Start dictation', section: 'Dictation', hintPrefix: 'Hold', hint: '⇧ Left Shift', run: () => {} },
           { id: 'transcribe', title: 'Transcribe audio or video file…', section: 'Dictation', run: () => {} },

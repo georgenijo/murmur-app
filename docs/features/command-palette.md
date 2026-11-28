@@ -36,6 +36,37 @@ Rows whose meaning depends on state are labelled with the state, not the toggle:
 
 Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to General instead of rendering an empty pane. Contextual Text & vocabulary and App overrides requests retain a route back to the Customize hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
 
+## Find transcripts (opt-in)
+
+Settings → Delivery → History → **Find transcripts in the command palette**
+(`paletteTranscriptSearch`) is off by default. When it is on, typing in the
+palette also lists matching saved transcripts in a **Transcripts** section
+after the matching commands, and Enter (or a click) copies the chosen
+transcript's full stored text to the clipboard and closes the palette.
+
+- Matching is the History search rule: case-insensitive, and every typed word
+  must appear in the transcript or, for an imported file, its file name. The
+  palette and History therefore find the same transcripts.
+- Nothing is listed until the query has at least two non-space characters, so
+  opening the palette never shows transcript text by itself.
+- At most five rows, newest first; blank transcripts are skipped. Each row is
+  one line: a snippet that starts shortly before the first match (on a word
+  boundary, with a leading `…`), the matched words emphasised, and the day and
+  time History shows for that entry.
+- Transcript rows are never re-ranked against commands; commands keep their
+  tiers above them. The placeholder reads *Type a command or search
+  transcripts…*, the empty state *No matching command or transcript*, and the
+  footer verb reads *copy* while a transcript row is selected.
+- Rows are computed from the in-memory history on each keystroke. A deleted,
+  expired, or cleared transcript disappears with it; nothing is cached,
+  indexed, logged, or sent.
+
+The feature is display-only. It never changes recording, delivered text,
+delivery, history writes, statistics, or logs, and the clipboard is written
+only when a transcript row is chosen. With the setting off the palette is
+unchanged. The rows come from `transcriptPaletteCommands` in
+`app/src/lib/paletteTranscripts.ts`, passed to the palette as `extraResults`.
+
 ## Matching and ranking
 
 Matching is explicit tiers rather than a generic fuzzy library — with a small fixed command set, predictable ranking makes the first row feel obvious and is easy to test.
@@ -68,6 +99,7 @@ Tokens are **ANDed** — `settings del` narrows to the Delivery page rather than
 | File | Role |
 |------|------|
 | `app/src/lib/commandPalette.ts` | `PaletteCommand`, scoring tiers, `filterCommands`, `moveSelection` |
+| `app/src/lib/paletteTranscripts.ts` | Opt-in transcript rows: matching, snippet, copy action |
 | `app/src/lib/keyboardShortcuts.ts` | Pure `mainWindowShortcut` event→action mapping and shared fixed-binding metadata |
 | `app/src/components/settings/KeyboardShortcutsSettings.tsx` | Live read-only reference for global and main-window shortcuts |
 | `app/src/components/CommandPalette.tsx` | The dialog: input, list, keyboard handling |
@@ -77,6 +109,10 @@ Tokens are **ANDed** — `settings del` narrows to the Delivery page rather than
 ## Tests
 
 - `app/src/lib/commandPalette.test.ts` — tier ordering, keyword/section matching, token AND, tie-breaking, stability, and selection wrapping.
+- `app/src/lib/paletteTranscripts.test.ts` — minimum query, History-rule matching, cap and order, snippets, copy rows.
+- `app/src/components/CommandPalette.test.tsx` — extra rows after commands, highlight, footer verb, placeholder and empty state.
+- `app/src/App.captureSafety.test.tsx` — the setting off lists no transcripts; on, a chosen row copies its full text.
+- `app/visual-tests/palette-transcripts.spec.ts` — row geometry and footer verb in light and dark at two window sizes (`?state=palette-transcripts`).
 - `app/src/lib/keyboardShortcuts.test.ts` — every binding, Control equivalence, case-insensitivity, and the pass-through cases.
 - `app/src/components/CommandPalette.test.tsx` — filtering, arrow navigation, Enter/Escape, click-to-run, backdrop vs dialog clicks, and reset-on-open.
 

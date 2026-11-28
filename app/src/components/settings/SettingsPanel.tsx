@@ -308,6 +308,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'history-retention', title: 'Delete transcripts automatically', detail: 'Remove unpinned transcripts after a set number of days', keywords: 'auto delete expire retention privacy clean up old history days' },
   { page: 'delivery', target: 'history-changes', title: 'Show what Murmur changed', detail: 'Compare raw recognition with delivered text in History', keywords: 'original raw recognition diff compare cleanup corrections heard' },
   { page: 'delivery', target: 'history-profile', title: 'Show app profile in History', detail: 'Tag transcripts with their app profile and filter by app', keywords: 'per app profile override filter tag slack editor which app' },
+  { page: 'delivery', target: 'history-palette', title: 'Find transcripts in the command palette', detail: 'Search saved transcripts from ⌘K and copy one', keywords: 'command palette cmd k search find copy transcript history quick' },
   { page: 'delivery', target: 'app-overrides-manual', editorTab: 'app-overrides', title: 'App bundle ID', detail: 'Add an app override by its exact bundle ID', keywords: 'manual advanced profile' },
   { page: 'delivery', target: 'app-overrides', title: 'App overrides', detail: 'Customize delivery for individual apps', keywords: 'profile bundle id per app' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting audio', detail: 'Choose whether source audio is retained', keywords: 'capture wav keep delete' },
@@ -1419,6 +1420,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               description="Tag each dictation with the app profile it used and add an App filter. Delivered text is unchanged."
               checked={settings.historyShowProfile} defaultChecked={DEFAULT_SETTINGS.historyShowProfile}
               onChange={() => onUpdateSettings({ historyShowProfile: !settings.historyShowProfile })}
+            />
+            <SettingToggle
+              targetId="history-palette"
+              title="Find transcripts in the command palette"
+              description="Typing in ⌘K also lists matching saved transcripts; Enter copies one. Delivered text is unchanged."
+              checked={settings.paletteTranscriptSearch} defaultChecked={DEFAULT_SETTINGS.paletteTranscriptSearch}
+              onChange={() => onUpdateSettings({ paletteTranscriptSearch: !settings.paletteTranscriptSearch })}
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in NotchPill" checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             </SettingsGroup>

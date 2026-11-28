@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { filterCommands, moveSelection, type PaletteCommand } from '../lib/commandPalette';
+import { matchSegments } from '../lib/history';
 import { cn } from '../lib/sona-utils';
 
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
   commands: PaletteCommand[];
+  /**
+   * Rows computed from the live query and listed after the matching commands,
+   * such as the opt-in transcript search. They are not re-ranked.
+   */
+  extraResults?: (query: string) => PaletteCommand[];
+  /** Query to open with; only visual fixtures set it. */
+  initialQuery?: string;
 }
 
 /**
@@ -15,7 +23,7 @@ interface CommandPaletteProps {
  * callback — so it stays a pure navigation surface and the caller keeps one
  * source of truth for what each command means.
  */
-export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProps) {
+export function CommandPalette({ isOpen, onClose, commands, extraResults, initialQuery = '' }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -24,7 +32,10 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const restoreFocusRef = useRef(false);
 
-  const results = useMemo(() => filterCommands(commands, query), [commands, query]);
+  const results = useMemo(
+    () => [...filterCommands(commands, query), ...(extraResults?.(query) ?? [])],
+    [commands, extraResults, query],
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -32,7 +43,7 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     restoreFocusRef.current = true;
     const paletteNode = paletteRef.current;
-    setQuery('');
+    setQuery(initialQuery);
     setSelected(0);
     // Focus after paint so the palette wins over whatever had focus before.
     const id = requestAnimationFrame(() => inputRef.current?.focus());
@@ -48,6 +59,7 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
       previouslyFocusedRef.current = null;
       restoreFocusRef.current = false;
     };
+    // initialQuery is read once per opening, like the reset it replaces.
   }, [isOpen]);
 
   useEffect(() => setSelected(0), [query]);
@@ -115,7 +127,7 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
               type="text"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Type a command…"
+              placeholder={extraResults ? 'Type a command or search transcripts…' : 'Type a command…'}
               aria-label="Command"
               role="combobox"
               aria-expanded="true"
@@ -136,7 +148,7 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
           className="max-h-[min(28rem,60vh)] overflow-y-auto px-3 pb-2"
         >
           {results.length === 0 && (
-            <li className="px-3.5 py-6 text-center text-on-surface-variant">No matching command</li>
+            <li className="px-3.5 py-6 text-center text-on-surface-variant">{extraResults ? 'No matching command or transcript' : 'No matching command'}</li>
           )}
           {results.map((command, index) => (
             <li key={command.id} role="none">
@@ -164,14 +176,21 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
                     : 'text-on-surface hover:bg-surface-container',
                 )}
               >
-                <span className="min-w-0 flex-1 truncate">{command.title}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {command.highlightMatches
+                    ? matchSegments(command.title, query).map((segment, segmentIndex) => (segment.match
+                      ? <mark key={segmentIndex} className="palette-match">{segment.text}</mark>
+                      : <span key={segmentIndex}>{segment.text}</span>))
+                    : command.title}
+                </span>
+                {command.meta && <span className="palette-meta">{command.meta}</span>}
                 {command.hint && <span className="palette-binding">{command.hintPrefix && <span>{command.hintPrefix}</span>}<kbd className="dialog-kbd">{command.hint}</kbd></span>}
               </button>
             </li>
           ))}
         </ul>
         <div className="palette-footer">
-          <kbd className="dialog-kbd">↑↓</kbd> navigate · <kbd className="dialog-kbd">↵</kbd> run · <kbd className="dialog-kbd">esc</kbd> close
+          <kbd className="dialog-kbd">↑↓</kbd> navigate · <kbd className="dialog-kbd">↵</kbd> {results[selected]?.actionVerb ?? 'run'} · <kbd className="dialog-kbd">esc</kbd> close
         </div>
       </div>
     </div>

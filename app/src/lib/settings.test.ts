@@ -153,6 +153,19 @@ describe('loadSettings', () => {
     expect(loadSettings().historyShowProfile).toBe(false);
   });
 
+  it('keeps palette transcript search off by default and persists the opt-in', () => {
+    expect(DEFAULT_SETTINGS.paletteTranscriptSearch).toBe(false);
+    saveSettings({ ...DEFAULT_SETTINGS, paletteTranscriptSearch: true });
+    expect(loadSettings().paletteTranscriptSearch).toBe(true);
+
+    const { paletteTranscriptSearch: _omitted, ...older } = DEFAULT_SETTINGS;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(older));
+    expect(loadSettings().paletteTranscriptSearch).toBe(false);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, paletteTranscriptSearch: 'yes' }));
+    expect(loadSettings().paletteTranscriptSearch).toBe(false);
+  });
+
   it('persists the explicit meeting-suggestion opt-in and rejects malformed consent', () => {
     saveSettings({ ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true });
     expect(loadSettings().meetingSuggestionsEnabled).toBe(true);

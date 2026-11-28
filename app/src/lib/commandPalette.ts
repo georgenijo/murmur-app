@@ -19,6 +19,12 @@ export interface PaletteCommand {
   hint?: string;
   /** Interaction verb outside the shortcut keycap (for example Hold). */
   hintPrefix?: string;
+  /** Muted right-hand text that is not a keycap, e.g. when a transcript was saved. */
+  meta?: string;
+  /** Footer verb for Enter while this row is selected; defaults to "run". */
+  actionVerb?: string;
+  /** Highlight the query's words in the title, as History search does. */
+  highlightMatches?: boolean;
   run: () => void | Promise<void>;
 }
 
