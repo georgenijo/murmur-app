@@ -653,13 +653,20 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
 
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async (gestureToken?: string) => {
-    if (statusRef.current === 'processing' || statusRef.current === 'recovering') return;
+    if (statusRef.current === 'recovering') {
+      // A double-tap during microphone cleanup sends no IPC (a stop in
+      // Recovering is not a user step), but it must not be a silent no-op:
+      // show the same notice a refused hold press or window stop shows.
+      presentCleanupRefusal();
+      return;
+    }
+    if (statusRef.current === 'processing') return;
     if (statusRef.current === 'recording' || statusRef.current === 'starting') {
       await handleStop('toggle');
     } else {
       await beginRecording('toggle', gestureToken);
     }
-  }, [beginRecording, handleStop]);
+  }, [beginRecording, handleStop, presentCleanupRefusal]);
 
   // Side effects must live outside the setLockedMode updater to avoid double-firing in StrictMode
   const toggleLockedMode = useCallback(async () => {

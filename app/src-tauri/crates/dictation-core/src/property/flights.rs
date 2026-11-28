@@ -963,7 +963,10 @@ impl Task for ImportFlight {
                 } else {
                     // `IdleGuard::finish_owned`: `CX-` runs before D.
                     let ctx = fx(cx, self.rid, "R302.pre", SiteId::ProcessAudioFinish);
-                    for placed in core_stop::guard_finish_pre_effects(RecordingId(self.rid)) {
+                    for placed in core_stop::guard_finish_pre_effects(
+                        RecordingId(self.rid),
+                        GuardOrigin::LegacyParse,
+                    ) {
                         self.q.push_back(QItem::Fx(ctx, placed));
                     }
                     self.st = Is::D302Parse;
@@ -1090,7 +1093,8 @@ enum Ts {
 #[derive(Clone, Copy, Debug)]
 pub struct StopCfg {
     /// The stop task panics once the capture stop returned: its `IdleGuard`'s
-    /// `Drop` writes the status (PD-13) and no terminal is emitted.
+    /// `Drop` writes the status and claims `PipelineFailure/WorkerPanicked` (R204a.7;
+    /// PD-13 fixed, #1191).
     pub panic_after_cp: bool,
     /// The pipeline the stop starts (if the capture is long enough).
     pub pipeline: PipelineCfg,
@@ -1503,14 +1507,18 @@ impl Task for StopFlight {
                 };
                 if self.cfg.panic_after_cp {
                     // The stop task unwinds: `IdleGuard::drop` finishes with the
-                    // `Dropped` origin (R204a.6; PD-13), the ops retire by `Drop`.
+                    // `Unwound` origin (R204a.7), which claims the terminal the task
+                    // can no longer claim (PD-13 fixed, #1191); the ops retire by `Drop`.
                     self.panicked = true;
                     cx.out.notes.push(Note::TaskPanicked {
                         tid: cx.tid,
                         rid: self.rid,
                     });
                     let ctx = fx(cx, self.rid, "R204a.pre", SiteId::GuardFinish);
-                    for placed in core_stop::guard_finish_pre_effects(RecordingId(self.rid)) {
+                    for placed in core_stop::guard_finish_pre_effects(
+                        RecordingId(self.rid),
+                        GuardOrigin::Unwound,
+                    ) {
                         self.q.push_back(QItem::Fx(ctx, placed));
                     }
                     self.st = Ts::PanicGuard;
@@ -1576,8 +1584,9 @@ impl Task for StopFlight {
                 let rid = self.rid;
                 let input = crate::inputs::GuardFinishInput {
                     rid: RecordingId(rid),
-                    origin: GuardOrigin::Dropped,
-                    closure_emit: false,
+                    origin: GuardOrigin::Unwound,
+                    // The production stop guard emits `idle` when it unwinds (R204a.7).
+                    closure_emit: true,
                 };
                 let direct = core_stop::decide_guard_finish(&view, input, at);
                 let decision = once(
@@ -1593,7 +1602,7 @@ impl Task for StopFlight {
                     SiteId::GuardFinish,
                     &decision,
                     rid,
-                    Some(GuardOrigin::Dropped),
+                    Some(GuardOrigin::Unwound),
                 );
                 let ctx = fx(cx, rid, decision.row.0, SiteId::GuardFinish);
                 apply_in(cx, &ctx, &decision);
@@ -1941,7 +1950,8 @@ pub enum PipelineEnd {
     Ok(PipelineTerminal),
     /// Returns an error: the guard's `Drop` finishes (`Dropped` origin).
     Err,
-    /// Panics: the guard's `Drop` finishes, and the stop task unwinds (PD-13).
+    /// Panics: the guard's `Drop` finishes with `Unwound` and claims the terminal
+    /// (R204a.7), and the stop task unwinds.
     Panic,
 }
 
@@ -1989,7 +1999,8 @@ impl Pipeline {
     fn origin(&self) -> GuardOrigin {
         match self.end {
             PipelineEnd::Ok(_) => GuardOrigin::PipelineExit,
-            PipelineEnd::Err | PipelineEnd::Panic => GuardOrigin::Dropped,
+            PipelineEnd::Err => GuardOrigin::Dropped,
+            PipelineEnd::Panic => GuardOrigin::Unwound,
         }
     }
 }
@@ -2058,7 +2069,9 @@ impl Task for Pipeline {
                     });
                 }
                 let ctx = fx(cx, self.rid, "R204a.pre", SiteId::GuardFinish);
-                for placed in core_stop::guard_finish_pre_effects(RecordingId(self.rid)) {
+                for placed in
+                    core_stop::guard_finish_pre_effects(RecordingId(self.rid), self.origin())
+                {
                     self.q.push_back(QItem::Fx(ctx, placed));
                 }
                 self.st = Ps::Finish;
@@ -2072,7 +2085,9 @@ impl Task for Pipeline {
                 let input = crate::inputs::GuardFinishInput {
                     rid: RecordingId(rid),
                     origin,
-                    closure_emit: false,
+                    // Only the unwinding guard emits `idle` (R204a.7): a returning
+                    // pipeline leaves it to the stop's 204b section.
+                    closure_emit: origin == GuardOrigin::Unwound,
                 };
                 let direct = core_stop::decide_guard_finish(&view, input, at);
                 let decision = once(

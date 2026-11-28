@@ -542,12 +542,36 @@ fn pd11_terminal_claim_and_diagnostics_complete_are_not_atomic() {
 }
 
 // ---------------------------------------------------------------- PD-13
-// C7.1 PD-13, row R204a.6: a panic in the stop task (or the pipeline's
-// `IdleGuard`) restores Idle on unwind and emits no terminal.
+// C7.1 PD-13, fixed (#1191). A panic in the stop task (or in the pipeline, past
+// its `IdleGuard`) used to restore Idle on unwind and claim no terminal (R204a.6).
+// The guard's drop now sees the unwind and finishes as `Unwound` (R204a.7): it
+// claims `PipelineFailure/WorkerPanicked` in `Pre`, then writes Idle, clears the
+// keyboard gate and emits `idle` under D, so the windows leave `processing` (the
+// stop's 204b section, which would have emitted it, never runs).
 
-/// A panic in the stop command after its `IdleGuard` is armed: the unwind
-/// writes Idle and clears the keyboard gate, emits no `idle`, and leaves the
-/// ledger entry unclaimed.
+const PANIC_TERMINAL: &str = "~ terminal 1 PipelineFailure/WorkerPanicked";
+
+/// The unwinding guard emits `idle` exactly once after the stop's `processing`, and after
+/// its own `Pre` (the terminal claim, when it wins).
+fn assert_unwind_emitted_idle_once(trace: &[String]) {
+    let processing = position(trace, "emit recording-status-changed \"processing\"");
+    let idles: Vec<usize> = trace[processing..]
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| **line == IDLE_EMIT)
+        .map(|(at, _)| processing + at)
+        .collect();
+    assert_eq!(idles.len(), 1, "the unwind emits idle once: {trace:#?}");
+    if let Some(terminal) = trace.iter().position(|line| line == PANIC_TERMINAL) {
+        assert!(
+            terminal < idles[0],
+            "TERM (Pre) precedes EM(idle) (In): {trace:#?}"
+        );
+    }
+}
+
+/// A panic in the stop command after its `IdleGuard` is armed: the unwind claims
+/// the terminal, writes Idle, clears the keyboard gate and emits `idle` once.
 fn pd13a_panic_in_the_stop_path(world: &Arc<World>) {
     recording(world);
     world.on("supervisor.stop", || panic!("scripted stop-task panic"));
@@ -565,18 +589,25 @@ fn pd13a_panic_in_the_stop_path(world: &Arc<World>) {
     assert_eq!(status(world), DictationStatus::Idle);
     assert!(!keyboard::is_processing());
     let trace = world.trace();
-    let processing = position(&trace, "emit recording-status-changed \"processing\"");
-    assert!(
-        !trace[processing..].contains(&IDLE_EMIT.to_string()),
-        "PD-13: the unwind emits no idle, so the UI stays on processing"
+    assert_unwind_emitted_idle_once(&trace);
+    let terminals: Vec<_> = trace
+        .iter()
+        .filter(|line| line.starts_with("~ terminal 1 "))
+        .collect();
+    assert_eq!(
+        terminals,
+        [PANIC_TERMINAL],
+        "exactly one terminal, the guard's"
     );
-    assert!(!trace.iter().any(|line| line.starts_with("~ terminal 1 ")));
     assert_eq!(
         state.app_state.dictation_telemetry.terminal_for_test(1),
-        None
+        Some((
+            DictationTerminalOutcome::PipelineFailure,
+            DictationErrorCode::WorkerPanicked
+        ))
     );
-    // The attempt was accepted and is still unclaimed: nothing emitted for it.
-    assert!(emit_dictation_terminal(
+    // The claim is taken: a later sink loses it.
+    assert!(!emit_dictation_terminal(
         &state,
         1,
         DictationTerminalOutcome::PipelineFailure,
@@ -585,8 +616,8 @@ fn pd13a_panic_in_the_stop_path(world: &Arc<World>) {
 }
 
 /// A panic inside the pipeline, after the real `IdleGuard` the fake pipeline
-/// builds first: the guard's drop writes Idle and clears the gate, and no
-/// terminal is emitted for the id (R204a.6).
+/// builds first: the guard's drop claims the terminal, writes Idle, clears the
+/// gate and emits `idle` once (R204a.7).
 fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Ok(16_000);
@@ -605,13 +636,17 @@ fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
     assert_eq!(status(world), DictationStatus::Idle);
     assert!(!keyboard::is_processing());
     let trace = world.trace();
-    let processing = position(&trace, "emit recording-status-changed \"processing\"");
-    assert!(
-        !trace[processing..].contains(&IDLE_EMIT.to_string()),
-        "PD-13: the unwind emits no idle"
+    assert_unwind_emitted_idle_once(&trace);
+    let terminals: Vec<_> = trace
+        .iter()
+        .filter(|line| line.starts_with("~ terminal 1 "))
+        .collect();
+    assert_eq!(
+        terminals,
+        [PANIC_TERMINAL],
+        "exactly one terminal, the guard's"
     );
-    assert!(!trace.iter().any(|line| line.starts_with("~ terminal 1 ")));
-    assert!(emit_dictation_terminal(
+    assert!(!emit_dictation_terminal(
         &state,
         1,
         DictationTerminalOutcome::PipelineFailure,
@@ -619,25 +654,69 @@ fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
     ));
 }
 
+/// The unwinding guard's claim is first-wins: when the recording's terminal was claimed
+/// before the panic, the guard's `TERM` loses, and its `Pre` still goes on to `CX-` and its
+/// D section still writes Idle, clears the keyboard gate and emits `idle`.
+fn pd13c_panic_after_the_terminal_was_claimed(world: &Arc<World>) {
+    recording(world);
+    let state = world.state();
+    assert!(emit_dictation_terminal(
+        &state,
+        1,
+        DictationTerminalOutcome::StopFailure,
+        DictationErrorCode::StopFinalizationFailed,
+    ));
+    world.on("supervisor.stop", || panic!("scripted stop-task panic"));
+    let mut stop = world.stop(None);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = poll_once(&mut stop);
+    }));
+    assert!(
+        unwound.is_err(),
+        "the scripted panic unwinds out of the stop"
+    );
+    drop(stop);
+    assert_eq!(status(world), DictationStatus::Idle);
+    assert!(!keyboard::is_processing());
+    assert_unwind_emitted_idle_once(&world.trace());
+    assert_eq!(
+        state.app_state.dictation_telemetry.terminal_for_test(1),
+        Some((
+            DictationTerminalOutcome::StopFailure,
+            DictationErrorCode::StopFinalizationFailed
+        )),
+        "the earlier terminal keeps winning"
+    );
+    assert!(
+        !world.trace().iter().any(|line| line == PANIC_TERMINAL),
+        "the guard's claim lost, so no WorkerPanicked terminal is recorded"
+    );
+}
+
 #[test]
-fn pd13_task_panic_restores_idle_without_a_terminal() {
+fn pd13_fixed_a_task_panic_claims_a_worker_panicked_terminal() {
     repeat_abandoning(
         &sub("PD-13 stop task panic", pd13a_panic_in_the_stop_path),
         1,
     );
     repeat_abandoning(&sub("PD-13 pipeline panic", pd13b_panic_in_the_pipeline), 1);
+    repeat_abandoning(
+        &sub(
+            "PD-13 panic after the terminal was claimed",
+            pd13c_panic_after_the_terminal_was_claimed,
+        ),
+        1,
+    );
 }
 
-/// A pinned PD-13 consequence of the PD-22 fix (D-PD-2 amendment 1, issue #1191): a stop task
-/// panics after its `IdleGuard` is armed, so the guard's unwind writes `Idle` and claims no
-/// terminal (R204a.6 `Dropped`, as in [`pd13a_panic_in_the_stop_path`]). The stop's receiver is
-/// gone with the task, so the worker exit's `response.send` fails and the supervisor notifies
-/// `Idle` (`audio_lifecycle.rs:2358-2373`, the undelivered-stop notification, the same sender and
-/// state as the PD-22 fixtures). R211.2 used to claim `Superseded/StaleOwner` there, the only
-/// terminal such a recording ever got. It claims none now, so the recording ends with **no**
-/// terminal and status `Idle`. Fixing PD-13 (the unwinding stop claims its own terminal) is
-/// issue #1191; this test then flips with it, so a change in either direction is visible.
-fn pd13_consequence_a_panicked_stop_then_the_supervisors_idle(world: &Arc<World>) {
+/// The PD-13 fix, pinned against the PD-22 fix (D-PD-2 amendment 1, issue #1191): a stop task
+/// panics after its `IdleGuard` is armed, so the guard's unwind claims
+/// `PipelineFailure/WorkerPanicked` (R204a.7, as in [`pd13a_panic_in_the_stop_path`]). The
+/// stop's receiver is gone with the task, so the worker exit's `response.send` fails and the
+/// supervisor notifies `Idle` (`audio_lifecycle.rs:2358-2373`, the undelivered-stop
+/// notification, the same sender and state as the PD-22 fixtures). R211.2 claims no terminal
+/// there, so before #1191 the recording ended with none. It now ends with the guard's, once.
+fn pd13_fixed_a_panicked_stop_then_the_supervisors_idle(world: &Arc<World>) {
     recording(world);
     world.on("supervisor.stop", || panic!("scripted stop-task panic"));
     let mut stop = world.stop(None);
@@ -655,22 +734,30 @@ fn pd13_consequence_a_panicked_stop_then_the_supervisors_idle(world: &Arc<World>
     assert_eq!(status(world), DictationStatus::Idle);
     let state = world.state();
     let trace = world.trace();
-    assert!(
-        !trace.iter().any(|line| line.starts_with("~ terminal 1 ")),
-        "the supervisor's Idle claims no terminal: the recording has none (was Superseded/StaleOwner)"
+    let terminals: Vec<_> = trace
+        .iter()
+        .filter(|line| line.starts_with("~ terminal 1 "))
+        .collect();
+    assert_eq!(
+        terminals,
+        [PANIC_TERMINAL],
+        "the guard's terminal, once; the supervisor's Idle claims none"
     );
     assert_eq!(
         state.app_state.dictation_telemetry.terminal_for_test(1),
-        None
+        Some((
+            DictationTerminalOutcome::PipelineFailure,
+            DictationErrorCode::WorkerPanicked
+        ))
     );
 }
 
 #[test]
-fn pd13_consequence_a_panicked_stop_then_the_supervisors_idle_leaves_no_terminal() {
+fn pd13_fixed_a_panicked_stop_then_the_supervisors_idle_keeps_the_guards_terminal() {
     repeat_abandoning(
         &sub(
-            "PD-13 consequence of the PD-22 fix (#1191): a panicked stop, then the supervisor's Idle (R211.2)",
-            pd13_consequence_a_panicked_stop_then_the_supervisors_idle,
+            "PD-13 fixed (#1191): a panicked stop, then the supervisor's Idle (R211.2)",
+            pd13_fixed_a_panicked_stop_then_the_supervisors_idle,
         ),
         1,
     );
@@ -1341,8 +1428,9 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     let _e7_dump = std::env::var_os("MURMUR_E7_PER_ROW_OUT").map(E7Dump);
     // PD-2 and PD-4 are not here: their signatures need a `Superseded` claim R211.2 and R207.3
     // no longer make (PD-22 and PD-23 fixed), so they are `RowRetired` and the shadow credits
-    // them nothing.
-    let missing: Vec<u8> = [1_u8, 3, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16]
+    // them nothing. PD-13 is not here either: a panic now finishes as R204a.7, which claims a
+    // terminal (#1191), so its R204a.6 signature (no `TERM`, no `EM`) is `RowRetired` too.
+    let missing: Vec<u8> = [1_u8, 3, 5, 6, 7, 8, 9, 10, 12, 15, 16]
         .into_iter()
         .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)
         .collect();
@@ -1364,7 +1452,8 @@ enum PdKind {
     /// A row the shadow's allowlist (`pd::PD_DEFS`) still lists but no schedule can credit
     /// any more (PD-4: R207.3 claims no terminal since PD-23 was fixed; PD-2: R211.2 claims no
     /// terminal since PD-22 was fixed, and it is the same claim; either way the `TERM` the
-    /// signature needs never runs). Its fixture replays through the shadow and the shadow
+    /// signature needs never runs. PD-13: a panic finishes as R204a.7 since #1191, so the
+    /// R204a.6 signature's panic never happens). Its fixture replays through the shadow and the shadow
     /// credits nothing for it. `pd.rs` is a feature-only module, so deleting the row is a
     /// shadow change that `check_shadow_diff.py` would hold this fix's live deletions to:
     /// a shadow PR removes the entry and this kind together.
@@ -1514,8 +1603,10 @@ fn e8_pds() -> Vec<(u8, PdKind, Vec<Fixture>)> {
         ),
         (
             13,
-            Row,
-            vec![fx!(pd13_task_panic_restores_idle_without_a_terminal)],
+            RowRetired,
+            vec![fx!(
+                pd13_fixed_a_task_panic_claims_a_worker_panicked_terminal
+            )],
         ),
         (
             14,
@@ -1632,7 +1723,8 @@ fn e8_rejects_a_fixture_the_compiled_harness_skips() {
         !compiled_harness_runs(probe),
         "the harness skips the probe, so E8 must not take it as run: {probe}"
     );
-    let running = std::any::type_name_of_val(&pd13_task_panic_restores_idle_without_a_terminal);
+    let running =
+        std::any::type_name_of_val(&pd13_fixed_a_task_panic_claims_a_worker_panicked_terminal);
     assert!(compiled_harness_runs(running), "{running}");
     assert!(!compiled_harness_runs(
         "ui_lib::commands::recording::nothing"

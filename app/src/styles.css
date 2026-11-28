@@ -976,6 +976,50 @@ textarea {
   line-height: 1rem;
 }
 
+/* Opt-in "Show what Murmur changed" panel. Removed words keep a strikethrough
+   and added words an underline, so the meaning never depends on colour alone. */
+.transcript-compare {
+  display: grid;
+  justify-items: start;
+  gap: 0.25rem;
+  margin-top: 0.375rem;
+  border-left: 2px solid var(--murmur-outline-variant);
+  padding-left: 0.625rem;
+  cursor: auto;
+}
+.transcript-compare-summary {
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  line-height: 1rem;
+}
+.transcript-compare-diff,
+.transcript-compare-raw {
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-caption);
+  line-height: var(--ui-leading-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.transcript-compare-label {
+  margin-right: 0.375rem;
+  color: var(--murmur-on-surface-variant);
+  font-weight: 600;
+}
+.transcript-compare-diff del {
+  border-radius: 0.125rem;
+  background: color-mix(in srgb, var(--murmur-error) 12%, transparent);
+  color: var(--murmur-error);
+  text-decoration: line-through;
+}
+.transcript-compare-diff ins {
+  border-radius: 0.125rem;
+  background: color-mix(in srgb, var(--murmur-success) 12%, transparent);
+  color: var(--murmur-success);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.transcript-compare-diff del + ins { margin-left: 0.1875rem; }
+
 /* Main dashboard shell. The sidebar and content insets deliberately consume
    the whole native window instead of centering another max-width canvas. */
 .home-sidebar {

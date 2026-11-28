@@ -179,7 +179,8 @@ only between rows in the same day. Time uses right-aligned tabular sans;
 Copy and More occupy a reserved column and appear on hover or keyboard focus.
 The Home month summary and full Insights destination use only
 durable local statistics. [Insights](features/insights.md) shows four summary
-figures, a Words/Speed daily chart and an eight-week activity calendar. Nonzero
+figures, an opt-in daily word goal (off by default), a Words/Speed daily chart
+and an eight-week activity calendar. Nonzero
 dictation time, corrections taught and this month's completed meetings live
 under More statistics. Estimated typing time saved compares typing at 40 words
 per minute with dictation time.
@@ -204,6 +205,11 @@ file-transcription toasts remain available.
 The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
 sessions, supports copy/text export, and deletes one or all sessions locally.
+Opt-in **Delete transcripts automatically** (Never by default; 1/7/30/90 days)
+removes unpinned transcripts past that age, after confirming any immediate deletion.
+Opt-in **Show what Murmur changed** (off by default) adds a per-transcript
+comparison of the raw recognition with the delivered text: a word diff, the
+stages that changed it, and Copy what was heard. Display-only.
 Select transcripts to combine (overflow menu) copies several takes as one
 plain-text block, oldest first, without changing stored history.
 ### Command palette — [features/command-palette.md](features/command-palette.md)

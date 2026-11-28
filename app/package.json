@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "tauri:dev:fake-permissions": "tauri dev --features fake-permissions --config src-tauri/tauri.dev.conf.json",
     "tauri:bench:dev": "VITE_MURMUR_INTERNAL_BENCHMARK=1 tauri dev --features internal-benchmark --config src-tauri/tauri.bench.conf.json",
     "tauri:build": "tauri build",
     "tauri:build:local": "node ../scripts/tauri_build_local.mjs",

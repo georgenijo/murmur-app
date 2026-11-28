@@ -1904,6 +1904,40 @@ fn an_auto_stop_that_never_runs_retires_its_owner_when_dropped() {
     });
 }
 
+/// The golden fake pipeline arms the real pipeline guard with an unwind `idle` emit, as
+/// production does (R204a.7): this pins production's `run_transcription_pipeline` to it, so
+/// a panic in the real pipeline cannot leave the windows in `processing`. The stop path's own
+/// guard is production code under the golden harness (`pd13a_panic_in_the_stop_path`).
+#[test]
+fn the_production_pipeline_guard_emits_idle_on_unwind() {
+    let source = include_str!("recording.rs");
+    let start = source
+        .find("async fn run_transcription_pipeline(")
+        .expect("the production pipeline");
+    let body = &source[start..];
+    let body = &body[..body.find("\n}\n").expect("the end of the pipeline")];
+    let guard = body
+        .find("let mut _guard = IdleGuard::for_pipeline(app_state, recording_id, pipeline_op);")
+        .expect("the pipeline's guard");
+    let armed = body
+        .find(
+            "_guard.emit_idle_on_unwind(|| app_handle.emit(\"recording-status-changed\", \"idle\").is_ok());",
+        )
+        .expect("the pipeline guard's unwind idle emit");
+    assert!(guard < armed, "the emit is armed on the pipeline's guard");
+    assert!(
+        !body[guard..armed].contains(".await"),
+        "the emit is armed before the pipeline's first await"
+    );
+    let stop = include_str!("recording.rs");
+    assert!(
+        stop.contains(
+            "guard = IdleGuard::new(&state.app_state, rid);\n        guard.emit_idle_on_unwind(|| host.emit_event(\"recording-status-changed\", \"idle\").is_ok());"
+        ),
+        "the stop's guard is armed with its unwind idle emit"
+    );
+}
+
 /// The golden harness supplies its own host and scheduler to `auto_stop_dispatch`, so
 /// the two places a production-only change could hide are the host constructor and the
 /// scheduler. The scheduler is the named `spawn_auto_stop`, run for real by the test

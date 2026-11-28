@@ -88,6 +88,17 @@
 .insights-view [data-stats="details"] dd { display: flex; flex-shrink: 0; align-items: baseline; gap: 6px; margin-left: auto; white-space: nowrap; }
 .insights-view [data-stats="details"] .ui-dashboard-stat-value { font-family: var(--ui-font-sans); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; }
 .insights-view [data-stats="details"] small { font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+/* Opt-in daily word goal: one compact card between the headline and charts. */
+.insights-view .insights-goal { flex-shrink: 0; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-card); background: var(--ui-tint-raised); }
+.insights-view .insights-goal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.insights-view .insights-goal-header h2 { margin: 0; min-width: 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; }
+.insights-view .insights-goal-header > .ui-select { flex: 0 0 148px; width: 148px; }
+.insights-view .insights-goal-hint,
+.insights-view .insights-goal-history { margin: 4px 0 0; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.insights-view .insights-goal-bar { height: 6px; margin-top: 10px; overflow: hidden; border-radius: 999px; background: var(--ui-hairline); }
+.insights-view .insights-goal-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--murmur-primary); }
+.insights-view .insights-goal-today { margin: 8px 0 0; color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-variant-numeric: tabular-nums; }
+.insights-view .insights-goal[data-goal-state="met"] .insights-goal-today { font-weight: 600; }
 .insights-view :is(button, summary):focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
 [data-appearance="dark"] .insights-view {
   --ui-chart-1: color-mix(in srgb, var(--murmur-primary) 35%, var(--murmur-background));
