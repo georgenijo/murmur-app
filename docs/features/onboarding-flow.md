@@ -193,6 +193,11 @@ Both first-run fixtures provide an explicit Apple M4 hardware-guidance response;
 production uses the native hardware probe. All states support `appearance=light`
 and `appearance=dark`, at 1100×780 and 840×620, without injected CSS or DOM edits.
 
+For the native app, the dev-only fake permission provider scripts the same
+answers without any system dialog: run
+`MURMUR_FAKE_PERMISSIONS=fresh npm run tauri:dev:fake-permissions`. See
+[Fake permissions for native onboarding tests](../DEVELOPMENT.md#fake-permissions-for-native-onboarding-tests).
+
 The native title bar stays above Welcome's centered wrapper. Every wizard step
 and the standalone model gate retain hit-testable native drag regions without
 moving the approved content. Model cards use an inset keyboard focus outline
