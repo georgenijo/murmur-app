@@ -11,7 +11,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock('../../lib/dictation', () => ({ previewVocabularyAliases: vi.fn() }));
 
 const mocks = vi.hoisted(() => ({ history: [] as HistoryEntry[], loads: 0 }));
-vi.mock('../../lib/history', () => ({
+vi.mock('../../lib/history', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/history')>()),
   loadHistory: () => { mocks.loads += 1; return mocks.history; },
 }));
 
