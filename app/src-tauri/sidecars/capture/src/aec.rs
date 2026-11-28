@@ -373,6 +373,9 @@ impl MeetingMicrophonePath {
 }
 
 #[cfg(test)]
+mod eval;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

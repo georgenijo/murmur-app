@@ -548,6 +548,18 @@ const entries: HistoryEntry[] = [
       duration: 6 + index,
       source,
       ...(source === 'file' ? { sourceName: `local-note-${index + 1}.wav` } : {}),
+      ...(dayOffset === 0 && requestedState === 'home-history-changes' ? {
+        rawText: 'um so history owns the window with the newest work close at hand and older notes one scroll away',
+        recording: {
+          recordingId: 41,
+          modelId: 'parakeet-v3',
+          profileId: null,
+          stages: [
+            { stage: 'cleanup', outcome: 'applied' as const, changed: true },
+            { stage: 'smart_correction', outcome: 'applied' as const, changed: false },
+          ],
+        },
+      } : {}),
     };
   }),
   {
@@ -574,6 +586,7 @@ const fixturePasteLastShortcut: Settings['pasteLastShortcut'] = shortcutFixtureE
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
+  historyShowRecognition: requestedState === 'home-history-changes',
   smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
   smartAutoProbeEnabled: requestedState === 'settings-smart-auto',
   smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto' || requestedState === 'settings-smart-auto-no-probes'
@@ -584,6 +597,7 @@ const fixtureSettings = {
     : [],
   pasteLastShortcut: fixturePasteLastShortcut,
   vocabularySuggestions: fixtureVocabularySuggestions,
+  dailyWordGoal: requestedState === 'insights-goal' ? 1000 : requestedState === 'insights-goal-met' ? 500 : 0,
   vocabularyEntries: [{
     id: 'fixture-term',
     written: 'Murmur',
@@ -798,6 +812,8 @@ function VisualFixture() {
                 initialMetric={['insights-speed', 'insights-gap', 'insights-no-speed'].includes(requestedState) ? 'wpm' : 'words'}
                 defaultMoreOpen={requestedState === 'insights-more'}
                 statsVersion={0}
+                dailyWordGoal={settings.dailyWordGoal}
+                onDailyWordGoalChange={(dailyWordGoal) => setSettings((current) => ({ ...current, dailyWordGoal }))}
                 onBackToHome={backToHome}
               />
             ) : destination === 'meetings' ? (

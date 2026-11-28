@@ -40,7 +40,7 @@
 
 use super::dictation_host::HostFuture;
 use super::golden_harness::*;
-use super::golden_tests::{recording, sub};
+use super::golden_tests::{recording, sub, sub_from};
 use super::pd_witness_tests::repeat;
 use super::process_audio_ports::{ImportedAudioHost, OwnedIdleEmit};
 use super::*;
@@ -361,5 +361,166 @@ pub(super) fn a_stale_scoped_stop_after_a_start_leaves_the_terminal_to_the_origi
     repeat(&sub(
         "PD-25 fixed: a scoped stop for generation 1 resumes after a start allocated generation 2 (R201.1 / R204b.6)",
         stale_scoped_stop_after_start,
+    ));
+}
+
+// ------------------------------------- the earlier-take tombstone's other writes (#1186)
+//
+// The fixtures above cover the tombstone written by the stop that takes the capture at
+// R201.5 / R201.7. These cover the other two take sites that write it: a stale stop's own
+// take (R201.1) and the lifecycle's disposal (`TI(d)`, R216 here; R215.1 runs the same
+// port). Each asserts the tombstone directly: a stale stop that resumes after either take
+// claims no terminal because of it, and today the earlier taker has always claimed its
+// terminal by then, so first-wins hides a missing write from the ledger alone.
+
+fn tombstone(world: &Arc<World>, id: u64) -> bool {
+    world.state().app_state.interrupted_taken_earlier(id)
+}
+
+fn superseded_reply() -> Option<Result<serde_json::Value, String>> {
+    Some(Ok(
+        serde_json::json!({ "state": "idle", "type": "recording_superseded" }),
+    ))
+}
+
+/// The terminal lines the trace recorded for `id` (one per change of its terminal).
+fn terminal_lines(world: &Arc<World>, id: u64) -> Vec<String> {
+    let prefix = format!("~ terminal {id} ");
+    world
+        .trace()
+        .into_iter()
+        .filter(|line| line.starts_with(&prefix))
+        .collect()
+}
+
+/// A stale stop for generation 1, run to its reply once generation 2 is current.
+fn stale_stop_for_generation_1(world: &Arc<World>, label: &str) {
+    let mut stop = world.stop(Some(1));
+    let reply = complete(&mut stop);
+    world.reply(label, &reply);
+    assert_eq!(
+        Some(reply),
+        superseded_reply(),
+        "R201.1: {label} is superseded by generation 2"
+    );
+}
+
+/// Generation 1 has ended and generation 2 is recording, but the supervisor still holds
+/// a 9,000-sample capture preserved for generation 1, and generation 1's terminal is
+/// unclaimed (both planted: the fixture needs a stale stop to be the first taker). A stale
+/// stop for generation 1 takes it at R201.1 and claims `Superseded`; a second stale stop
+/// for generation 1 then finds the capture taken (the tombstone) and claims nothing.
+fn stale_stop_takes_the_capture(world: &Arc<World>) {
+    world.state().app_state.dictation_telemetry.accepted(1);
+    allocate_by_start(world);
+    audio_lifecycle::insert_interrupted_dictation_for_test(
+        1,
+        audio_lifecycle::InterruptedCapture {
+            samples: vec![0.0; 9_000],
+            reason: "stream_invalidated".to_string(),
+            duration_ms: 9_000 / 16,
+        },
+    );
+    assert!(
+        !tombstone(world, 1),
+        "nothing has taken generation 1's capture yet"
+    );
+
+    stale_stop_for_generation_1(world, "stale stop(expected=1), the taker");
+    assert!(
+        world
+            .trace()
+            .iter()
+            .any(|line| line.starts_with("supervisor.take_interrupted 1 -> ")
+                && !line.ends_with("none")),
+        "the first stale stop took the capture at R201.1:\n{}",
+        world.trace().join("\n")
+    );
+    assert!(
+        tombstone(world, 1),
+        "R201.1: the stale stop's take that found the capture is noted"
+    );
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner
+        )),
+        "the stale stop that took the capture ends generation 1 as Superseded"
+    );
+
+    stale_stop_for_generation_1(world, "stale stop(expected=1), after the take");
+    assert!(
+        tombstone(world, 1),
+        "a take that found nothing keeps the note"
+    );
+    assert_eq!(
+        terminal_lines(world, 1),
+        ["~ terminal 1 Superseded/StaleOwner"],
+        "generation 1 has the one terminal, the taker's:\n{}",
+        world.trace().join("\n")
+    );
+    assert_eq!(terminal(world, 2), None, "generation 2 is still recording");
+}
+
+/// Generation 1 is interrupted with 6,000 samples: too short to transcribe, so the
+/// bridge's short-idle path (R215.3 / R216) disposes of the capture (`TI(d)`) and ends
+/// generation 1 as `RuntimeInterruption`. Generation 2 starts; a stale scoped stop for
+/// generation 1 then finds the capture taken by the disposal and claims nothing.
+fn stale_stop_after_a_disposal(world: &Arc<World>) {
+    recording(world);
+    world.runtime_failure(1);
+    world.finish_interrupted(1, 6_000);
+    assert!(
+        tombstone(world, 1),
+        "R216 `TI(d)`: the disposal's take that found the capture is noted"
+    );
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::RuntimeInterruption,
+            DictationErrorCode::RuntimeFailure
+        )),
+        "the disposal ends generation 1"
+    );
+    world.release_owner_clear();
+    allocate_by_start(world);
+
+    stale_stop_for_generation_1(world, "stale stop(expected=1), after the disposal");
+    assert!(
+        world
+            .trace()
+            .iter()
+            .any(|line| line == "supervisor.take_interrupted 1 -> none"),
+        "the stale stop's take found nothing:\n{}",
+        world.trace().join("\n")
+    );
+    assert!(tombstone(world, 1));
+    assert_eq!(
+        terminal_lines(world, 1),
+        ["~ terminal 1 RuntimeInterruption/RuntimeFailure"],
+        "generation 1 has the one terminal, the disposal's:\n{}",
+        world.trace().join("\n")
+    );
+    assert_eq!(terminal(world, 2), None, "generation 2 is still recording");
+}
+
+/// #1186: a stale stop's own take at R201.1 writes the earlier-take tombstone.
+#[test]
+fn a_stale_stop_that_takes_the_capture_notes_the_take() {
+    repeat(&sub_from(
+        "PD-25 tombstone: a stale stop for generation 1 takes its capture (R201.1), a second finds it taken",
+        DictationStatus::Idle,
+        1,
+        stale_stop_takes_the_capture,
+    ));
+}
+
+/// #1186: the lifecycle's disposal of a short capture (R216 `TI(d)`) writes the tombstone.
+#[test]
+fn a_stale_scoped_stop_after_a_disposal_finds_the_capture_taken() {
+    repeat(&sub(
+        "PD-25 tombstone: a stale scoped stop for generation 1 resumes after R216 disposed of its capture",
+        stale_stop_after_a_disposal,
     ));
 }

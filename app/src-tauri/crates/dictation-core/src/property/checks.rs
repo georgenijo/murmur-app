@@ -60,11 +60,12 @@ pub struct RunHits {
     pub second_stop_after_late_reply: u32,
     /// The main window ignored a `starting` reply of a generation it had seen end (#1162).
     pub reply_ended_generation: u32,
-    /// Recordings whose stop or pipeline task panicked (PD-13) and whose end the supervisor's
-    /// `Idle` (R211.2) notified: the task's guard claims no terminal (R204a.6 `Dropped`), and
-    /// R211.2 claims none either since PD-22 was fixed, so the recording ends with no terminal
-    /// (issue #1191, D-PD-2 amendment 1). Counted at the end of the run, from the ledger.
-    pub panicked_task_idle_without_terminal: u32,
+    /// Recordings whose stop or pipeline task panicked and whose end the supervisor's `Idle`
+    /// (R211.2) also notified, and whose terminal the unwinding guard claimed (R204a.7,
+    /// `PipelineFailure/WorkerPanicked`). R211.2 claims none since PD-22 was fixed, so before
+    /// the PD-13 fix (#1191) these recordings ended with no terminal. Counted at the end of
+    /// the run, from the ledger.
+    pub panicked_task_idle_claimed_by_guard: u32,
 }
 
 /// What a signature's causal precondition requires of the two winners. Every
@@ -140,7 +141,7 @@ pub struct Checker {
     prev_lease: Option<(Rid, TaskId)>,
     /// Recordings whose start future was dropped at its await.
     dropped_ids: BTreeSet<Rid>,
-    /// Recordings whose pipeline or stop task panicked (PD-13).
+    /// Recordings whose pipeline or stop task panicked.
     panicked_ids: BTreeSet<Rid>,
     /// Recordings the supervisor's `Idle` was handled for while already `Idle` (R211.2).
     idle_for_finished_ids: BTreeSet<Rid>,
@@ -408,9 +409,10 @@ impl Checker {
                     self.hit(hits, 9, "R101.15", *rid);
                 }
             }
+            // PD-13 is fixed (#1191): the unwinding guard claims the terminal (R204a.7), so
+            // a panic is no PD; the end-of-run liveness check holds it to a terminal.
             Note::TaskPanicked { rid, .. } => {
                 self.panicked_ids.insert(*rid);
-                self.hit(hits, 13, "R204a.6", *rid);
             }
             Note::TickerPanicked { rid } => self.hit(hits, 14, "SD", *rid),
             // The claim of this `TERM` was lost (to an earlier winner, or because the id
@@ -608,16 +610,22 @@ impl Checker {
                 if open_l4 == Some(current) || self.dropped_ids.contains(&current) => {}
             other => problems.push(format!("status {other:?} at the end")),
         }
-        // PD-13 consequence, pinned (#1191): a panicked task whose recording the supervisor's
-        // `Idle` ended has no terminal, and the PD-13 exemption below is what admits it.
+        // The PD-13 fix, pinned (#1191): a panicked task whose recording the supervisor's
+        // `Idle` also ended has the unwinding guard's terminal (claimed in its `Pre`).
         for rid in self.panicked_ids.intersection(&self.idle_for_finished_ids) {
-            if !w.ledger.claimed.contains_key(rid) {
-                self.hits.panicked_task_idle_without_terminal += 1;
+            if matches!(
+                w.ledger.claimed.get(rid),
+                Some((
+                    TerminalOutcome::PipelineFailure,
+                    ErrCode::WorkerPanicked,
+                    "R204a.pre"
+                ))
+            ) {
+                self.hits.panicked_task_idle_claimed_by_guard += 1;
             }
         }
         for rid in &w.ledger.accepted {
             if !w.ledger.claimed.contains_key(rid)
-                && !self.pd_touched(13, *rid)
                 && !self.dropped_ids.contains(rid)
                 && open_l4 != Some(*rid)
             {

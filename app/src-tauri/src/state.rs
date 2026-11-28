@@ -713,6 +713,62 @@ mod tests {
         );
     }
 
+    /// PD-25's earlier-take tombstone (#1186): a noted id is found, an id never noted is
+    /// not, the set keeps [`AppState::INTERRUPTED_TAKEN_KEPT`] ids, and an insert past the
+    /// bound evicts the oldest. Recording ids are allocated in increasing order, so the
+    /// oldest is the smallest id (`pop_first`).
+    #[test]
+    fn interrupted_taken_tombstone_keeps_the_newest_sixteen_ids() {
+        let state = AppState::default();
+        assert_eq!(AppState::INTERRUPTED_TAKEN_KEPT, 16);
+        assert!(!state.interrupted_taken_earlier(1), "nothing is noted yet");
+
+        state.note_interrupted_taken(7);
+        assert!(state.interrupted_taken_earlier(7));
+        assert!(!state.interrupted_taken_earlier(6), "only the noted id");
+        assert!(!state.interrupted_taken_earlier(8), "only the noted id");
+        // Noting the same id again is one entry, not two.
+        state.note_interrupted_taken(7);
+        assert_eq!(state.interrupted_taken.lock_or_recover().len(), 1);
+
+        let state = AppState::default();
+        for id in 1..=16 {
+            state.note_interrupted_taken(id);
+        }
+        assert_eq!(state.interrupted_taken.lock_or_recover().len(), 16);
+        assert!(
+            (1..=16).all(|id| state.interrupted_taken_earlier(id)),
+            "the bound itself evicts nothing"
+        );
+
+        // The 17th id evicts the oldest (1), and only it.
+        state.note_interrupted_taken(17);
+        assert_eq!(state.interrupted_taken.lock_or_recover().len(), 16);
+        assert!(
+            !state.interrupted_taken_earlier(1),
+            "the oldest id is evicted"
+        );
+        assert!((2..=17).all(|id| state.interrupted_taken_earlier(id)));
+
+        // Each further id evicts the next oldest, one at a time.
+        state.note_interrupted_taken(18);
+        state.note_interrupted_taken(19);
+        assert_eq!(state.interrupted_taken.lock_or_recover().len(), 16);
+        assert!(!state.interrupted_taken_earlier(2));
+        assert!(!state.interrupted_taken_earlier(3));
+        assert!((4..=19).all(|id| state.interrupted_taken_earlier(id)));
+
+        // Re-noting an id that is still kept changes nothing.
+        state.note_interrupted_taken(4);
+        assert_eq!(state.interrupted_taken.lock_or_recover().len(), 16);
+        assert!((4..=19).all(|id| state.interrupted_taken_earlier(id)));
+
+        // Eviction is by id: an id older than every kept one is evicted by its own insert.
+        state.note_interrupted_taken(3);
+        assert!(!state.interrupted_taken_earlier(3));
+        assert!((4..=19).all(|id| state.interrupted_taken_earlier(id)));
+    }
+
     #[test]
     fn dictation_defaults_to_immediate_paste() {
         assert_eq!(DictationState::default().auto_paste_delay_ms, 0);

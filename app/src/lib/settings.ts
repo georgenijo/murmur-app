@@ -5,6 +5,8 @@ import {
   readLegacyModeState,
   stripLegacyModeKeys,
 } from './legacyModes';
+import { DEFAULT_HISTORY_RETENTION_DAYS, isHistoryRetentionDays, type HistoryRetentionDays } from './history';
+import { sanitizeDailyWordGoal } from './dailyGoal';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -219,6 +221,8 @@ export interface Settings {
   pasteLastShortcut: PasteLastShortcut | null;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
+  /** Insights daily word goal; 0 = off (default). Display only. */
+  dailyWordGoal: number;
   /** Play local output-only feedback for dictation lifecycle transitions. */
   soundCuesEnabled: boolean;
   /** Cue output volume as an integer percentage. */
@@ -269,6 +273,10 @@ export interface Settings {
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
   retainHistory: boolean;
+  /** Opt-in automatic deletion of unpinned transcripts older than this many days; 0 = never. */
+  historyRetentionDays: HistoryRetentionDays;
+  /** Offer a History action comparing raw recognition with delivered text. Display-only. */
+  historyShowRecognition: boolean;
   /** Keep meeting chunk WAV files after their durable transcript commits. */
   meetingRetainAudio: boolean;
   /** Opt in to local, session-scoped labels for remote meeting speakers. */
@@ -502,6 +510,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pasteLastShortcut: null,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
+  dailyWordGoal: 0,
   soundCuesEnabled: true,
   soundCueVolume: 45,
   meetingSoundCuesEnabled: false,
@@ -530,6 +539,8 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
+  historyShowRecognition: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
@@ -1085,6 +1096,8 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
 
+      parsed.dailyWordGoal = sanitizeDailyWordGoal(parsed.dailyWordGoal);
+
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;
       }
@@ -1101,6 +1114,12 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       }
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
+      }
+      if (!isHistoryRetentionDays(parsed.historyRetentionDays)) {
+        parsed.historyRetentionDays = DEFAULT_SETTINGS.historyRetentionDays;
+      }
+      if (typeof parsed.historyShowRecognition !== 'boolean') {
+        parsed.historyShowRecognition = DEFAULT_SETTINGS.historyShowRecognition;
       }
       if (typeof parsed.meetingRetainAudio !== 'boolean') {
         parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;

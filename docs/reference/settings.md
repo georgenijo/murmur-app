@@ -76,6 +76,7 @@ interface Settings {
   recordingMode: RecordingMode;
   doubleTapKey: DoubleTapKey;
   hotkeyMissFeedback: boolean;
+  dailyWordGoal: number;                   // 0 = off (default)
   autoStopSilenceMs: number;               // 0 = off (default)
   smartAutoStopEnabled: boolean;           // off by default
   microphone: string;
@@ -93,6 +94,8 @@ interface Settings {
   pasteLastShortcut: PasteLastShortcut | null;
   retainHistory: boolean;
   vocabularySuggestions: boolean;
+  historyRetentionDays: 0 | 1 | 7 | 30 | 90; // 0 = never
+  historyShowRecognition: boolean;        // display-only History comparison
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
@@ -151,6 +154,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pasteLastShortcut: null,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
+  dailyWordGoal: 0,
   soundCuesEnabled: true,
   soundCueVolume: 45,
   meetingSoundCuesEnabled: false,
@@ -173,6 +177,8 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  historyRetentionDays: 0,
+  historyShowRecognition: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
@@ -238,6 +244,7 @@ model-selection side effects.
 | `recordingMode` | `RecordingMode` | `'hold_down'` | `'hold_down'`, `'double_tap'`, `'both'` | How recording is triggered via keyboard. Hold-down: press-and-hold to record. Double-tap: double-tap to start, single-tap to stop. Both: combined mode with deferred hold promotion. |
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control), `'fn'` (Fn / Globe), `'f1'`–`'f20'` | The key used for recording triggers. `'fn'` also enables key-down capture (see [recording-modes.md](../features/recording-modes.md#fn-and-globe-key-down-capture)). Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
+| `dailyWordGoal` | `number` | `0` | `0` (off) or a whole number of words, capped at 100,000 | Insights daily word goal, set from the Insights page (Off, 250, 500, 1,000, 2,000, 5,000). Shows today's progress, days met in the last 7, and a goal streak from local daily word counts. Display only; never changes transcription or delivery. Invalid values load as off. |
 | `autoStopSilenceMs` | `number` | `0` | `0` (Off), `1500`, `2500`, `4000` | Trailing silence after which a recording stops itself. Applies to any recording **not started by holding the trigger key** (double-tap, button, overlay, locked mode); while the key is physically held the release owns the stop. The detector arms only after it has heard speech, so a silent start never self-terminates. Any value outside the allow-list — including a tampered or absent one — coerces back to Off. Frontend only. See [features/silence-auto-stop.md](../features/silence-auto-stop.md). |
 | `smartAutoStopEnabled` | `boolean` | `false` | `true` / `false` | Smart Auto-Stop: at each pause of a recording Stop on Silence would end, ask the local Smart Turn model whether the speaker is done and stop early when it is. `autoStopSilenceMs` stays the ceiling, so it does nothing while that is Off or the model is not downloaded. Only an explicit `true` enables it. See [features/silence-auto-stop.md](../features/silence-auto-stop.md#smart-auto-stop-experimental). |
 | `vadSensitivity` | `number` | `50` | 0 (Off), 5-100; step 5 in UI | Voice Activity Detection sensitivity. Off skips VAD for the lowest post-release latency but gives up no-speech rejection. For non-zero values, higher values keep more audio and lower values trim silence more aggressively; the backend threshold is `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
@@ -272,6 +279,7 @@ model-selection side effects.
 | `pasteLastShortcut` | `PasteLastShortcut \| null` | `null` | `'command_shift_v'` (⌘⇧V), `'command_option_v'` (⌘⌥V), `'command_control_v'` (⌘⌃V), or `null` to disable | Configures the global Paste Last / Retry Delivery chord. Changes take effect immediately; invalid or Murmur-owned conflicting identifiers fail closed, and native registration failure leaves the last working value selected. Retried text stays memory-only and uses the normal secure delivery checks. Settings v4 migrates the former `pasteLastShortcutEnabled: true` to ⌘⇧V and `false`/absent to Disabled. |
 | `retainHistory` | `boolean` | `true` | `true` / `false` | Persist new microphone and imported-file transcripts in the local History workspace. When false, delivery and content-free statistics continue but new transcript content is discarded at the history boundary. Existing entries remain until explicitly cleared. |
 | `vocabularySuggestions` | `boolean` | `false` | `true` / `false` | Shows the opt-in **Suggestions from history** card in the Aliases editor. When on, recurring names and identifiers from local saved transcripts are listed in memory for an explicit Add or Dismiss. It never changes delivered text by itself. See [Vocabulary aliases](../features/vocabulary-aliases.md#suggestions-from-history). |
+| `historyRetentionDays` | `0 \| 1 \| 7 \| 30 \| 90` | `0` | `0` (Never), `1`, `7`, `30`, `90` | Opt-in automatic deletion of transcript History. When non-zero, unpinned entries whose timestamp is more than that many days old are removed on enable, at launch, and hourly while the app is open. Pinned entries, future-dated entries, and entries with unusable timestamps are kept. Choosing a window that would delete existing entries asks for confirmation naming the count. Statistics, meetings, and transcript/audio files written by file output are not affected. Any other stored value falls back to `0`. |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `mirrorToNotchPill` | `boolean` | `false` | `true` / `false` | When enabled, the final transcript of each dictation is mirrored to `~/Library/Application Support/local-dictation/latest-caption.json` as `{text, timestamp}`, so NotchPill can display what was just said. The toggle is shown only when macOS Launch Services finds NotchPill's `com.local.notchpill` bundle. If NotchPill is removed, mirroring becomes dormant and the caption file is deleted without overwriting the saved preference; reinstalling the app restores the prior choice. Off by default. The file is owner-only (`0600`), holds only the most recent caption — each write replaces the last — and is written after the clipboard, best-effort, so it can never delay or affect dictation output. Nothing leaves the device. Switching the setting off deletes the file. |
@@ -462,6 +470,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
+| `dailyWordGoal` | _(Insights display only)_ | Frontend only |
 | `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
 | `smartAutoStopEnabled` | _(gates the frontend's `check_smart_turn` calls)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |

@@ -58,6 +58,10 @@ internal-benchmark = []
 # at process start. A default build contains none of its code. Removal is tracked
 # in #1154.
 dictation-shadow = []
+# Dev-only fake permission provider for native onboarding tests (#972). Only the
+# `tauri:dev:fake-permissions` npm script enables it; it refuses to compile
+# without debug assertions, and it is idle unless MURMUR_FAKE_PERMISSIONS is set.
+fake-permissions = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

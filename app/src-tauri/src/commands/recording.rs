@@ -1477,6 +1477,12 @@ struct IdleGuard<'a> {
     drop_origin: murmur_dictation_core::inputs::GuardOrigin,
     /// The pipeline's H1/H2 entries, for the pipeline's own guard only.
     owner: Option<PipelineOwner>,
+    /// The `idle` status emit a `Drop` during an unwind makes (R204a.7 with `EM(idle)`):
+    /// the task that would have emitted it is gone, so without it the windows keep the
+    /// panicked recording's `processing` (or `recording`). Set by the production
+    /// stop and pipeline guards ([`Self::emit_idle_on_unwind`]); an early-return drop
+    /// never runs it.
+    unwind_idle: Option<UnwindIdle<'a>>,
 }
 
 impl<'a> IdleGuard<'a> {
@@ -1494,7 +1500,18 @@ impl<'a> IdleGuard<'a> {
             finish_origin,
             drop_origin,
             owner,
+            unwind_idle: None,
         }
+    }
+
+    /// The `idle` emit of an unwinding `Drop` (R204a.7). It runs under D, only for
+    /// the current recording, exactly as an explicit finish's emit does. A panic in
+    /// the emit itself is caught and reported as an undelivered emit: a second panic
+    /// during the unwind would abort the process.
+    fn emit_idle_on_unwind(&mut self, emit: impl FnOnce() -> bool + Send + 'a) {
+        self.unwind_idle = Some(Box::new(move |_| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(emit)).unwrap_or(false)
+        }));
     }
 
     /// The stop command's guard.
@@ -1649,12 +1666,15 @@ impl<'a> IdleGuard<'a> {
         flight.enter_pre();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
-        let ports = stop_ports::GuardPorts::new(app_state, on_idle);
+        let ports = stop_ports::GuardPorts::new(app_state, recording_id, on_idle);
         #[cfg(not(feature = "dictation-shadow"))]
         let pre = stop_ports::try_run_phase(
             &mut stop_ports::executor(
                 &ports,
-                Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
+                Decision::pre_only(
+                    core_stop::guard_finish_pre_effects(rid, origin),
+                    RowId("R204a.pre"),
+                ),
             ),
             Placement::Pre,
             None,
@@ -1664,7 +1684,10 @@ impl<'a> IdleGuard<'a> {
         let pre = stop_ports::try_run_phase(
             &mut stop_ports::executor(
                 &ports,
-                Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
+                Decision::pre_only(
+                    core_stop::guard_finish_pre_effects(rid, origin),
+                    RowId("R204a.pre"),
+                ),
             )
             .attach_flight(&flight),
             Placement::Pre,
@@ -1705,9 +1728,10 @@ impl<'a> IdleGuard<'a> {
                     },
                     core_now(),
                 ),
-                GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::Dropped => {
-                    core_stop::decide_guard_finish(&view, input, core_now())
-                }
+                GuardOrigin::StopCapture
+                | GuardOrigin::PipelineExit
+                | GuardOrigin::Dropped
+                | GuardOrigin::Unwound => core_stop::decide_guard_finish(&view, input, core_now()),
             })
         };
         let decision = match owner.as_mut() {
@@ -1999,6 +2023,7 @@ fn guard_origin_name(origin: murmur_dictation_core::inputs::GuardOrigin) -> &'st
         GuardOrigin::PipelineExit => "pipeline_exit",
         GuardOrigin::LegacyParse => "legacy_parse",
         GuardOrigin::Dropped => "dropped",
+        GuardOrigin::Unwound => "unwound",
     }
 }
 
@@ -2269,8 +2294,8 @@ async fn until_outside_core() {
 
 /// The idle emit of an explicit `finish`.
 enum IdleEmit<'f> {
-    /// Borrows the caller's frame: run now, never deferred (test closures only).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Borrows the caller's frame: run now, never deferred (test closures and the
+    /// unwinding guard's emit, [`IdleGuard::emit_idle_on_unwind`]).
     Borrowed(stop_ports::OnIdle<'f>),
     /// Owns what it needs (an `AppHandle` clone): carried as data when the finish
     /// is deferred (D-S2-7).
@@ -2285,6 +2310,10 @@ impl<'f> IdleEmit<'f> {
         }
     }
 }
+
+/// The unwinding guard's idle emit: it borrows the task's frame (the host or the
+/// `AppHandle`), and it is `Send` because the guard lives in the stop task's future.
+type UnwindIdle<'a> = Box<dyn FnOnce(&crate::state::DictationState) -> bool + Send + 'a>;
 
 /// An idle emit that owns everything it uses, so it can wait in the deferred queue.
 type OwnedIdle = Box<dyn FnOnce(&crate::state::DictationState) -> bool + Send + 'static>;
@@ -2331,7 +2360,18 @@ impl Drop for IdleGuard<'_> {
     fn drop(&mut self) {
         if !self.disarmed {
             self.disarmed = true;
-            self.run_finish(self.drop_origin, None);
+            // A drop during an unwind (a panic in the stop task or the pipeline) is
+            // `Unwound` whatever the guard's own drop origin: the task that would claim
+            // the terminal is gone, so the guard claims it (R204a.7, PD-13, #1191). An
+            // early return keeps the drop origin, and its caller claims the terminal.
+            // The unwinding guard also emits `idle` when its caller gave it the emit, so
+            // the windows leave the panicked recording's status.
+            if std::thread::panicking() {
+                let idle = self.unwind_idle.take().map(|emit| IdleEmit::Borrowed(emit));
+                self.run_finish(murmur_dictation_core::inputs::GuardOrigin::Unwound, idle);
+            } else {
+                self.run_finish(self.drop_origin, None);
+            }
         }
     }
 }
@@ -4440,6 +4480,8 @@ async fn run_transcription_pipeline(
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::for_pipeline(app_state, recording_id, pipeline_op);
+    // A panic in the pipeline skips the stop's 204b `idle`: the unwinding guard emits it.
+    _guard.emit_idle_on_unwind(|| app_handle.emit("recording-status-changed", "idle").is_ok());
 
     let transcription = &context.transcription;
     let transformations = &context.transformations;
@@ -9373,6 +9415,7 @@ async fn stop_native_recording_admitted(
         exec.bind_flight(&flight_202n);
         run_phase(&mut exec, Placement::PostDT, None, rid);
         guard = IdleGuard::new(&state.app_state, rid);
+        guard.emit_idle_on_unwind(|| host.emit_event("recording-status-changed", "idle").is_ok());
 
         // Phase: Audio teardown + 16kHz resample
         t_total = std::time::Instant::now();

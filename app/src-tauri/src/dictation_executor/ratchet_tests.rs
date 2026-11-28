@@ -2271,15 +2271,23 @@ fn merge_file_scans(found: &mut EventSites, scans: Vec<FileScan>) {
 /// `smart_auto_probe.rs` and `meeting_suggestions.rs`) loop over an array of event
 /// names, so their argument is unresolved: they are not listed, and an emit added in
 /// either is an unresolved emit outside the dynamic allowlist and fails.
-const STATUS_EVENT_ALLOWLIST: [(&str, &str, &str, usize); 9] = [
+const STATUS_EVENT_ALLOWLIST: [(&str, &str, &str, usize); 10] = [
     // The legacy idle emits (the pipeline-idle closure in `process_audio_inner`, the
-    // stop's 204b tail): decided by site 204/302.
+    // stop's 204b tail): decided by site 204/302. The stop's second emit and the
+    // pipeline's one are the unwinding guards' idle closures (#1231): each runs only as
+    // the R204a.7 decision's `EM(idle)`, through `GuardPorts`, under D.
     ("commands/recording.rs", "process_audio_inner", "emit", 1),
+    (
+        "commands/recording.rs",
+        "run_transcription_pipeline",
+        "emit",
+        1,
+    ),
     (
         "commands/recording.rs",
         "stop_native_recording_admitted",
         "emit",
-        1,
+        2,
     ),
     // The owned idle emitter's one fixed emit (a parse-failure finish).
     (

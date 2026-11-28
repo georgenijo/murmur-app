@@ -12,8 +12,32 @@ pub(crate) fn open_system_preference_pane(pane: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Dev fake permissions (#972): simulate an Open Settings visit for a faked
+/// permission, and open the real pane only when the script asks for it.
+/// `None` when `permission` is not faked.
+#[cfg(feature = "fake-permissions")]
+pub(crate) fn fake_open_settings(
+    permission: crate::fake_permissions::Permission,
+    pane: &str,
+) -> Option<Result<(), String>> {
+    let open_pane = crate::fake_permissions::open_settings(permission)?;
+    #[cfg(target_os = "macos")]
+    if open_pane {
+        return Some(open_system_preference_pane(pane));
+    }
+    let _ = (open_pane, pane);
+    Some(Ok(()))
+}
+
 #[tauri::command]
 pub fn open_system_preferences() -> Result<(), String> {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(result) = fake_open_settings(
+        crate::fake_permissions::Permission::Microphone,
+        "Privacy_Microphone",
+    ) {
+        return result;
+    }
     #[cfg(target_os = "macos")]
     {
         open_system_preference_pane("Privacy_Microphone")
@@ -28,6 +52,13 @@ pub fn open_system_preferences() -> Result<(), String> {
 /// CATap permission is surfaced there on supported macOS releases.
 #[tauri::command]
 pub fn open_system_audio_preferences() -> Result<(), String> {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(result) = fake_open_settings(
+        crate::fake_permissions::Permission::SystemAudio,
+        "Privacy_ScreenCapture",
+    ) {
+        return result;
+    }
     #[cfg(target_os = "macos")]
     {
         open_system_preference_pane("Privacy_ScreenCapture")
@@ -47,6 +78,13 @@ pub fn open_system_audio_preferences() -> Result<(), String> {
 /// `request_accessibility_permission` uses that to recover in one step.
 #[tauri::command]
 pub fn check_accessibility_permission(app: tauri::AppHandle) -> bool {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(state) =
+        crate::fake_permissions::state(crate::fake_permissions::Permission::Accessibility)
+    {
+        let _ = &app;
+        return state == crate::fake_permissions::FakeState::Granted;
+    }
     let trusted = injector::is_accessibility_enabled();
     #[cfg(target_os = "macos")]
     if trusted {
@@ -183,6 +221,11 @@ fn accessibility_restart_needed(trusted: bool, api_disabled_observed: bool) -> b
 /// succeeded since. Never true after a plain grant.
 #[tauri::command]
 pub fn check_accessibility_restart_needed() -> bool {
+    #[cfg(feature = "fake-permissions")]
+    if crate::fake_permissions::state(crate::fake_permissions::Permission::Accessibility).is_some()
+    {
+        return false;
+    }
     accessibility_restart_needed(
         injector::is_accessibility_enabled(),
         AX_API_DISABLED_OBSERVED.load(std::sync::atomic::Ordering::SeqCst),
@@ -680,6 +723,11 @@ impl AccessibilityEffects for RealEffects<'_> {
 /// the dialog and the Settings pane together.
 #[tauri::command]
 pub async fn request_accessibility_permission(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(result) = fake_accessibility_request() {
+        let _ = &app;
+        return result;
+    }
     #[cfg(target_os = "macos")]
     {
         tauri::async_runtime::spawn_blocking(move || {
@@ -711,6 +759,22 @@ pub async fn request_accessibility_permission(app: tauri::AppHandle) -> Result<S
         let _ = app;
         Ok("granted".to_string())
     }
+}
+
+/// Dev fake permissions (#972): the scripted answer to an Accessibility request.
+/// An undecided permission "shows the dialog" and answers after its delay; a
+/// denied one goes to Settings, as the real flow does after its first prompt.
+#[cfg(feature = "fake-permissions")]
+fn fake_accessibility_request() -> Option<Result<String, String>> {
+    use crate::fake_permissions::{self as fake, FakeState, Permission};
+    if fake::state(Permission::Accessibility)? == FakeState::Granted {
+        return Some(Ok("granted".to_string()));
+    }
+    if fake::request_in_background(Permission::Accessibility)? {
+        return Some(Ok("prompted".to_string()));
+    }
+    let opened = fake_open_settings(Permission::Accessibility, "Privacy_Accessibility")?;
+    Some(opened.map(|()| "opened_settings".to_string()))
 }
 
 /// Run the first accessibility request of a process that was relaunched by
@@ -971,6 +1035,12 @@ fn running_app_bundle() -> Option<std::path::PathBuf> {
 /// Returns "granted" | "restarting".
 #[tauri::command]
 pub async fn reset_accessibility_permission(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(feature = "fake-permissions")]
+    if crate::fake_permissions::state(crate::fake_permissions::Permission::Accessibility).is_some()
+    {
+        let _ = &app;
+        return Err(crate::fake_permissions::RESET_REFUSED.to_string());
+    }
     #[cfg(target_os = "macos")]
     {
         tauri::async_runtime::spawn_blocking(move || {
@@ -998,6 +1068,13 @@ pub async fn reset_accessibility_permission(app: tauri::AppHandle) -> Result<Str
 /// Request microphone permission (opens System Settings on macOS)
 #[tauri::command]
 pub fn request_microphone_permission() -> Result<(), String> {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(result) = fake_open_settings(
+        crate::fake_permissions::Permission::Microphone,
+        "Privacy_Microphone",
+    ) {
+        return result;
+    }
     #[cfg(target_os = "macos")]
     {
         open_system_preference_pane("Privacy_Microphone")
@@ -1088,6 +1165,14 @@ pub(crate) fn owned_prompt_requests_for_test() -> u32 {
 /// Trigger the native macOS microphone permission prompt (TCC) in-flow.
 #[tauri::command]
 pub fn request_microphone_access() -> Result<(), String> {
+    #[cfg(feature = "fake-permissions")]
+    if crate::fake_permissions::request_in_background(
+        crate::fake_permissions::Permission::Microphone,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
         request_microphone_access_from_this_process()
@@ -1114,6 +1199,11 @@ pub fn request_microphone_access() -> Result<(), String> {
 /// or "restart_pending" when current work delays the relaunch.
 #[tauri::command]
 pub async fn reset_microphone_permission(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(feature = "fake-permissions")]
+    if crate::fake_permissions::state(crate::fake_permissions::Permission::Microphone).is_some() {
+        let _ = &app;
+        return Err(crate::fake_permissions::RESET_REFUSED.to_string());
+    }
     #[cfg(target_os = "macos")]
     {
         tauri::async_runtime::spawn_blocking(move || {
@@ -1165,6 +1255,12 @@ pub async fn restart_murmur_for_permission(app: tauri::AppHandle) -> Result<Stri
 /// opened VPIO on every window focus, ducking other system audio each time.)
 #[tauri::command]
 pub fn check_microphone_permission() -> bool {
+    #[cfg(feature = "fake-permissions")]
+    if let Some(state) =
+        crate::fake_permissions::state(crate::fake_permissions::Permission::Microphone)
+    {
+        return state == crate::fake_permissions::FakeState::Granted;
+    }
     #[cfg(target_os = "macos")]
     {
         use objc2::msg_send;
@@ -1239,6 +1335,12 @@ pub fn check_microphone_permission_status() -> String {
     #[cfg(test)]
     if let Some(status) = MICROPHONE_STATUS_OVERRIDE.with(std::cell::Cell::get) {
         return status.to_string();
+    }
+    #[cfg(feature = "fake-permissions")]
+    if let Some(state) =
+        crate::fake_permissions::state(crate::fake_permissions::Permission::Microphone)
+    {
+        return crate::fake_permissions::microphone_banner_state(state).to_string();
     }
     #[cfg(target_os = "macos")]
     {

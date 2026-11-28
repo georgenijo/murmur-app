@@ -2021,8 +2021,14 @@ impl DictationHost for Host {
             // drops it on return (`recording.rs`, the `_guard` at the pipeline's
             // entry): the real pipeline guard, with the pipeline's history
             // entries, so what a return does to status, context and history is
-            // production's.
+            // production's. Like production, it emits `idle` if it drops during an
+            // unwind (R204a.7; pinned by
+            // `the_production_pipeline_guard_emits_idle_on_unwind`).
             let mut guard = IdleGuard::for_pipeline(app_state, recording_id, pipeline_op);
+            let host: &dyn DictationHost = self;
+            guard.emit_idle_on_unwind(move || {
+                host.emit_event("recording-status-changed", "idle").is_ok()
+            });
             world.fire("pipeline");
             let hold_delivery = world.knobs().hold_delivery;
             let cancelled = |stage| PipelineResult {

@@ -40,12 +40,32 @@ At viewport widths up to 950px, headline figures form a two-by-two grid and the
 full-width chart/calendar stack vertically. Only the content column scrolls.
 Back to Home remains available and restores Home navigation focus.
 
+## Daily word goal
+
+An opt-in **Daily word goal** card sits between the headline figures and the
+charts. It is off by default (`dailyWordGoal: 0`); off shows only the picker and
+a one-line explanation. The picker offers Off, 250, 500, 1,000, 2,000 and 5,000
+words. A hand-edited whole-number goal up to 100,000 stays selectable; anything
+else loads as off.
+
+With a goal set, the card reads today's local word bucket and shows a progress
+bar (`role="progressbar"`, value clamped to the goal, text such as “312 of 500
+words today”), the words still to go or “Goal met”, how many of the last seven
+days (today included) met the goal, and a goal streak once it exceeds one day.
+An unmet today does not break the streak, matching the recording streak.
+
+The goal reads only the same local daily buckets as the charts. It never
+changes recording, transcription, delivery, or history, and nothing about it
+leaves the Mac. The bar has no transition, so there is no motion to reduce.
+Source: `app/src/lib/dailyGoal.ts` and `app/src/components/home/DailyGoalCard.tsx`.
+
 ## Fixtures
 
 `visual-fixtures.html?state=insights` shows real populated components. Additional
 states are `insights-speed`, `insights-more`, `insights-empty` (zero persisted
 fixture statistics), `insights-gap` (fourth recent day absent), and
-`insights-no-speed` (recordings without transcribed words). Append
+`insights-no-speed` (recordings without transcribed words), `insights-goal`
+(a 1,000-word goal in progress), and `insights-goal-met` (a 500-word goal met). Append
 `appearance=light` or `appearance=dark`; use 1100×780 or 840×620 and scroll the
 compact content to its bottom. Screenshot capture requires no CSS/JS layer.
 Fixture lifetime totals and daily buckets are independently seeded synthetic
