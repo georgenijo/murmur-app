@@ -861,19 +861,36 @@ impl World {
         }
     }
 
-    /// Whether the terminal claim for `rid` still stands for a completion that follows it
-    /// (`PerfComplete::follows_terminal`, PD-20): nothing claimed (a terminal before
-    /// `accepted`, PD-10, claims nothing), the claim is the user's cancel of a processing
-    /// recording (this decision's own, or the pipeline's `Cancelled`), or it is a stale-owner
-    /// `Superseded` (PD-22 / PD-23 own that split). A claim of the recording's own end
-    /// (a stop's or the pipeline's terminal) does not stand: that path completes performance.
+    /// Whether a terminal claim about to be made for `rid` stands for the completion that follows
+    /// it (`PerfComplete::follows_terminal`, PD-20), read **before** the pair's claim, as the
+    /// shell's `DictationTelemetry::claim_terminal_with_performance` reads its ledger: nothing
+    /// claimed yet (a terminal before `accepted`, PD-10, claims nothing), or a stale-owner
+    /// `Superseded` (PD-5's split, R207.2 / R209.2). Any other claim is the recording's own end
+    /// (a stop's, or the pipeline's, including its own `Cancelled` as
+    /// `UserCancelledProcessing`): that path completes performance, so the pair completes
+    /// nothing.
     pub fn terminal_stands(&self, rid: Rid) -> bool {
-        self.ledger.claimed.get(&rid).is_none_or(|(outcome, _, _)| {
-            matches!(
-                outcome,
-                TerminalOutcome::UserCancelledProcessing | TerminalOutcome::Superseded
-            )
-        })
+        self.ledger
+            .claimed
+            .get(&rid)
+            .is_none_or(|(outcome, _, _)| matches!(outcome, TerminalOutcome::Superseded))
+    }
+
+    /// Whether another path already holds `rid`'s performance claim: the begin coordinator's
+    /// entry is `Completing`, or `Beginning` with a completion held (`request_completion`
+    /// answers `AlreadyCompleting`). The shell's `complete_claiming` answers `false` then.
+    pub fn perf_claim_taken(&self, rid: Rid) -> bool {
+        self.perf.outcome.contains_key(&rid) || self.perf.pending.contains_key(&rid)
+    }
+
+    /// PD-20's pair lost as a whole (the performance claim was taken first): the terminal is
+    /// tried and not claimed, for the ledger's id is left for the path that completed.
+    pub fn pair_lost_whole(&mut self, rid: Rid, row: &'static str) {
+        self.ledger
+            .tries
+            .entry(rid)
+            .or_default()
+            .push(ClaimTry { row, won: false });
     }
 
     /// The context a ledger entry written now by `fx_row` for `rid` by task `tid` records.

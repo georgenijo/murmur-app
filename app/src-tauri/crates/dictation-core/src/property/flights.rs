@@ -11,7 +11,7 @@ use super::task::*;
 use crate::admission::Occupancy;
 use crate::cancel as core_cancel;
 use crate::decision::{ContKind, Continuation, ObsKind, OpStatus, SiteId, Verdict};
-use crate::effects::{Effect, Placement};
+use crate::effects::{Effect, PerfOutcome, Placement};
 use crate::ids::{Handle, Now, RecordingId};
 use crate::inputs::{
     CancelCaptureResultInput, CancelInput, CancelOrigin, CaptureErr, CaptureResult,
@@ -1112,6 +1112,9 @@ pub struct StopFlight {
     cc: Option<Result<bool, ()>>,
     reply: Option<PipelineReply>,
     panicked: bool,
+    /// R204b.5 ran: the pipeline failed, so its performance guard was never finished and its
+    /// `Drop` completes the run as `Failed` when the stop returns.
+    guard_drops: bool,
     /// The window whose `handleStop` sent this stop (#1167): its in-flight guard clears when
     /// the flight returns.
     window: Option<usize>,
@@ -1142,6 +1145,7 @@ impl StopFlight {
             cc: None,
             reply: None,
             panicked: false,
+            guard_drops: false,
         }
     }
 
@@ -1731,7 +1735,18 @@ impl Task for StopFlight {
                 log_decision(cx, SiteId::PipelineIdleEmit, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::PipelineIdleEmit);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
+                self.guard_drops = matches!(result, crate::inputs::PipelineResult::Err);
                 self.st = Ts::Finish;
+            }
+            Ts::Finish if self.guard_drops => {
+                // R204b.5 claimed its terminal and the stop returns `Err`: the performance
+                // guard was never finished (`NativeDictationPerformanceGuard::drop`), so it
+                // completes the run as `Failed`. A step of its own: the shell drops it after the
+                // tail's effects ran (`stop.pipeline_failed_tail_done`), not under them.
+                self.guard_drops = false;
+                let rid = self.rid;
+                let ctx = cx.w.won(rid, cx.tid, "R204b.5");
+                cx.w.perf_complete(rid, PerfOutcome::Failed, "R204b.5", ctx);
             }
             Ts::Finish => {
                 self.retire_tokens(cx);

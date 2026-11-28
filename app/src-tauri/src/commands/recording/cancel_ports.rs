@@ -120,8 +120,8 @@ impl CancelPorts<'_> {
     /// The terminal claim, and with `perf` the performance claim that is its second half
     /// (`PerfComplete::follows_terminal`), as one critical section of the terminal ledger
     /// (**PD-20**): the pair claims both or neither. The performance claim is taken only while
-    /// the terminal claim stands: it wins, or it lost to a stale-owner `Superseded` (PD-22's
-    /// split); a claim lost to the recording's own end (a stop's or the pipeline's terminal) is
+    /// the terminal claim stands: it wins, or it lost to a stale-owner `Superseded` (PD-5's
+    /// split, R207.2 / R209.2); a claim lost to the recording's own end (a stop's or the pipeline's terminal) is
     /// that path's to complete, and a performance claim another path already holds makes the
     /// whole pair lose. The effect ran in every case; the completion it declines is `Ok`.
     fn claim_pair(&self, terminal: &Effect, perf: Option<&Effect>) -> (PortResult, PortResult) {

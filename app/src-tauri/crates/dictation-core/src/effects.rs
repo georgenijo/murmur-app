@@ -153,7 +153,7 @@ pub struct PerfComplete {
     /// no other path completes performance between the claim and this completion: a path that
     /// completes first makes the pair lose as a whole (no terminal, no completion), and one
     /// that completes later finds the claim taken. It runs only while the terminal claim
-    /// *stands*: it won, or it lost to a stale-owner supersede (`Superseded`, PD-22's split). A
+    /// *stands*: it won, or it lost to a stale-owner supersede (`Superseded`, PD-5's split, R207.2 / R209.2). A
     /// claim lost to the recording's own end (a stop's or the pipeline's terminal) completes
     /// nothing, so that path's own completion is the recording's performance outcome and the
     /// two ledgers agree (PD-20). The effect still ran when it completes nothing.
