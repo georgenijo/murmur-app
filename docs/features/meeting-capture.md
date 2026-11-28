@@ -21,7 +21,9 @@ display labels, copy or export the transcript, and play retained audio. See
   Them passages after transcription. Experimental speaker-echo reduction is off by
   default. When enabled, it removes the System reference only from Me and
   bypasses to the original microphone stream if processing fails. This opt-in
-  AEC3 path has no recorded acceptance gate for enabling it by default.
+  AEC3 path has no recorded acceptance gate for enabling it by default. The
+  [offline evaluation](aec-offline-evaluation.md) found that it ducks the user
+  during double-talk, so the shipped configuration should not be enabled by default.
 - The overlay shows a persistent two-dot meeting state from accepted start
   through capture stop. A spinner remains while final durable chunks transcribe.
 - Dictation, file transcription, benchmarks, corpus capture, selected-text
