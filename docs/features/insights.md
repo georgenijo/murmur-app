@@ -4,7 +4,8 @@ Insights computes usage on this Mac. Its four headline figures show lifetime
 words, the average of the retained (up to 100) eligible dictation-speed samples,
 lifetime dictations, and estimated lifetime typing time saved. The speed caption
 names the actual retained sample count. Time saved compares typing at 40 words
-per minute with recorded dictation time and rounds to whole minutes.
+per minute (or the speed measured by the opt-in typing check below) with
+recorded dictation time and rounds to whole minutes.
 
 Daily activity defaults to Words; Speed selects the same seven local-calendar
 days. Words uses zero-based bars and rounds its maximum up to a multiple of 200.
@@ -75,14 +76,41 @@ never changes recording, transcription, delivery or history. Reset statistics
 clears it. Source: `app/src/lib/personalBests.ts` and
 `app/src/components/home/PersonalBestsCard.tsx`.
 
+## Your typing speed
+
+An opt-in **Your typing speed** card sits below Personal bests. Nothing is
+measured by default (`typingSpeedWpm: 0`), and time saved keeps the assumed 40
+wpm. **Measure** shows one fixed plain-ASCII practice sentence above a two-line
+field. The timer starts at the first key; typing the last character, Enter, or
+**Done** finishes, and Escape or **Cancel** abandons the run. Paste and drop
+are blocked, autocorrect and spell check are off, and each new attempt uses the
+next of four sentences.
+
+The score is net words per minute: characters that match the sentence at their
+position, divided by five, per minute. A run with fewer than 40 characters or
+under 2 seconds is refused as too short, and one below 80% accuracy is refused
+as too error-prone. A usable result shows speed and accuracy and is saved only
+when the user chooses **Use N wpm**; Discard and Try again keep the setting.
+
+Once saved, the card shows the speed and, when there are dictation speed
+samples, how many times faster dictation is. The time-saved caption reads
+"vs your typing at N wpm". **Measure again** replaces the value and **Clear**
+returns to the 40 wpm assumption. Only the whole-number speed (5 to 250) is
+stored; the typed text stays in component state and is never saved, logged, or
+sent. The card is display only and never changes recording, transcription,
+delivery or history. A trigger key held while typing (for example Left Shift
+in Hold Down mode) behaves as it does in any other app. Source:
+`app/src/lib/typingSpeed.ts` and `app/src/components/home/TypingSpeedCard.tsx`.
+
 ## Fixtures
 
 `visual-fixtures.html?state=insights` shows real populated components. Additional
 states are `insights-speed`, `insights-more`, `insights-empty` (zero persisted
 fixture statistics), `insights-gap` (fourth recent day absent), and
 `insights-no-speed` (recordings without transcribed words), `insights-goal`
-(a 1,000-word goal in progress), `insights-goal-met` (a 500-word goal met), and
-`insights-bests` (personal bests on). Append
+(a 1,000-word goal in progress), `insights-goal-met` (a 500-word goal met),
+`insights-bests` (personal bests on), and `insights-typing` (a saved 45 wpm
+typing speed). Append
 `appearance=light` or `appearance=dark`; use 1100×780 or 840×620 and scroll the
 compact content to its bottom. Screenshot capture requires no CSS/JS layer.
 Fixture lifetime totals and daily buckets are independently seeded synthetic

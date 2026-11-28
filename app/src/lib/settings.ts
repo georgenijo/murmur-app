@@ -7,6 +7,7 @@ import {
 } from './legacyModes';
 import { DEFAULT_HISTORY_RETENTION_DAYS, isHistoryRetentionDays, type HistoryRetentionDays } from './history';
 import { sanitizeDailyWordGoal } from './dailyGoal';
+import { sanitizeTypingSpeedWpm } from './typingSpeed';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -225,6 +226,8 @@ export interface Settings {
   dailyWordGoal: number;
   /** Insights personal-bests card; off by default. Display only. */
   showPersonalBests: boolean;
+  /** Insights measured typing speed in wpm; 0 = not measured (default, assumes 40). Display only. */
+  typingSpeedWpm: number;
   /** Play local output-only feedback for dictation lifecycle transitions. */
   soundCuesEnabled: boolean;
   /** Cue output volume as an integer percentage. */
@@ -518,6 +521,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkeyMissFeedback: false,
   dailyWordGoal: 0,
   showPersonalBests: false,
+  typingSpeedWpm: 0,
   soundCuesEnabled: true,
   soundCueVolume: 45,
   meetingSoundCuesEnabled: false,
@@ -1108,6 +1112,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       parsed.dailyWordGoal = sanitizeDailyWordGoal(parsed.dailyWordGoal);
       // Only an explicit `true` opts in.
       parsed.showPersonalBests = parsed.showPersonalBests === true;
+      parsed.typingSpeedWpm = sanitizeTypingSpeedWpm(parsed.typingSpeedWpm);
 
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;

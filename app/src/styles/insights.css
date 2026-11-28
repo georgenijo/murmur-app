@@ -111,6 +111,22 @@
 .insights-view .insights-bests-grid dd { display: flex; flex-shrink: 0; align-items: baseline; gap: 6px; margin: 0 0 0 auto; white-space: nowrap; }
 .insights-view .insights-bests-grid strong { color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; font-variant-numeric: tabular-nums; }
 .insights-view .insights-bests-grid small { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+/* Opt-in typing-speed check below personal bests: same card shape; the practice sentence sits above a two-line field. */
+.insights-view .insights-typing { flex-shrink: 0; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-card); background: var(--ui-tint-raised); }
+.insights-view .insights-typing-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.insights-view .insights-typing-header h2 { margin: 0; min-width: 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; }
+.insights-view .insights-typing-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
+.insights-view .insights-typing-hint { margin: 4px 0 0; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.insights-view .insights-typing-summary,
+.insights-view .insights-typing-result { margin: 4px 0 0; color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-variant-numeric: tabular-nums; }
+.insights-view .insights-typing-summary strong,
+.insights-view .insights-typing-result strong { font-weight: 600; }
+.insights-view .insights-typing-check { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.insights-view .insights-typing-check > .insights-typing-actions { justify-content: flex-end; }
+.insights-view .insights-typing-passage { margin: 0; padding: 8px 10px; border-radius: var(--ui-radius-card); background: var(--ui-tint-sunken); color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); user-select: none; -webkit-user-select: none; }
+.insights-view .insights-typing-input { box-sizing: border-box; width: 100%; height: auto; min-height: 52px; resize: none; font-family: inherit; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
+.insights-view .insights-typing-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.insights-view .insights-typing-footer .insights-typing-hint { margin: 0; min-width: 0; }
 .insights-view :is(button, summary):focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
 [data-appearance="dark"] .insights-view {
   --ui-chart-1: color-mix(in srgb, var(--murmur-primary) 35%, var(--murmur-background));

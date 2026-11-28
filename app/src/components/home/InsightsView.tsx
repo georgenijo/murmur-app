@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { loadStats } from '../../lib/stats';
-import { ASSUMED_TYPING_WPM, getActivityInsights } from '../../lib/activityStats';
+import { getActivityInsights } from '../../lib/activityStats';
 import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
 import { DailyGoalCard } from './DailyGoalCard';
 import { PersonalBestsCard } from './PersonalBestsCard';
+import { TypingSpeedCard } from './TypingSpeedCard';
+import { effectiveTypingWpm, sanitizeTypingSpeedWpm, TYPING_SPEED_OFF } from '../../lib/typingSpeed';
 import { DashboardStatGroup, WorkspacePageHeader, type DashboardStatItem } from '../ui/DashboardPrimitives';
 import '../../styles/insights.css';
 
@@ -19,13 +21,18 @@ interface InsightsViewProps {
   /** Opt-in personal bests (off by default). The card renders only with a change handler. */
   showPersonalBests?: boolean;
   onShowPersonalBestsChange?: (enabled: boolean) => void;
+  /** Opt-in measured typing speed (0 = not measured). The card renders only with a change handler. */
+  typingSpeedWpm?: number;
+  onTypingSpeedWpmChange?: (wpm: number) => void;
   onBackToHome: () => void;
 }
 
-export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange, showPersonalBests = false, onShowPersonalBestsChange }: InsightsViewProps) {
+export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange, showPersonalBests = false, onShowPersonalBestsChange, typingSpeedWpm = 0, onTypingSpeedWpmChange }: InsightsViewProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
   const usage = useMemo(() => getUsageOverview(stats), [stats]);
-  const activity = useMemo(() => getActivityInsights(stats), [stats]);
+  const measuredTypingWpm = sanitizeTypingSpeedWpm(typingSpeedWpm);
+  const typingWpm = effectiveTypingWpm(measuredTypingWpm);
+  const activity = useMemo(() => getActivityInsights(stats, new Date(), typingWpm), [stats, typingWpm]);
   const minutes = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 1 });
   const unit = (value: string | number, suffix: string) => <>{value}<span className="insights-stat-unit">{suffix}</span></>;
   const samples = stats.wpmSamples.length;
@@ -48,12 +55,13 @@ export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'word
           { id: 'words', label: 'Total words', value: usage.totalWords.toLocaleString(), detail: 'All time' },
           { id: 'wpm', label: 'Average speed', value: samples ? unit(usage.averageWpm, 'wpm') : '–', detail: samples === 0 ? usage.totalRecordings > 0 ? 'No speed samples yet' : 'No dictations yet' : samples === 1 ? 'Last dictation' : `Last ${samples} dictations` },
           { id: 'recordings', label: 'Dictations', value: usage.totalRecordings.toLocaleString(), detail: 'All time' },
-          { id: 'typing-time', label: 'Estimated typing time saved', value: usage.totalRecordings ? unit(Math.round(activity.typingMinutesSaved).toLocaleString(), 'min') : '–', detail: `All time · vs typing at ${ASSUMED_TYPING_WPM} wpm` },
+          { id: 'typing-time', label: 'Estimated typing time saved', value: usage.totalRecordings ? unit(Math.round(activity.typingMinutesSaved).toLocaleString(), 'min') : '–', detail: `All time · vs ${measuredTypingWpm === TYPING_SPEED_OFF ? 'typing' : 'your typing'} at ${typingWpm} wpm` },
         ]}
       />
       {onDailyWordGoalChange && <DailyGoalCard stats={stats} goal={dailyWordGoal} onGoalChange={onDailyWordGoalChange} />}
       <UsageDashboard statsVersion={statsVersion} displayMode="page" initialMetric={initialMetric} />
       {onShowPersonalBestsChange && <PersonalBestsCard stats={stats} enabled={showPersonalBests} onEnabledChange={onShowPersonalBestsChange} />}
+      {onTypingSpeedWpmChange && <TypingSpeedCard typingWpm={measuredTypingWpm} dictationWpm={samples ? usage.averageWpm : 0} onTypingWpmChange={onTypingSpeedWpmChange} />}
       {details.length > 0 && (
         <details className="insights-more-statistics" open={defaultMoreOpen || undefined}>
           <summary><ChevronRight aria-hidden="true" />More statistics</summary>

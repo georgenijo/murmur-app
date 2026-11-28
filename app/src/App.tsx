@@ -837,6 +837,8 @@ function App() {
                   onDailyWordGoalChange={(dailyWordGoal) => updateSettings({ dailyWordGoal })}
                   showPersonalBests={settings.showPersonalBests}
                   onShowPersonalBestsChange={(showPersonalBests) => updateSettings({ showPersonalBests })}
+                  typingSpeedWpm={settings.typingSpeedWpm}
+                  onTypingSpeedWpmChange={(typingSpeedWpm) => updateSettings({ typingSpeedWpm })}
                   onBackToHome={backToHome}
                 />
               )}
