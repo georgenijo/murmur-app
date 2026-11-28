@@ -134,6 +134,15 @@ export function SettingsEditorsWindow({
     const timeout = setTimeout(() => destination?.classList.remove('settings-target-flash'), 1300);
     return () => { clearTimeout(timeout); destination?.classList.remove('settings-target-flash'); };
   }, [advancedOpen, setAdvancedOpen, target, dialogRef]);
+  useLayoutEffect(() => {
+    if (target?.id !== 'vocabulary-suggestions' || revealedTargetRef.current === target) return;
+    revealedTargetRef.current = target;
+    const destination = dialogRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary-suggestions"]');
+    destination?.scrollIntoView({ block: 'center' });
+    destination?.classList.add('settings-target-flash');
+    const timeout = setTimeout(() => destination?.classList.remove('settings-target-flash'), 1300);
+    return () => { clearTimeout(timeout); destination?.classList.remove('settings-target-flash'); };
+  }, [target, dialogRef]);
   return (
     <SettingsDisclosureContext.Provider value={{ open: advancedOpen, setOpen: setAdvancedOpen }}>
     <div className="settings-sheet-backdrop">
@@ -162,6 +171,8 @@ export function SettingsEditorsWindow({
               vocabularyEntries,
               customVocabulary: vocabularyPrompt(vocabularyEntries),
             })}
+            suggestionsEnabled={settings.vocabularySuggestions}
+            onSuggestionsEnabledChange={(vocabularySuggestions) => onUpdateSettings({ vocabularySuggestions })}
           />
         )}
         {initialTab === 'scan' && (

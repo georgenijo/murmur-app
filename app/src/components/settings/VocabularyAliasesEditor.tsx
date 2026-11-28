@@ -4,6 +4,7 @@ import type { VocabularyEntry } from '../../lib/settings';
 import { previewVocabularyAliases } from '../../lib/dictation';
 import { validateVocabularyEntries } from '../../lib/vocabulary';
 import { VocabularyFileActions } from './VocabularyFileActions';
+import { VocabularySuggestions } from './VocabularySuggestions';
 import { Button, Input } from '../ui/FormControls';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
@@ -14,9 +15,14 @@ function newEntryId(): string {
 export function VocabularyAliasesEditor({
   entries,
   onChange,
+  suggestionsEnabled = false,
+  onSuggestionsEnabledChange,
 }: {
   entries: VocabularyEntry[];
   onChange: (entries: VocabularyEntry[]) => void;
+  suggestionsEnabled?: boolean;
+  /** Shows the opt-in history suggestions card when provided. */
+  onSuggestionsEnabledChange?: (enabled: boolean) => void;
 }) {
   const [draft, setDraft] = useState(entries);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +61,10 @@ export function VocabularyAliasesEditor({
       const list = listRef.current;
       list?.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
     });
+  };
+
+  const addSuggestedTerm = (written: string) => {
+    update([...draft, { id: newEntryId(), written, aliases: [], enabled: true, scope: { kind: 'global' } }]);
   };
 
   const runPreview = async () => {
@@ -177,6 +187,15 @@ export function VocabularyAliasesEditor({
         <p role="alert" className="mt-2 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">
           {error}
         </p>
+      )}
+
+      {onSuggestionsEnabledChange && (
+        <VocabularySuggestions
+          enabled={suggestionsEnabled}
+          onEnabledChange={onSuggestionsEnabledChange}
+          vocabulary={draft}
+          onAdd={addSuggestedTerm}
+        />
       )}
 
       <div className="settings-card mt-3">

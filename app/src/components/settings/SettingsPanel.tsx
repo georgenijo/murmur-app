@@ -317,6 +317,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'punctuation', title: 'Smart punctuation', detail: 'Add punctuation and sentence capitalization', keywords: 'automatic punctuation' },
   { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
   { page: 'text', target: 'vocabulary', title: 'Vocabulary', detail: 'Review identifiers retained from project scans', keywords: 'names spelling project scan developer terms' },
+  { page: 'text', target: 'vocabulary-suggestions', editorTab: 'aliases', title: 'Suggestions from history', detail: 'Suggest saved spellings from terms in your transcripts', keywords: 'vocabulary dictionary names learn frequent words history suggest' },
   { page: 'text', target: 'aliases', title: 'Aliases', detail: 'Map spoken variants to canonical spellings', keywords: 'spoken variants canonical spellings replacement' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at login', detail: 'Start Murmur when you sign in', keywords: 'startup autostart' },
