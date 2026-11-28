@@ -249,6 +249,29 @@ impl FinalPlan {
         }
         Some(join(&self.prefix, decoded.trim()))
     }
+
+    /// Content-free classification of a `stitch_mismatch`: `"punctuation_or_case"`
+    /// when the leading words of `decoded` match `overlap` after stripping
+    /// punctuation and lowercasing (and at least one new word follows), else
+    /// `"word"`.
+    pub fn classify_mismatch(&self, decoded: &str) -> &'static str {
+        let norm = |w: &str| -> String {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        let overlap_words: Vec<String> = self.overlap.split_whitespace().map(norm).collect();
+        let decoded_words: Vec<String> = decoded.split_whitespace().map(norm).collect();
+        if !overlap_words.is_empty()
+            && decoded_words.len() > overlap_words.len()
+            && decoded_words[..overlap_words.len()] == overlap_words[..]
+        {
+            "punctuation_or_case"
+        } else {
+            "word"
+        }
+    }
 }
 
 impl StreamReuse {
@@ -473,6 +496,9 @@ pub(crate) struct Outcome {
     /// clip plus any tail decode that was discarded first.
     pub decoded_ms: u64,
     pub overlap_words: u64,
+    /// Content-free reason for a `stitch_mismatch` (`"punctuation_or_case"` or `"word"`).
+    #[cfg(test)]
+    pub mismatch_kind: Option<&'static str>,
 }
 
 pub(crate) fn emit_outcome(recording_id: u64, outcome: &Outcome) {

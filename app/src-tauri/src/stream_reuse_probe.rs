@@ -186,19 +186,25 @@ fn stream_reuse_accuracy_probe() {
         };
         let whole = decode(backend.as_mut(), &filtered);
         let plan = reuse.take_final(1, Some(&finished.bounds), &filtered);
-        let (stitched, outcome, tail_ms) = match plan {
-            Err(reason) => (None, reason.as_str(), 0.0),
+        let (stitched, outcome, tail_ms, mismatch_kind) = match plan {
+            Err(reason) => (None, reason.as_str(), 0.0, None),
             Ok(plan) => match plan.complete_text() {
-                Some(text) => (Some(text), "reused_complete", 0.0),
+                Some(text) => (Some(text), "reused_complete", 0.0, None),
+                None if plan.start == 0 => (None, "zero_offset", 0.0, None),
                 None => {
                     let (tail, took) = decode(backend.as_mut(), &filtered[plan.start..]);
                     match plan.stitch(&tail) {
                         Some(text) => {
                             // The tail's new words begin after the overlap.
                             seams.push(word_total(&plan.prefix) + plan.overlap_words);
-                            (Some(text), "reused", took)
+                            (Some(text), "reused", took, None)
                         }
-                        None => (None, "stitch_mismatch", took),
+                        None => (
+                            None,
+                            "stitch_mismatch",
+                            took,
+                            Some(plan.classify_mismatch(&tail)),
+                        ),
                     }
                 }
             },
@@ -217,6 +223,7 @@ fn stream_reuse_accuracy_probe() {
             "audio_s": samples.len() as f64 / 16_000.0,
             "kept_s": filtered.len() as f64 / 16_000.0,
             "outcome": outcome,
+            "mismatch_kind": mismatch_kind,
             "pieces": piece_decode_ms.len(),
             "identical": stitched.as_deref().map(|t| t == whole.0),
             "word_diffs": diffs.len(),

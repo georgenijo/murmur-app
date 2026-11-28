@@ -25,6 +25,22 @@ struct ReleaseStamp {
 
 static LAST_RELEASE: Mutex<Option<ReleaseStamp>> = Mutex::new(None);
 
+/// Atomic toggle-stop preview gate: keeps the in-progress key press and the
+/// released tap under one lock so key-up transitions atomically without a gap
+/// where a preview worker could sneak in, and a cancelled second press can
+/// never clear an already released stop. Separate from `LAST_RELEASE` so toggle
+/// stops never produce a hold-release tail anchor or `release_to_stop` metric.
+#[derive(Debug, Default)]
+struct ToggleStopGate {
+    press: Option<ReleaseStamp>,
+    released: Option<ReleaseStamp>,
+}
+
+static TOGGLE_STOP_GATE: Mutex<ToggleStopGate> = Mutex::new(ToggleStopGate {
+    press: None,
+    released: None,
+});
+
 /// The native release paired with the stop that accepted it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HotkeyRelease {
@@ -81,6 +97,68 @@ pub fn record(recording_id: u64, released_at: Instant) {
     );
 }
 
+/// Mark an in-progress toggle-stop key press for `recording_id`, so live
+/// preview and stream-reuse commits stop scheduling new non-cancellable Core ML
+/// decodes while the tap is underway.
+pub fn record_toggle_stop_press(recording_id: u64, at: Instant) {
+    if recording_id == 0 {
+        return;
+    }
+    TOGGLE_STOP_GATE.lock_or_recover().press = Some(ReleaseStamp {
+        recording_id,
+        released_at: at,
+    });
+}
+
+/// Clear an in-progress toggle-stop key press when it is cancelled (e.g. turned
+/// into a combo or held too long). Never clears an already released toggle stop.
+pub fn clear_toggle_stop_press(recording_id: u64) {
+    let mut gate = TOGGLE_STOP_GATE.lock_or_recover();
+    if gate
+        .press
+        .is_some_and(|stamp| stamp.recording_id == recording_id)
+    {
+        gate.press = None;
+    }
+}
+
+/// Atomically transition a toggle-stop press into a released stop gate for
+/// `recording_id` while the stop traverses the webview/IPC hop. Refreshes the
+/// preview gate timestamp on each clean release so a retry tap near the end of
+/// an earlier unclaimed stop's window gets a full [`STOP_GESTURE_WINDOW`].
+pub fn record_toggle_stop_released(recording_id: u64, at: Instant) {
+    if recording_id == 0 {
+        return;
+    }
+    let mut gate = TOGGLE_STOP_GATE.lock_or_recover();
+    gate.released = Some(ReleaseStamp {
+        recording_id,
+        released_at: at,
+    });
+    if gate
+        .press
+        .is_some_and(|stamp| stamp.recording_id == recording_id)
+    {
+        gate.press = None;
+    }
+}
+
+fn clear_toggle_stop_gate(recording_id: u64) {
+    let mut gate = TOGGLE_STOP_GATE.lock_or_recover();
+    if gate
+        .press
+        .is_some_and(|stamp| stamp.recording_id == recording_id)
+    {
+        gate.press = None;
+    }
+    if gate
+        .released
+        .is_some_and(|stamp| stamp.recording_id == recording_id)
+    {
+        gate.released = None;
+    }
+}
+
 /// How long a native release counts as "a stop is on its way". A release that
 /// the stop never claimed (a rejected stop) must not silence the live preview
 /// for the rest of the recording. The check only reads the stamp, so it never
@@ -89,17 +167,20 @@ pub fn record(recording_id: u64, released_at: Instant) {
 /// after the release): the preview must stop earlier than the stop is accepted.
 const STOP_GESTURE_WINDOW: Duration = Duration::from_millis(500);
 
-/// Whether a hold release for `recording_id` has been seen and its stop has not
-/// been accepted yet. The release reaches the stop command through the webview,
-/// so this is the earliest point at which the stop is known. The live preview
-/// schedules no new decode from here on (a running Core ML call cannot be
-/// cancelled, so the final decode must not queue behind a later one).
+/// Whether a hold release or toggle stop press/release for `recording_id` has
+/// been seen and its stop has not been accepted yet. The gesture reaches the
+/// stop command through the webview, so this is the earliest point at which the
+/// stop is known. The live preview schedules no new decode from here on (a
+/// running Core ML call cannot be cancelled, so the final decode must not queue
+/// behind a later one).
 pub fn stop_gesture_pending(recording_id: u64) -> bool {
-    gesture_pending_in(
-        &LAST_RELEASE.lock_or_recover(),
-        recording_id,
-        Instant::now(),
-    )
+    let now = Instant::now();
+    if gesture_pending_in(&LAST_RELEASE.lock_or_recover(), recording_id, now) {
+        return true;
+    }
+    let gate = TOGGLE_STOP_GATE.lock_or_recover();
+    gesture_pending_in(&gate.press, recording_id, now)
+        || gesture_pending_in(&gate.released, recording_id, now)
 }
 
 fn gesture_pending_in(slot: &Option<ReleaseStamp>, recording_id: u64, now: Instant) -> bool {
@@ -121,6 +202,7 @@ fn record_into(slot: &mut Option<ReleaseStamp>, stamp: ReleaseStamp) {
 /// Consume the stamp for the stop of `recording_id` entered at
 /// `stop_entered_at`. The slot is always cleared.
 pub fn take_for(recording_id: u64, stop_entered_at: Instant) -> Option<HotkeyRelease> {
+    clear_toggle_stop_gate(recording_id);
     take_matching(
         &mut LAST_RELEASE.lock_or_recover(),
         recording_id,
@@ -279,5 +361,46 @@ mod tests {
     fn stop_without_release_has_no_release_timing() {
         let mut slot = None;
         assert_eq!(take_matching(&mut slot, 7, Instant::now()), None);
+    }
+
+    #[test]
+    fn toggle_stop_pending_gates_preview_without_yielding_hold_release() {
+        let id = 9_100_001;
+        let now = Instant::now();
+        let _ = take_for(id, now);
+        assert!(!stop_gesture_pending(id));
+
+        record_toggle_stop_press(id, now);
+        assert!(stop_gesture_pending(id));
+        assert!(!stop_gesture_pending(id + 1));
+
+        // Clearing an aborted press restores preview immediately.
+        clear_toggle_stop_press(id);
+        assert!(!stop_gesture_pending(id));
+
+        // Clean tap sets released gate; a subsequent aborted press must NOT clear it.
+        record_toggle_stop_released(id, now);
+        assert!(stop_gesture_pending(id));
+        record_toggle_stop_press(id, now + Duration::from_millis(60));
+        clear_toggle_stop_press(id);
+        assert!(stop_gesture_pending(id));
+
+        // Stop consumes the gate without returning a hold release.
+        assert_eq!(take_for(id, now + Duration::from_millis(80)), None);
+        assert!(!stop_gesture_pending(id));
+
+        // A second clean tap near the end of an earlier unclaimed release's
+        // window refreshes the preview gate for a full STOP_GESTURE_WINDOW.
+        let nearly_expired = now
+            .checked_sub(STOP_GESTURE_WINDOW - Duration::from_millis(10))
+            .unwrap_or(now);
+        record_toggle_stop_released(id, nearly_expired);
+        record_toggle_stop_released(id, now);
+        assert!(gesture_pending_in(
+            &TOGGLE_STOP_GATE.lock_or_recover().released,
+            id,
+            now + Duration::from_millis(50),
+        ));
+        assert_eq!(take_for(id, now + Duration::from_millis(5)), None);
     }
 }

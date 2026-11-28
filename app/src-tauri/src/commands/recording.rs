@@ -4249,13 +4249,38 @@ fn transcribe_with_coreml_vad_retry_report(
         prompt,
         smart_punctuation,
     )?;
+    finish_coreml_vad_retry_report(
+        backend,
+        model_name,
+        text,
+        samples_for_transcription.len(),
+        original_samples,
+        vad_trimmed,
+        language,
+        prompt,
+        smart_punctuation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_coreml_vad_retry_report(
+    backend: &mut dyn transcriber::TranscriptionBackend,
+    model_name: &str,
+    text: String,
+    filtered_sample_count: usize,
+    original_samples: &[f32],
+    vad_trimmed: bool,
+    language: &str,
+    prompt: Option<&str>,
+    smart_punctuation: bool,
+) -> Result<BackendTranscriptionAttempt, String> {
     if model_runtime::model_definition(model_name)?.retry_unfiltered_on_empty
         && vad_trimmed
         && text.trim().is_empty()
     {
         tracing::warn!(
             target: "pipeline",
-            filtered_sample_count = samples_for_transcription.len(),
+            filtered_sample_count,
             original_sample_count = original_samples.len(),
             "coreml_empty_after_vad_retry_original"
         );
@@ -4314,23 +4339,27 @@ fn decode_final_transcript(
             transcription.smart_punctuation,
         )
     };
-    let fallback = |backend: &mut dyn transcriber::TranscriptionBackend,
-                    reason: Reason,
-                    pieces: u32,
-                    overlap_words: u64,
-                    tail_samples: usize| {
-        whole_clip(backend).map(|attempt| FinalDecode {
-            attempt,
-            reuse: Some(Outcome {
-                code: reason.as_str(),
-                pieces,
-                // Time spent at stop: a tail decode that was then discarded,
-                // plus the whole-clip decode that replaced it.
-                decoded_ms: samples_to_ms(tail_samples + filtered.len()),
-                overlap_words,
-            }),
-        })
-    };
+    let fallback =
+        |backend: &mut dyn transcriber::TranscriptionBackend,
+         reason: Reason,
+         pieces: u32,
+         overlap_words: u64,
+         tail_samples: usize,
+         #[allow(unused_variables)] mismatch_kind: Option<&'static str>| {
+            whole_clip(backend).map(|attempt| FinalDecode {
+                attempt,
+                reuse: Some(Outcome {
+                    code: reason.as_str(),
+                    pieces,
+                    // Time spent at stop: a tail decode that was then discarded,
+                    // plus the whole-clip decode that replaced it.
+                    decoded_ms: samples_to_ms(tail_samples + filtered.len()),
+                    overlap_words,
+                    #[cfg(test)]
+                    mismatch_kind,
+                }),
+            })
+        };
     let plan = match reuse {
         Ok(None) => {
             return whole_clip(backend).map(|attempt| FinalDecode {
@@ -4338,7 +4367,7 @@ fn decode_final_transcript(
                 reuse: None,
             })
         }
-        Err(reason) => return fallback(backend, reason, 0, 0, 0),
+        Err(reason) => return fallback(backend, reason, 0, 0, 0, None),
         Ok(Some(plan)) => plan,
     };
     let reused = |text: String, decoded_samples: usize| FinalDecode {
@@ -4351,11 +4380,57 @@ fn decode_final_transcript(
             pieces: plan.pieces,
             decoded_ms: samples_to_ms(decoded_samples),
             overlap_words: plan.overlap_words as u64,
+            #[cfg(test)]
+            mismatch_kind: None,
         }),
     };
     if let Some(text) = plan.complete_text() {
         // The committed pieces already cover every kept sample.
         return Ok(reused(text, 0));
+    }
+    if plan.start == 0 {
+        // With 1 committed piece (`plan.start == 0`) and remaining audio,
+        // `filtered[plan.start..]` IS the entire clip. Decode it once directly
+        // to eliminate duplicate full-clip decodes on stitch mismatch; retry
+        // only when that first filtered decode itself returns an error, never
+        // restarting after a failed unfiltered VAD retry.
+        return match backend.transcribe(
+            filtered,
+            &transcription.language,
+            transcription.prompt.as_deref(),
+            transcription.smart_punctuation,
+        ) {
+            Ok(text) => finish_coreml_vad_retry_report(
+                backend,
+                &transcription.model_name,
+                text,
+                filtered.len(),
+                original,
+                vad_trimmed,
+                &transcription.language,
+                transcription.prompt.as_deref(),
+                transcription.smart_punctuation,
+            )
+            .map(|attempt| FinalDecode {
+                attempt,
+                reuse: Some(Outcome {
+                    code: Reason::NoCommit.as_str(),
+                    pieces: plan.pieces,
+                    decoded_ms: samples_to_ms(filtered.len()),
+                    overlap_words: plan.overlap_words as u64,
+                    #[cfg(test)]
+                    mismatch_kind: None,
+                }),
+            }),
+            Err(_) => fallback(
+                backend,
+                Reason::TailDecodeError,
+                plan.pieces,
+                plan.overlap_words as u64,
+                filtered.len(),
+                None,
+            ),
+        };
     }
     let tail = &filtered[plan.start..];
     let stitched = match backend.transcribe(
@@ -4364,20 +4439,24 @@ fn decode_final_transcript(
         transcription.prompt.as_deref(),
         transcription.smart_punctuation,
     ) {
-        Ok(decoded) => plan
-            .stitch(&decoded)
-            .ok_or(Reason::StitchMismatch)
-            .map(|text| reused(text, tail.len())),
-        Err(_) => Err(Reason::TailDecodeError),
+        Ok(decoded) => match plan.stitch(&decoded) {
+            Some(text) => Ok(reused(text, tail.len())),
+            None => Err((
+                Reason::StitchMismatch,
+                Some(plan.classify_mismatch(&decoded)),
+            )),
+        },
+        Err(_) => Err((Reason::TailDecodeError, None)),
     };
     match stitched {
         Ok(decode) => Ok(decode),
-        Err(reason) => fallback(
+        Err((reason, mismatch_kind)) => fallback(
             backend,
             reason,
             plan.pieces,
             plan.overlap_words as u64,
             tail.len(),
+            mismatch_kind,
         ),
     }
 }
