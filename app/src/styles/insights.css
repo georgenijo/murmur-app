@@ -99,6 +99,18 @@
 .insights-view .insights-goal-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--murmur-primary); }
 .insights-view .insights-goal-today { margin: 8px 0 0; color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-variant-numeric: tabular-nums; }
 .insights-view .insights-goal[data-goal-state="met"] .insights-goal-today { font-weight: 600; }
+/* Opt-in personal bests below the charts: same card shape as the goal, a two-column grid when on. */
+.insights-view .insights-bests { flex-shrink: 0; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-card); background: var(--ui-tint-raised); }
+.insights-view .insights-bests-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.insights-view .insights-bests-header h2 { margin: 0; min-width: 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; }
+.insights-view .insights-bests-hint { margin: 4px 0 0; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.insights-view .insights-bests-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; margin: 6px 0 0; }
+.insights-view .insights-bests-grid > div { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 32px; }
+.insights-view .insights-bests-grid > div:nth-child(n + 3) { border-top: 1px solid var(--ui-hairline); }
+.insights-view .insights-bests-grid dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
+.insights-view .insights-bests-grid dd { display: flex; flex-shrink: 0; align-items: baseline; gap: 6px; margin: 0 0 0 auto; white-space: nowrap; }
+.insights-view .insights-bests-grid strong { color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 600; font-variant-numeric: tabular-nums; }
+.insights-view .insights-bests-grid small { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
 .insights-view :is(button, summary):focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
 [data-appearance="dark"] .insights-view {
   --ui-chart-1: color-mix(in srgb, var(--murmur-primary) 35%, var(--murmur-background));

@@ -598,6 +598,7 @@ const fixtureSettings = {
   pasteLastShortcut: fixturePasteLastShortcut,
   vocabularySuggestions: fixtureVocabularySuggestions,
   dailyWordGoal: requestedState === 'insights-goal' ? 1000 : requestedState === 'insights-goal-met' ? 500 : 0,
+  showPersonalBests: requestedState === 'insights-bests',
   vocabularyEntries: [{
     id: 'fixture-term',
     written: 'Murmur',
@@ -814,6 +815,8 @@ function VisualFixture() {
                 statsVersion={0}
                 dailyWordGoal={settings.dailyWordGoal}
                 onDailyWordGoalChange={(dailyWordGoal) => setSettings((current) => ({ ...current, dailyWordGoal }))}
+                showPersonalBests={settings.showPersonalBests}
+                onShowPersonalBestsChange={(showPersonalBests) => setSettings((current) => ({ ...current, showPersonalBests }))}
                 onBackToHome={backToHome}
               />
             ) : destination === 'meetings' ? (

@@ -5,6 +5,7 @@ import { ASSUMED_TYPING_WPM, getActivityInsights } from '../../lib/activityStats
 import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
 import { DailyGoalCard } from './DailyGoalCard';
+import { PersonalBestsCard } from './PersonalBestsCard';
 import { DashboardStatGroup, WorkspacePageHeader, type DashboardStatItem } from '../ui/DashboardPrimitives';
 import '../../styles/insights.css';
 
@@ -15,10 +16,13 @@ interface InsightsViewProps {
   /** Opt-in daily word goal (0 = off). The card renders only with a change handler. */
   dailyWordGoal?: number;
   onDailyWordGoalChange?: (goal: number) => void;
+  /** Opt-in personal bests (off by default). The card renders only with a change handler. */
+  showPersonalBests?: boolean;
+  onShowPersonalBestsChange?: (enabled: boolean) => void;
   onBackToHome: () => void;
 }
 
-export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange }: InsightsViewProps) {
+export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false, dailyWordGoal = 0, onDailyWordGoalChange, showPersonalBests = false, onShowPersonalBestsChange }: InsightsViewProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
   const usage = useMemo(() => getUsageOverview(stats), [stats]);
   const activity = useMemo(() => getActivityInsights(stats), [stats]);
@@ -49,6 +53,7 @@ export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'word
       />
       {onDailyWordGoalChange && <DailyGoalCard stats={stats} goal={dailyWordGoal} onGoalChange={onDailyWordGoalChange} />}
       <UsageDashboard statsVersion={statsVersion} displayMode="page" initialMetric={initialMetric} />
+      {onShowPersonalBestsChange && <PersonalBestsCard stats={stats} enabled={showPersonalBests} onEnabledChange={onShowPersonalBestsChange} />}
       {details.length > 0 && (
         <details className="insights-more-statistics" open={defaultMoreOpen || undefined}>
           <summary><ChevronRight aria-hidden="true" />More statistics</summary>

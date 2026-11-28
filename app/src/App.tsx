@@ -824,6 +824,8 @@ function App() {
                   statsVersion={combinedStatsVersion}
                   dailyWordGoal={settings.dailyWordGoal}
                   onDailyWordGoalChange={(dailyWordGoal) => updateSettings({ dailyWordGoal })}
+                  showPersonalBests={settings.showPersonalBests}
+                  onShowPersonalBestsChange={(showPersonalBests) => updateSettings({ showPersonalBests })}
                   onBackToHome={backToHome}
                 />
               )}

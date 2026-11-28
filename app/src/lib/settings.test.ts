@@ -593,6 +593,17 @@ describe('loadSettings', () => {
     expect(loadSettings().dailyWordGoal).toBe(0);
   });
 
+  it('keeps personal bests off unless explicitly enabled', () => {
+    expect(DEFAULT_SETTINGS.showPersonalBests).toBe(false);
+    for (const [stored, expected] of [[true, true], [false, false], ['true', false], [1, false], [null, false]] as const) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, showPersonalBests: stored }));
+      expect(loadSettings().showPersonalBests).toBe(expected);
+    }
+    const { showPersonalBests: _omitted, ...legacy } = DEFAULT_SETTINGS;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().showPersonalBests).toBe(false);
+  });
+
   it('validates the opt-in hotkey timing feedback setting', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
