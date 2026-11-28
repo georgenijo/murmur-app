@@ -545,13 +545,33 @@ fn pd11_terminal_claim_and_diagnostics_complete_are_not_atomic() {
 // C7.1 PD-13, fixed (#1191). A panic in the stop task (or in the pipeline, past
 // its `IdleGuard`) used to restore Idle on unwind and claim no terminal (R204a.6).
 // The guard's drop now sees the unwind and finishes as `Unwound` (R204a.7): it
-// claims `PipelineFailure/WorkerPanicked` in `Pre`, then writes Idle and clears the
-// keyboard gate. It still emits no `idle`.
+// claims `PipelineFailure/WorkerPanicked` in `Pre`, then writes Idle, clears the
+// keyboard gate and emits `idle` under D, so the windows leave `processing` (the
+// stop's 204b section, which would have emitted it, never runs).
 
 const PANIC_TERMINAL: &str = "~ terminal 1 PipelineFailure/WorkerPanicked";
 
+/// The unwinding guard emits `idle` exactly once after the stop's `processing`, and after
+/// its own `Pre` (the terminal claim, when it wins).
+fn assert_unwind_emitted_idle_once(trace: &[String]) {
+    let processing = position(trace, "emit recording-status-changed \"processing\"");
+    let idles: Vec<usize> = trace[processing..]
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| **line == IDLE_EMIT)
+        .map(|(at, _)| processing + at)
+        .collect();
+    assert_eq!(idles.len(), 1, "the unwind emits idle once: {trace:#?}");
+    if let Some(terminal) = trace.iter().position(|line| line == PANIC_TERMINAL) {
+        assert!(
+            terminal < idles[0],
+            "TERM (Pre) precedes EM(idle) (In): {trace:#?}"
+        );
+    }
+}
+
 /// A panic in the stop command after its `IdleGuard` is armed: the unwind claims
-/// the terminal, writes Idle and clears the keyboard gate, and emits no `idle`.
+/// the terminal, writes Idle, clears the keyboard gate and emits `idle` once.
 fn pd13a_panic_in_the_stop_path(world: &Arc<World>) {
     recording(world);
     world.on("supervisor.stop", || panic!("scripted stop-task panic"));
@@ -569,11 +589,7 @@ fn pd13a_panic_in_the_stop_path(world: &Arc<World>) {
     assert_eq!(status(world), DictationStatus::Idle);
     assert!(!keyboard::is_processing());
     let trace = world.trace();
-    let processing = position(&trace, "emit recording-status-changed \"processing\"");
-    assert!(
-        !trace[processing..].contains(&IDLE_EMIT.to_string()),
-        "the unwind emits no idle"
-    );
+    assert_unwind_emitted_idle_once(&trace);
     let terminals: Vec<_> = trace
         .iter()
         .filter(|line| line.starts_with("~ terminal 1 "))
@@ -600,8 +616,8 @@ fn pd13a_panic_in_the_stop_path(world: &Arc<World>) {
 }
 
 /// A panic inside the pipeline, after the real `IdleGuard` the fake pipeline
-/// builds first: the guard's drop claims the terminal, writes Idle and clears the
-/// gate (R204a.7).
+/// builds first: the guard's drop claims the terminal, writes Idle, clears the
+/// gate and emits `idle` once (R204a.7).
 fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Ok(16_000);
@@ -620,11 +636,7 @@ fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
     assert_eq!(status(world), DictationStatus::Idle);
     assert!(!keyboard::is_processing());
     let trace = world.trace();
-    let processing = position(&trace, "emit recording-status-changed \"processing\"");
-    assert!(
-        !trace[processing..].contains(&IDLE_EMIT.to_string()),
-        "the unwind emits no idle"
-    );
+    assert_unwind_emitted_idle_once(&trace);
     let terminals: Vec<_> = trace
         .iter()
         .filter(|line| line.starts_with("~ terminal 1 "))
@@ -644,7 +656,7 @@ fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
 
 /// The unwinding guard's claim is first-wins: when the recording's terminal was claimed
 /// before the panic, the guard's `TERM` loses, and its `Pre` still goes on to `CX-` and its
-/// D section still writes Idle and clears the keyboard gate.
+/// D section still writes Idle, clears the keyboard gate and emits `idle`.
 fn pd13c_panic_after_the_terminal_was_claimed(world: &Arc<World>) {
     recording(world);
     let state = world.state();
@@ -666,6 +678,7 @@ fn pd13c_panic_after_the_terminal_was_claimed(world: &Arc<World>) {
     drop(stop);
     assert_eq!(status(world), DictationStatus::Idle);
     assert!(!keyboard::is_processing());
+    assert_unwind_emitted_idle_once(&world.trace());
     assert_eq!(
         state.app_state.dictation_telemetry.terminal_for_test(1),
         Some((

@@ -1585,7 +1585,8 @@ impl Task for StopFlight {
                 let input = crate::inputs::GuardFinishInput {
                     rid: RecordingId(rid),
                     origin: GuardOrigin::Unwound,
-                    closure_emit: false,
+                    // The production stop guard emits `idle` when it unwinds (R204a.7).
+                    closure_emit: true,
                 };
                 let direct = core_stop::decide_guard_finish(&view, input, at);
                 let decision = once(
@@ -2084,7 +2085,9 @@ impl Task for Pipeline {
                 let input = crate::inputs::GuardFinishInput {
                     rid: RecordingId(rid),
                     origin,
-                    closure_emit: false,
+                    // Only the unwinding guard emits `idle` (R204a.7): a returning
+                    // pipeline leaves it to the stop's 204b section.
+                    closure_emit: origin == GuardOrigin::Unwound,
                 };
                 let direct = core_stop::decide_guard_finish(&view, input, at);
                 let decision = once(
