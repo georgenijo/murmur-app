@@ -77,11 +77,11 @@ function response(command: string): unknown {
 async function settle() {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
-async function mount({ setup = false, modelInstalled = true, recordingMode = 'double_tap', preloadSettings = true } = {}) {
+async function mount({ setup = false, modelInstalled = true, recordingMode = 'double_tap', preloadSettings = true, settings = {} as Record<string, unknown> } = {}) {
   native.modelInstalled = modelInstalled;
   if (!setup) localStorage.setItem(ONBOARDING_KEY, 'true');
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    ...DEFAULT_SETTINGS, model: 'base.en', recordingMode, microphoneIdMigrationComplete: true,
+    ...DEFAULT_SETTINGS, model: 'base.en', recordingMode, microphoneIdMigrationComplete: true, ...settings,
   }));
   // A missing model prevents grandfathering for the initial setup fixture.
   if (setup) native.modelInstalled = false;
@@ -368,5 +368,48 @@ describe('App setup capture safety', () => {
     expect(container.querySelector('[role="listbox"][aria-label="Commands"]')).toBeNull();
     expect(container.querySelector('main')?.getAttribute('aria-hidden')).toBe('false');
     expect(native.invoke).toHaveBeenCalledWith('start_keyboard_listener', { hotkey: DEFAULT_SETTINGS.doubleTapKey, mode: 'double_tap' });
+  });
+});
+
+describe('App palette transcript search (opt-in)', () => {
+  const saved = [
+    { schemaVersion: 2, id: 'h1', text: 'Book the quarterly budget review for Friday', timestamp: Date.now() - 60_000, duration: 4, source: 'recording' },
+    { schemaVersion: 2, id: 'h2', text: 'Lunch plans with Sam', timestamp: Date.now() - 30_000, duration: 2, source: 'recording' },
+  ];
+  async function typeInPalette(value: string) {
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Command"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+  let writeText: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    localStorage.setItem('dictation-history', JSON.stringify(saved));
+    writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  });
+
+  it('lists no transcripts while the setting is off', async () => {
+    await mount();
+    await shortcut('k');
+    await typeInPalette('budget');
+    expect(container.querySelector('#command-transcript-h1')).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Command"]')?.placeholder).toBe('Type a command…');
+  });
+
+  it('lists a matching saved transcript and copies its full text when chosen', async () => {
+    await mount({ settings: { paletteTranscriptSearch: true } });
+    await shortcut('k');
+    await typeInPalette('budget friday');
+    const row = container.querySelector<HTMLElement>('#command-transcript-h1');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain('Book the quarterly budget review for Friday');
+    expect(container.querySelector('#command-transcript-h2')).toBeNull();
+    await act(async () => row!.click());
+    await settle();
+    expect(writeText).toHaveBeenCalledWith('Book the quarterly budget review for Friday');
+    expect(container.querySelector('[aria-label="Command palette"]')).toBeNull();
   });
 });

@@ -98,6 +98,7 @@ interface Settings {
   historyRetentionDays: 0 | 1 | 7 | 30 | 90; // 0 = never
   historyShowRecognition: boolean;        // display-only History comparison
   historyShowProfile: boolean;            // display-only History profile tag and App filter
+  paletteTranscriptSearch: boolean;       // display-only ⌘K transcript rows; Enter copies one
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
@@ -183,6 +184,7 @@ export const DEFAULT_SETTINGS: Settings = {
   historyRetentionDays: 0,
   historyShowRecognition: false,
   historyShowProfile: false,
+  paletteTranscriptSearch: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,

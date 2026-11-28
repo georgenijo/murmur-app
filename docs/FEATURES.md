@@ -219,6 +219,9 @@ Select transcripts to combine (overflow menu) copies several takes as one
 plain-text block, oldest first, without changing stored history.
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings → General, and `⌘L` opens Settings → Performance.
+Opt-in **Find transcripts in the command palette** (off by default) also lists
+up to five matching saved transcripts under the commands; Enter copies one.
+Display-only.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. Settings provides a native live calibration preview with one-point controls, explicit Save/Cancel, Reset, and a bounded ±12pt durable offset.

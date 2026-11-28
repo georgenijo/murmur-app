@@ -14,6 +14,7 @@ import {
   type SettingsPageRequest,
 } from './components/settings/settingsPages';
 import { CommandPalette } from './components/CommandPalette';
+import { transcriptPaletteCommands } from './lib/paletteTranscripts';
 import type { PaletteCommand } from './lib/commandPalette';
 import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
 import { saveHistoryExport } from './lib/historyExport';
@@ -651,6 +652,16 @@ function App() {
     meetings, presentDeliveryRecoveryNotice, rerunSetup,
   ]);
 
+  // Opt-in: the palette also lists matching saved transcripts. Off leaves the
+  // palette's rows exactly as they were.
+  const paletteTranscripts = useMemo(() => (
+    settings.paletteTranscriptSearch
+      ? (query: string) => transcriptPaletteCommands(historyEntries, query, async (text) => {
+        await navigator.clipboard.writeText(text).catch(() => {});
+      })
+      : undefined
+  ), [settings.paletteTranscriptSearch, historyEntries]);
+
   const [dismissedExternalErrorKey, setDismissedExternalErrorKey] = useState('');
   const errorPresentation = [
     initError ? {
@@ -898,6 +909,7 @@ function App() {
         isOpen={isPaletteOpen}
         onClose={() => setIsPaletteOpen(false)}
         commands={commands}
+        extraResults={paletteTranscripts}
       />
 
       {discovery.state?.pendingHints[0] && (
