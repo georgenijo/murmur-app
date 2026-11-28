@@ -90,6 +90,10 @@ pub(crate) enum Reason {
     /// The tail decode did not start with the committed overlap text.
     StitchMismatch,
     TailDecodeError,
+    /// Only one piece was committed and more audio followed (`plan.start == 0`),
+    /// so the tail IS the whole clip; run whole-clip directly to avoid a
+    /// duplicate decode on stitch mismatch.
+    ZeroOffset,
 }
 
 impl Reason {
@@ -110,6 +114,7 @@ impl Reason {
             Self::Busy => "busy",
             Self::StitchMismatch => "stitch_mismatch",
             Self::TailDecodeError => "tail_decode_error",
+            Self::ZeroOffset => "zero_offset",
         }
     }
 }
@@ -248,6 +253,29 @@ impl FinalPlan {
             return None;
         }
         Some(join(&self.prefix, decoded.trim()))
+    }
+
+    /// Content-free classification of a `stitch_mismatch`: `"punctuation_or_case"`
+    /// when the leading words of `decoded` match `overlap` after stripping
+    /// punctuation and lowercasing (and at least one new word follows), else
+    /// `"word"`.
+    pub fn classify_mismatch(&self, decoded: &str) -> &'static str {
+        let norm = |w: &str| -> String {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        let overlap_words: Vec<String> = self.overlap.split_whitespace().map(norm).collect();
+        let decoded_words: Vec<String> = decoded.trim().split_whitespace().map(norm).collect();
+        if !overlap_words.is_empty()
+            && decoded_words.len() > overlap_words.len()
+            && decoded_words[..overlap_words.len()] == overlap_words[..]
+        {
+            "punctuation_or_case"
+        } else {
+            "word"
+        }
     }
 }
 
@@ -473,19 +501,35 @@ pub(crate) struct Outcome {
     /// clip plus any tail decode that was discarded first.
     pub decoded_ms: u64,
     pub overlap_words: u64,
+    /// Content-free reason for a `stitch_mismatch` (`"punctuation_or_case"` or `"word"`).
+    pub mismatch_kind: Option<&'static str>,
 }
 
 pub(crate) fn emit_outcome(recording_id: u64, outcome: &Outcome) {
-    tracing::info!(
-        target: "pipeline",
-        event_code = "pipeline.stream_reuse_outcome",
-        recording_id,
-        outcome = outcome.code,
-        piece_count = u64::from(outcome.pieces),
-        decoded_ms = outcome.decoded_ms,
-        overlap_words = outcome.overlap_words,
-        "streaming decode outcome"
-    );
+    if let Some(mismatch_kind) = outcome.mismatch_kind {
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.stream_reuse_outcome",
+            recording_id,
+            outcome = outcome.code,
+            mismatch_kind,
+            piece_count = u64::from(outcome.pieces),
+            decoded_ms = outcome.decoded_ms,
+            overlap_words = outcome.overlap_words,
+            "streaming decode outcome"
+        );
+    } else {
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.stream_reuse_outcome",
+            recording_id,
+            outcome = outcome.code,
+            piece_count = u64::from(outcome.pieces),
+            decoded_ms = outcome.decoded_ms,
+            overlap_words = outcome.overlap_words,
+            "streaming decode outcome"
+        );
+    }
 }
 
 #[cfg(test)]

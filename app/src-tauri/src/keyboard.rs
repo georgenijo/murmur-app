@@ -173,7 +173,9 @@ impl DoubleTapDetector {
     }
 
     fn reset(&mut self) {
-        self.stop_press = None;
+        if let Some(press) = self.stop_press.take() {
+            crate::hotkey_release::clear_toggle_stop_press(press.recording_id);
+        }
         self.fired_stop = None;
         self.candidate = None;
         self.state = DetectorState::Idle;
@@ -246,9 +248,19 @@ impl DoubleTapDetector {
         repeated: bool,
     ) -> bool {
         let state = handle.state::<crate::State>();
-        self.native_recording = (state.app_state.dictation_status_if_uncontended()
-            == Some(crate::state::DictationStatus::Recording))
-        .then(|| state.app_state.recording_id.load(Ordering::SeqCst));
+        self.native_recording = match state.app_state.dictation_status_if_uncontended() {
+            Some(crate::state::DictationStatus::Recording) => {
+                Some(state.app_state.recording_id.load(Ordering::SeqCst))
+            }
+            Some(_) => None,
+            // If the dictation mutex is momentarily contended, fall back to
+            // the detector's own recording flag + lock-free generation atomic
+            // so toggle-stop preview gating still fires at key-down.
+            None => self
+                .recording
+                .then(|| state.app_state.recording_id.load(Ordering::SeqCst))
+                .filter(|&id| id > 0),
+        };
         self.handle_event_with_context(event, modifiers, repeated)
     }
 
@@ -293,10 +305,15 @@ impl DoubleTapDetector {
                     if is_target_key(*key, target) {
                         self.candidate = Some(Candidate::new());
                         if self.recording {
+                            let pressed_at = Instant::now();
                             self.stop_press = self.native_recording.map(|recording_id| {
+                                crate::hotkey_release::record_toggle_stop_press(
+                                    recording_id,
+                                    pressed_at,
+                                );
                                 crate::stop_gesture::StopPress {
                                     recording_id,
-                                    pressed_at: Instant::now(),
+                                    pressed_at,
                                 }
                             });
                         }
@@ -314,9 +331,18 @@ impl DoubleTapDetector {
                                 self.fired_candidate = None;
                                 // Single tap to stop — fire immediately
                                 let released_at = Instant::now();
-                                let stamp = self.stop_press.map(|press| {
+                                let stamp = self.stop_press.take().map(|press| {
                                     crate::stop_gesture::StopStamp { press, released_at }
                                 });
+                                if let Some(recording_id) = stamp
+                                    .map(|s| s.press.recording_id)
+                                    .or(self.native_recording)
+                                {
+                                    crate::hotkey_release::record_toggle_stop_released(
+                                        recording_id,
+                                        released_at,
+                                    );
+                                }
                                 self.last_fired_at = Some(released_at);
                                 self.reset();
                                 self.fired_stop = stamp;
@@ -3449,6 +3475,39 @@ mod tests {
                 assert_eq!(d.fired_stop.take().unwrap().press.recording_id, 99);
             }
         }
+    }
+
+    #[test]
+    fn toggle_stop_press_gates_preview_and_clears_on_cancel_or_stop() {
+        let id = 9_100_042;
+        let _ = crate::hotkey_release::take_for(id, Instant::now());
+        let mut d = make_detector(Key::ShiftLeft);
+        d.recording = true;
+        d.native_recording = Some(id);
+
+        // Key-down while recording immediately gates preview decodes.
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(crate::hotkey_release::stop_gesture_pending(id));
+
+        // Interrupting with another key (combo cancel) clears the press gate immediately.
+        assert!(!d.handle_event(&press(Key::KeyA)));
+        assert!(!crate::hotkey_release::stop_gesture_pending(id));
+
+        // Clean key-down -> key-up keeps the released gate active across the IPC hop.
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(crate::hotkey_release::stop_gesture_pending(id));
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        assert!(crate::hotkey_release::stop_gesture_pending(id));
+
+        // A cancelled second press after cooldown must NOT reopen previews while
+        // the first stop is still in flight.
+        d.last_fired_at = None;
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(!d.handle_event(&press(Key::KeyA)));
+        assert!(crate::hotkey_release::stop_gesture_pending(id));
+
+        assert!(crate::hotkey_release::take_for(id, Instant::now()).is_none());
+        assert!(!crate::hotkey_release::stop_gesture_pending(id));
     }
 
     #[test]

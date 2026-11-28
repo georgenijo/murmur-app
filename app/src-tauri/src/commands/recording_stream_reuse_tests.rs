@@ -502,8 +502,132 @@ fn a_discarded_tail_decode_counts_toward_the_decoded_time_of_the_fallback() {
     .unwrap();
     let outcome = result.reuse.unwrap();
     assert_eq!(outcome.code, "stitch_mismatch");
+    assert_eq!(outcome.mismatch_kind, Some("word"));
     assert_eq!(
         outcome.decoded_ms,
         ((tail_len + filtered.len()) / 16) as u64
     );
+}
+
+#[test]
+fn single_piece_incomplete_plan_routes_directly_to_whole_clip_without_duplicate_decode() {
+    let id = 7_100_014;
+    let state = live(id);
+    let raw = raw_recording();
+    let mut backend = Scripted::new(&[Some(FIRST)]);
+    commit_piece(&state, id, &mut backend, &raw, &[A]);
+    let bounds = [A, B];
+    let filtered = kept(&raw, &bounds);
+    let plan = take_stream_reuse_plan(&state, &settings(true), id, Some(&bounds), &filtered)
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.start, 0);
+    assert_eq!(plan.pieces, 1);
+
+    // Only ONE decode (whole_clip) runs; no speculative tail decode + stitch retry.
+    let mut stop = Scripted::new(&[Some("Whole clip decoded once.")]);
+    let result = decode_final_transcript(
+        &mut stop,
+        &settings(true),
+        &filtered,
+        &filtered,
+        true,
+        Ok(Some(plan)),
+    )
+    .unwrap();
+    assert_eq!(result.attempt.text, "Whole clip decoded once.");
+    assert_eq!(stop.decoded, [filtered.len()]);
+    let outcome = result.reuse.unwrap();
+    assert_eq!(outcome.code, "zero_offset");
+    assert_eq!(outcome.pieces, 1);
+    assert_eq!(outcome.decoded_ms, (filtered.len() / 16) as u64);
+    assert_eq!(outcome.mismatch_kind, None);
+}
+
+#[test]
+fn single_piece_incomplete_plan_retries_once_on_transient_backend_error() {
+    let id = 7_100_016;
+    let state = live(id);
+    let raw = raw_recording();
+    let mut backend = Scripted::new(&[Some(FIRST)]);
+    commit_piece(&state, id, &mut backend, &raw, &[A]);
+    let bounds = [A, B];
+    let filtered = kept(&raw, &bounds);
+    let plan = take_stream_reuse_plan(&state, &settings(true), id, Some(&bounds), &filtered)
+        .unwrap()
+        .unwrap();
+    let mut stop = Scripted::new(&[None, Some("Recovered on retry.")]);
+    let result = decode_final_transcript(
+        &mut stop,
+        &settings(true),
+        &filtered,
+        &filtered,
+        true,
+        Ok(Some(plan)),
+    )
+    .unwrap();
+    assert_eq!(result.attempt.text, "Recovered on retry.");
+    assert_eq!(stop.decoded, [filtered.len(), filtered.len()]);
+    let outcome = result.reuse.unwrap();
+    assert_eq!(outcome.code, "tail_decode_error");
+    assert_eq!(outcome.pieces, 1);
+    assert_eq!(outcome.decoded_ms, ((filtered.len() * 2) / 16) as u64);
+}
+
+#[test]
+fn single_piece_incomplete_plan_does_not_restart_after_unfiltered_vad_retry_error() {
+    let id = 7_100_017;
+    let state = live(id);
+    let raw = raw_recording();
+    let mut backend = Scripted::new(&[Some(FIRST)]);
+    commit_piece(&state, id, &mut backend, &raw, &[A]);
+    let bounds = [A, B];
+    let filtered = kept(&raw, &bounds);
+    let plan = take_stream_reuse_plan(&state, &settings(true), id, Some(&bounds), &filtered)
+        .unwrap()
+        .unwrap();
+    // First filtered decode returns empty -> triggers unfiltered VAD retry on `raw`,
+    // which errors. Must propagate that error without restarting a second whole-clip pass.
+    let mut stop = Scripted::new(&[Some(""), None, Some("must not run")]);
+    let err = decode_final_transcript(
+        &mut stop,
+        &settings(true),
+        &filtered,
+        &raw,
+        true,
+        Ok(Some(plan)),
+    );
+    assert!(err.is_err());
+    assert_eq!(stop.decoded, [filtered.len(), raw.len()]);
+}
+
+#[test]
+fn stitch_mismatch_classifies_punctuation_or_case_differences() {
+    let id = 7_100_015;
+    let state = live(id);
+    let raw = raw_recording();
+    let mut backend = Scripted::new(&[Some(FIRST), Some(FIRST_AND_SECOND)]);
+    commit_piece(&state, id, &mut backend, &raw, &[A]);
+    commit_piece(&state, id, &mut backend, &raw, &[A, B]);
+    let bounds = [A, B, C];
+    let filtered = kept(&raw, &bounds);
+    let plan = take_stream_reuse_plan(&state, &settings(true), id, Some(&bounds), &filtered)
+        .unwrap()
+        .unwrap();
+    let mut stop = Scripted::new(&[
+        Some("Next stable segment, tail words arrive."),
+        Some("Whole clip."),
+    ]);
+    let result = decode_final_transcript(
+        &mut stop,
+        &settings(true),
+        &filtered,
+        &filtered,
+        true,
+        Ok(Some(plan)),
+    )
+    .unwrap();
+    let outcome = result.reuse.unwrap();
+    assert_eq!(outcome.code, "stitch_mismatch");
+    assert_eq!(outcome.mismatch_kind, Some("punctuation_or_case"));
 }

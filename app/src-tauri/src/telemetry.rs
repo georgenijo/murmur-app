@@ -708,6 +708,9 @@ fn sanitize_stream_reuse_outcome_event(data: &mut serde_json::Map<String, serde_
         "piece_count" => value.as_u64().is_some_and(|value| value <= 10_000),
         "decoded_ms" => value.as_u64().is_some_and(|value| value <= 3_600_000),
         "overlap_words" => value.as_u64().is_some_and(|value| value <= 100_000),
+        "mismatch_kind" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "punctuation_or_case" | "word")),
         "outcome" => value.as_str().is_some_and(|value| {
             matches!(
                 value,
@@ -727,6 +730,7 @@ fn sanitize_stream_reuse_outcome_event(data: &mut serde_json::Map<String, serde_
                     | "busy"
                     | "stitch_mismatch"
                     | "tail_decode_error"
+                    | "zero_offset"
             )
         }),
         _ => false,
@@ -4610,11 +4614,18 @@ mod tests {
     #[test]
     fn stream_reuse_outcome_schema_is_exact_and_content_free_in_every_build() {
         for debug_build in [true, false] {
-            for outcome in ["reused", "stitch_mismatch", "inactive", "bounds_mismatch"] {
+            for outcome in [
+                "reused",
+                "stitch_mismatch",
+                "zero_offset",
+                "inactive",
+                "bounds_mismatch",
+            ] {
                 let mut data = serde_json::json!({
                     "event_code": "pipeline.stream_reuse_outcome",
                     "recording_id": 9,
                     "outcome": outcome,
+                    "mismatch_kind": "punctuation_or_case",
                     "piece_count": 3,
                     "decoded_ms": 4_200,
                     "overlap_words": 12,
@@ -4623,10 +4634,11 @@ mod tests {
                 });
                 sanitize_event_data("pipeline", &mut data, debug_build);
                 assert_eq!(data["outcome"], outcome);
+                assert_eq!(data["mismatch_kind"], "punctuation_or_case");
                 assert_eq!(data["piece_count"], 3);
                 assert_eq!(data["decoded_ms"], 4_200);
                 assert_eq!(data["overlap_words"], 12);
-                assert_eq!(data.as_object().unwrap().len(), 6);
+                assert_eq!(data.as_object().unwrap().len(), 7);
                 assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
             }
             let mut free_outcome = serde_json::json!({
