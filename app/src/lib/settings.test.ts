@@ -630,6 +630,17 @@ describe('loadSettings', () => {
     expect(loadSettings().showPersonalBests).toBe(false);
   });
 
+  it('loads the typing speed as not measured unless it is a usable number', () => {
+    expect(DEFAULT_SETTINGS.typingSpeedWpm).toBe(0);
+    for (const [stored, expected] of [[62, 62], [61.6, 62], [0, 0], [-5, 0], ['60', 0], [null, 0], [1e9, 250], [2, 5]] as const) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, typingSpeedWpm: stored }));
+      expect(loadSettings().typingSpeedWpm).toBe(expected);
+    }
+    const { typingSpeedWpm: _omitted, ...legacy } = DEFAULT_SETTINGS;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().typingSpeedWpm).toBe(0);
+  });
+
   it('validates the opt-in hotkey timing feedback setting', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

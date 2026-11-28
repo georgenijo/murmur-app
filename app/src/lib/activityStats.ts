@@ -123,14 +123,14 @@ export function getActivityInsights(stats: {
   totalWords: number;
   totalDurationSeconds: number;
   activity: ActivityStats;
-}, now = new Date()) {
+}, now = new Date(), typingWpm = ASSUMED_TYPING_WPM) {
   const month = activityMonth(stats.activity.monthlyBuckets[monthKey(now)]);
   const mostUsedTransform = Object.entries(stats.activity.transforms.byPresetName)
     .filter(([, counts]) => counts.runs > 0)
     .sort(([nameA, countsA], [nameB, countsB]) => countsB.runs - countsA.runs || nameA.localeCompare(nameB))[0];
   return {
     dictationMinutes: stats.totalDurationSeconds / 60,
-    typingMinutesSaved: Math.max(0, stats.totalWords / ASSUMED_TYPING_WPM - stats.totalDurationSeconds / 60),
+    typingMinutesSaved: Math.max(0, stats.totalWords / typingWpm - stats.totalDurationSeconds / 60),
     mostUsedTransformName: mostUsedTransform?.[0] ?? null,
     mostUsedTransformRuns: mostUsedTransform?.[1].runs ?? 0,
     month,

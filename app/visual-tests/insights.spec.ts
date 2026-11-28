@@ -192,3 +192,57 @@ for (const appearance of ['light', 'dark'] as const) {
     });
   }
 }
+
+for (const appearance of ['light', 'dark'] as const) {
+  for (const viewport of [{ width: 1100, height: 780 }, { width: 840, height: 620 }]) {
+    test(`Insights typing speed: ${appearance} ${viewport.width}`, async ({ page }) => {
+      await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
+      await page.setViewportSize(viewport);
+      await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
+      const view = page.locator('.insights-view');
+      const card = view.locator('.insights-typing');
+      await expect(card).toHaveAttribute('data-typing-state', 'off');
+      await expect(view.locator('[data-stats="headline"]')).toContainText('vs typing at 40 wpm');
+
+      await card.scrollIntoViewIfNeeded();
+      await card.getByRole('button', { name: 'Measure' }).click();
+      await expect(card).toHaveAttribute('data-typing-state', 'typing');
+      const field = card.getByRole('textbox', { name: 'Type the sentence above' });
+      await expect(field).toBeFocused();
+      const layout = await view.evaluate(element => {
+        const rect = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+        const headline = rect('[data-stats="headline"]');
+        const typing = rect('.insights-typing');
+        const sections = rect('.usage-dashboard-sections');
+        const passage = rect('.insights-typing-passage');
+        const input = rect('.insights-typing-input');
+        const buttons = Array.from(element.querySelectorAll('.insights-typing-footer button')).map(button => button.getBoundingClientRect());
+        return { headlineLeft: headline.left, headlineRight: headline.right, typingLeft: typing.left, typingRight: typing.right,
+          typingTop: typing.top, sectionsBottom: sections.bottom, passageBottom: passage.bottom, inputTop: input.top,
+          inputLeft: input.left, inputRight: input.right, inputHeight: input.height, cardInnerRight: typing.right - 12,
+          buttonsRight: Math.max(...buttons.map(button => button.right)), overflow: element.scrollWidth - element.clientWidth };
+      });
+      expect(layout.typingLeft).toBeCloseTo(layout.headlineLeft, 1);
+      expect(layout.typingRight).toBeCloseTo(layout.headlineRight, 1);
+      // Below the charts, so it never shifts the chart under the pointer.
+      expect(layout.sectionsBottom).toBeLessThanOrEqual(layout.typingTop);
+      // The sentence sits above the field, which fills the card and holds two lines.
+      expect(layout.passageBottom).toBeLessThanOrEqual(layout.inputTop);
+      expect(layout.inputRight).toBeLessThanOrEqual(layout.cardInnerRight + 0.5);
+      expect(layout.inputHeight).toBeGreaterThanOrEqual(40);
+      expect(layout.buttonsRight).toBeLessThanOrEqual(layout.cardInnerRight + 0.5);
+      expect(layout.overflow).toBe(0);
+
+      await field.press('Escape');
+      await expect(card).toHaveAttribute('data-typing-state', 'off');
+
+      await page.goto(`/visual-fixtures.html?state=insights-typing&appearance=${appearance}`);
+      await expect(card).toHaveAttribute('data-typing-state', 'set');
+      await expect(card.locator('.insights-typing-summary')).toContainText('45 wpm typing');
+      await expect(view.locator('[data-stats="headline"]')).toContainText('vs your typing at 45 wpm');
+      await card.getByRole('button', { name: 'Clear' }).click();
+      await expect(card).toHaveAttribute('data-typing-state', 'off');
+      await expect(view.locator('[data-stats="headline"]')).toContainText('vs typing at 40 wpm');
+    });
+  }
+}
