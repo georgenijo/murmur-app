@@ -263,6 +263,8 @@ export interface Settings {
   /** @deprecated Migration-only mirror; structured entries are authoritative. */
   customVocabulary: string;
   vocabularyEntries: VocabularyEntry[];
+  /** Opt in to vocabulary suggestions computed locally from saved history. */
+  vocabularySuggestions: boolean;
   disabled: boolean;
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
@@ -524,6 +526,7 @@ export const DEFAULT_SETTINGS: Settings = {
   capturePreRollMs: 450,
   customVocabulary: '',
   vocabularyEntries: [],
+  vocabularySuggestions: false,
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
@@ -1093,6 +1096,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.meetingSoundCuesEnabled = DEFAULT_SETTINGS.meetingSoundCuesEnabled;
       }
 
+      if (typeof parsed.vocabularySuggestions !== 'boolean') {
+        parsed.vocabularySuggestions = DEFAULT_SETTINGS.vocabularySuggestions;
+      }
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
       }

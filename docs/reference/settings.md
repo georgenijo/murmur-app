@@ -92,6 +92,7 @@ interface Settings {
   autoPasteDelayMs: number;
   pasteLastShortcut: PasteLastShortcut | null;
   retainHistory: boolean;
+  vocabularySuggestions: boolean;
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
@@ -168,6 +169,7 @@ export const DEFAULT_SETTINGS: Settings = {
   idleTimeoutMinutes: 5,
   customVocabulary: '',
   vocabularyEntries: [],
+  vocabularySuggestions: false,
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
@@ -269,6 +271,7 @@ model-selection side effects.
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
 | `pasteLastShortcut` | `PasteLastShortcut \| null` | `null` | `'command_shift_v'` (⌘⇧V), `'command_option_v'` (⌘⌥V), `'command_control_v'` (⌘⌃V), or `null` to disable | Configures the global Paste Last / Retry Delivery chord. Changes take effect immediately; invalid or Murmur-owned conflicting identifiers fail closed, and native registration failure leaves the last working value selected. Retried text stays memory-only and uses the normal secure delivery checks. Settings v4 migrates the former `pasteLastShortcutEnabled: true` to ⌘⇧V and `false`/absent to Disabled. |
 | `retainHistory` | `boolean` | `true` | `true` / `false` | Persist new microphone and imported-file transcripts in the local History workspace. When false, delivery and content-free statistics continue but new transcript content is discarded at the history boundary. Existing entries remain until explicitly cleared. |
+| `vocabularySuggestions` | `boolean` | `false` | `true` / `false` | Shows the opt-in **Suggestions from history** card in the Aliases editor. When on, recurring names and identifiers from local saved transcripts are listed in memory for an explicit Add or Dismiss. It never changes delivered text by itself. See [Vocabulary aliases](../features/vocabulary-aliases.md#suggestions-from-history). |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `mirrorToNotchPill` | `boolean` | `false` | `true` / `false` | When enabled, the final transcript of each dictation is mirrored to `~/Library/Application Support/local-dictation/latest-caption.json` as `{text, timestamp}`, so NotchPill can display what was just said. The toggle is shown only when macOS Launch Services finds NotchPill's `com.local.notchpill` bundle. If NotchPill is removed, mirroring becomes dormant and the caption file is deleted without overwriting the saved preference; reinstalling the app restores the prior choice. Off by default. The file is owner-only (`0600`), holds only the most recent caption — each write replaces the last — and is written after the clipboard, best-effort, so it can never delay or affect dictation output. Nothing leaves the device. Switching the setting off deletes the file. |
