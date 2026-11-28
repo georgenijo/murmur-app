@@ -288,6 +288,53 @@ export function entrySource(entry: HistoryEntry): HistorySource {
   return entry.source ?? 'recording';
 }
 
+/**
+ * App-profile narrowing for the opt-in "Show app profile" view. `any` keeps
+ * everything, `none` keeps entries recorded with global settings (and imported
+ * files), and `profile:<label>` keeps one profile's dictations.
+ */
+export type HistoryProfileFilter = 'any' | 'none' | `profile:${string}`;
+
+/** Bound on distinct profile labels offered by the filter menu. */
+export const MAX_HISTORY_PROFILE_OPTIONS = 8;
+
+/**
+ * The app profile a live dictation resolved at recording start, or null for
+ * global settings, imported files, and entries saved before v2 recorded it.
+ * Whitespace-only labels count as no profile.
+ */
+export function entryProfile(entry: HistoryEntry): string | null {
+  const label = entry.recording?.profileId;
+  if (typeof label !== 'string') return null;
+  const trimmed = label.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Distinct profile labels in history, most-used first (ties by name), capped
+ * so a long-lived history cannot grow the menu without bound.
+ */
+export function historyProfiles(entries: readonly HistoryEntry[]): string[] {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    const label = entryProfile(entry);
+    if (label !== null) counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, MAX_HISTORY_PROFILE_OPTIONS)
+    .map(([label]) => label);
+}
+
+export function profileFilterValue(label: string): HistoryProfileFilter {
+  return `profile:${label}`;
+}
+
+/** The profile label a filter selects, or null for `any` and `none`. */
+export function profileFilterLabel(filter: HistoryProfileFilter): string | null {
+  return filter.startsWith('profile:') ? filter.slice('profile:'.length) : null;
+}
+
 /** Split a raw search box value into the tokens every match must contain. */
 export function searchTokens(query: string): string[] {
   return query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -305,12 +352,21 @@ function matchesTokens(entry: HistoryEntry, tokens: string[]): boolean {
  */
 export function filterHistory(
   entries: HistoryEntry[],
-  options: { query?: string; filter?: HistoryFilter; dateFilter?: HistoryDateFilter; pinnedFilter?: HistoryPinnedFilter; now?: number } = {},
+  options: {
+    query?: string;
+    filter?: HistoryFilter;
+    dateFilter?: HistoryDateFilter;
+    pinnedFilter?: HistoryPinnedFilter;
+    profileFilter?: HistoryProfileFilter;
+    now?: number;
+  } = {},
 ): HistoryEntry[] {
   const tokens = searchTokens(options.query ?? '');
   const filter = options.filter ?? 'all';
   const dateFilter = options.dateFilter ?? 'all';
   const pinnedFilter = options.pinnedFilter ?? 'all';
+  const profileFilter = options.profileFilter ?? 'any';
+  const profileLabel = profileFilterLabel(profileFilter);
   const now = options.now ?? Date.now();
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
@@ -326,6 +382,8 @@ export function filterHistory(
   return entries.filter((entry) => {
     if ((filter === 'recording' || filter === 'file') && entrySource(entry) !== filter) return false;
     if (pinnedFilter === 'pinned' && entry.pinned !== true) return false;
+    if (profileFilter === 'none' && entryProfile(entry) !== null) return false;
+    if (profileLabel !== null && entryProfile(entry) !== profileLabel) return false;
     if (cutoff !== null && (entry.timestamp < cutoff || entry.timestamp > now)) return false;
     return matchesTokens(entry, tokens);
   });

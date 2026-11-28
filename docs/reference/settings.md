@@ -96,6 +96,7 @@ interface Settings {
   vocabularySuggestions: boolean;
   historyRetentionDays: 0 | 1 | 7 | 30 | 90; // 0 = never
   historyShowRecognition: boolean;        // display-only History comparison
+  historyShowProfile: boolean;            // display-only History profile tag and App filter
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
@@ -179,6 +180,7 @@ export const DEFAULT_SETTINGS: Settings = {
   retainHistory: true,
   historyRetentionDays: 0,
   historyShowRecognition: false,
+  historyShowProfile: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,

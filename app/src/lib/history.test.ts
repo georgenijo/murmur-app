@@ -2,9 +2,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   addHistoryEntry,
   clearHistory,
+  entryProfile,
   combineHistoryText,
   entrySource,
   filterHistory,
+  historyProfiles,
+  MAX_HISTORY_PROFILE_OPTIONS,
+  profileFilterLabel,
+  profileFilterValue,
   formatDuration,
   formatExportTimestamp,
   formatHistoryExport,
@@ -213,6 +218,59 @@ describe('searchTokens', () => {
   });
   it('returns nothing for a blank query', () => {
     expect(searchTokens('   ')).toEqual([]);
+  });
+});
+
+function profiled(id: string, profileId: string | null, overrides: Partial<HistoryEntry> = {}): HistoryEntry {
+  return entry({
+    id,
+    schemaVersion: 2,
+    recording: { recordingId: 1, modelId: 'parakeet-v3', profileId, stages: [] },
+    ...overrides,
+  });
+}
+
+describe('app profile helpers', () => {
+  it('reads the recording-start profile label and treats blank or missing labels as none', () => {
+    expect(entryProfile(profiled('a', 'Slack'))).toBe('Slack');
+    expect(entryProfile(profiled('b', '  Editor  '))).toBe('Editor');
+    expect(entryProfile(profiled('c', '   '))).toBeNull();
+    expect(entryProfile(profiled('d', null))).toBeNull();
+    expect(entryProfile(entry({ id: 'legacy' }))).toBeNull();
+    expect(entryProfile(entry({ id: 'file', source: 'file', sourceName: 'x.wav' }))).toBeNull();
+  });
+
+  it('lists distinct profiles most-used first, ties by name, and bounds the list', () => {
+    const entries = [
+      profiled('1', 'Slack'), profiled('2', 'Editor'), profiled('3', 'Slack'),
+      profiled('4', 'Bear'), profiled('5', null), entry({ id: '6' }),
+    ];
+    expect(historyProfiles(entries)).toEqual(['Slack', 'Bear', 'Editor']);
+    const many = Array.from({ length: MAX_HISTORY_PROFILE_OPTIONS + 5 }, (_, i) => profiled(`m${i}`, `App ${String(i).padStart(2, '0')}`));
+    expect(historyProfiles(many)).toHaveLength(MAX_HISTORY_PROFILE_OPTIONS);
+    expect(historyProfiles([])).toEqual([]);
+  });
+
+  it('round-trips a profile filter value, including labels with colons', () => {
+    expect(profileFilterLabel(profileFilterValue('Mail: work'))).toBe('Mail: work');
+    expect(profileFilterLabel('any')).toBeNull();
+    expect(profileFilterLabel('none')).toBeNull();
+  });
+
+  it('filters by profile and composes with search and source', () => {
+    const entries = [
+      profiled('slack', 'Slack', { text: 'ship the release' }),
+      profiled('editor', 'Editor', { text: 'ship the fix' }),
+      profiled('global', null, { text: 'ship lunch' }),
+      entry({ id: 'file', source: 'file', sourceName: 'ship.wav', text: 'imported' }),
+    ];
+    const ids = (options: Parameters<typeof filterHistory>[1]) => filterHistory(entries, options).map((e) => e.id);
+    expect(ids({ profileFilter: 'any' })).toEqual(['slack', 'editor', 'global', 'file']);
+    expect(ids({ profileFilter: profileFilterValue('Slack') })).toEqual(['slack']);
+    expect(ids({ profileFilter: 'none' })).toEqual(['global', 'file']);
+    expect(ids({ profileFilter: 'none', filter: 'recording' })).toEqual(['global']);
+    expect(ids({ profileFilter: profileFilterValue('Editor'), query: 'release' })).toEqual([]);
+    expect(ids({ profileFilter: profileFilterValue('Missing') })).toEqual([]);
   });
 });
 

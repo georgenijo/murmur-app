@@ -89,6 +89,7 @@ export function HomeDashboard({
             focusSearchToken={focusSearchToken}
             onTranscribeFile={onTranscribeFile}
             showRecognition={settings.historyShowRecognition}
+            showProfile={settings.historyShowProfile}
           />
         </section>
       </div>

@@ -411,6 +411,85 @@ describe('HistoryPanel', () => {
     });
   });
 
+  describe('app profile view', () => {
+    const recordingContext = (profileId: string | null) => ({ recordingId: 1, modelId: 'parakeet-v3', profileId, stages: [] });
+    const slack = entry({ id: 'slack', schemaVersion: 2, text: 'post the standup notes', recording: recordingContext('Slack') });
+    const editor = entry({ id: 'editor', schemaVersion: 2, text: 'rename the helper', recording: recordingContext('Editor'), timestamp: Date.UTC(2026, 6, 18, 11) });
+    const global = entry({ id: 'global', schemaVersion: 2, text: 'buy oat milk', recording: recordingContext(null), timestamp: Date.UTC(2026, 6, 18, 10) });
+    const imported = entry({ id: 'file', text: 'imported meeting audio', source: 'file', sourceName: 'standup.wav', timestamp: Date.UTC(2026, 6, 18, 9) });
+    const profiledEntries = [imported, global, editor, slack];
+    const tagFor = (text: string) => Array.from(container.querySelectorAll('article'))
+      .find((card) => card.textContent?.includes(text))!.querySelector('.transcript-profile-tag');
+
+    it('adds no tags and no App section while the setting is off (the default)', async () => {
+      await render({ entries: profiledEntries });
+      expect(container.querySelector('.transcript-profile-tag')).toBeNull();
+      await act(async () => filterTrigger().click());
+      expect(filterOption('Any app')).toBeUndefined();
+      expect(filterOption('Slack')).toBeUndefined();
+    });
+
+    it('tags dictations with their profile and leaves global and file entries untagged', async () => {
+      await render({ entries: profiledEntries, showProfile: true });
+      expect(tagFor('post the standup')!.textContent).toBe('App profile: Slack');
+      expect(tagFor('rename the helper')!.getAttribute('title')).toBe('App profile: Editor');
+      expect(tagFor('buy oat milk')).toBeNull();
+      expect(tagFor('imported meeting audio')).toBeNull();
+      // Delivered text is untouched by the tag.
+      expect(Array.from(container.querySelectorAll('.transcript-text')).map((node) => node.textContent))
+        .toContain('post the standup notes');
+    });
+
+    it('filters by one app, by no profile, and composes with the other filters', async () => {
+      await render({ entries: profiledEntries, showProfile: true });
+      await act(async () => filterTrigger().click());
+      expect(filterOption('Any app')!.getAttribute('aria-checked')).toBe('true');
+      expect(filterOption('Editor')).toBeDefined();
+      await choose('Slack');
+      expect(cardText()).toHaveLength(1);
+      expect(cardText()[0]).toContain('post the standup notes');
+      expect(filterTrigger().textContent).toBe('Slack');
+      expect(container.querySelector('.history-filtered-note')!.textContent).toContain('Showing 1 of 4');
+
+      await choose('No app profile');
+      expect(cardText()).toHaveLength(2);
+      await choose('Spoken');
+      expect(cardText()).toHaveLength(1);
+      expect(cardText()[0]).toContain('buy oat milk');
+      expect(filterTrigger().getAttribute('aria-label')).toBe('Filter transcripts: 2 filters, Spoken · No app profile');
+
+      await act(async () => byText('Clear filters')!.click());
+      expect(cardText()).toHaveLength(4);
+      expect(filterTrigger().textContent).toBe('Filter');
+    });
+
+    it('drops an active profile filter when the setting is turned off or the profile leaves history', async () => {
+      await render({ entries: profiledEntries, showProfile: true });
+      await choose('Slack');
+      expect(cardText()).toHaveLength(1);
+      await render({ entries: profiledEntries, showProfile: false });
+      expect(cardText()).toHaveLength(4);
+      expect(filterTrigger().textContent).toBe('Filter');
+
+      // Turning it back on does not resurrect the dropped choice.
+      await render({ entries: profiledEntries, showProfile: true });
+      expect(cardText()).toHaveLength(4);
+      await choose('Editor');
+      expect(cardText()).toHaveLength(1);
+      await render({ entries: [imported, global, slack], showProfile: true });
+      expect(cardText()).toHaveLength(3);
+      expect(container.querySelector('.history-filtered-note')).toBeNull();
+      await render({ entries: profiledEntries, showProfile: true });
+      expect(cardText()).toHaveLength(4);
+    });
+
+    it('hides the App section when no entry has a profile', async () => {
+      await render({ entries: [global, imported], showProfile: true });
+      await act(async () => filterTrigger().click());
+      expect(filterOption('Any app')).toBeUndefined();
+    });
+  });
+
   it('deletes the exact filtered subset, including a pin, without matching duplicate ids', async () => {
     vi.useFakeTimers();
     const matching = entry({ id: 'duplicate', text: 'remove alpha', pinned: true });

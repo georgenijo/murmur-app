@@ -211,6 +211,9 @@ removes unpinned transcripts past that age, after confirming any immediate delet
 Opt-in **Show what Murmur changed** (off by default) adds a per-transcript
 comparison of the raw recognition with the delivered text: a word diff, the
 stages that changed it, and Copy what was heard. Display-only.
+Opt-in **Show app profile in History** (off by default) tags live dictations
+with the app profile they resolved at recording start and adds an App section
+to the Filter menu. Display-only.
 Select transcripts to combine (overflow menu) copies several takes as one
 plain-text block, oldest first, without changing stored history.
 ### Command palette — [features/command-palette.md](features/command-palette.md)
