@@ -31,6 +31,7 @@ REPORT_NAME = "capture-watch.json"
 MAX_STARTUP_SAMPLES = 500
 MAX_POST_STOP_LATENCY_SAMPLES = 500
 MAX_POST_STOP_TARGET_SAMPLES = 500
+MAX_PRESS_TO_PASTE_SAMPLES = 500
 MAX_VERSIONS_PER_INSTALL = 64
 MIN_COMPARISON_SAMPLES = 5
 STARTUP_REGRESSION_RATIO = 2.0
@@ -155,6 +156,32 @@ def numeric_post_stop_latency(event):
     return float(value)
 
 
+def numeric_press_to_paste(event):
+    """Native hotkey release → end of delivery (#487), or None.
+
+    The producer omits the field (never a zero sentinel) for toggle, overlay
+    and auto-stop runs and for unconfirmed delivery.
+    """
+    value = event_data(event).get("release_to_paste_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0 or value > 300_000:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def press_to_paste_cohort_member(event):
+    """The default-model, automatic-paste subset of the target cohort.
+
+    Both facts are exact booleans; a missing or non-boolean value (an older
+    build, or a malformed line) is not evidence and never joins the cohort.
+    """
+    data = event_data(event)
+    return data.get("default_model") is True and data.get("auto_paste_posted") is True
+
+
 def numeric_audio_seconds(event):
     value = event_data(event).get("audio_secs")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -191,6 +218,8 @@ def new_cohort(install_id, version):
         "post_stop_latency_sample_total": 0,
         "post_stop_target_samples": deque(maxlen=MAX_POST_STOP_TARGET_SAMPLES),
         "post_stop_target_sample_total": 0,
+        "press_to_paste_samples": deque(maxlen=MAX_PRESS_TO_PASTE_SAMPLES),
+        "press_to_paste_sample_total": 0,
         "timeouts": Counter(),
         "fallback_count": 0,
         "both_backends_failed_count": 0,
@@ -341,6 +370,15 @@ def scan_install(lines, install_id, cohorts, reliability_slo):
                     ):
                         cohort["post_stop_target_samples"].append(latency_ms)
                         cohort["post_stop_target_sample_total"] += 1
+                        press_to_paste_ms = numeric_press_to_paste(event)
+                        if (
+                            press_to_paste_ms is not None
+                            and press_to_paste_cohort_member(event)
+                        ):
+                            cohort["press_to_paste_samples"].append(
+                                press_to_paste_ms
+                            )
+                            cohort["press_to_paste_sample_total"] += 1
             continue
         if code == "audio.capture_started":
             if (
@@ -395,24 +433,30 @@ def scan_install(lines, install_id, cohorts, reliability_slo):
     return malformed
 
 
+def target_verdict(app_version, samples):
+    if (
+        app_version in ("unknown", "overflow")
+        or len(samples) < MIN_POST_STOP_TARGET_SAMPLES
+    ):
+        return "insufficient_data"
+    if (
+        percentile(samples, 50) < POST_STOP_TARGET_P50_MS
+        and percentile(samples, 95) < POST_STOP_TARGET_P95_MS
+    ):
+        return "met"
+    return "missed"
+
+
 def serialize_cohort(cohort):
     samples = list(cohort["startup_samples"])
     post_stop_latency_samples = list(cohort["post_stop_latency_samples"])
     post_stop_target_samples = list(cohort["post_stop_target_samples"])
     post_stop_target_p50_ms = percentile(post_stop_target_samples, 50)
     post_stop_target_p95_ms = percentile(post_stop_target_samples, 95)
-    if (
-        cohort["app_version"] in ("unknown", "overflow")
-        or len(post_stop_target_samples) < MIN_POST_STOP_TARGET_SAMPLES
-    ):
-        post_stop_target_verdict = "insufficient_data"
-    elif (
-        post_stop_target_p50_ms < POST_STOP_TARGET_P50_MS
-        and post_stop_target_p95_ms < POST_STOP_TARGET_P95_MS
-    ):
-        post_stop_target_verdict = "met"
-    else:
-        post_stop_target_verdict = "missed"
+    post_stop_target_verdict = target_verdict(
+        cohort["app_version"], post_stop_target_samples
+    )
+    press_to_paste_samples = list(cohort["press_to_paste_samples"])
     recent_session_ready_counts = list(cohort["recent_session_ready_counts"])
     session_ready_histogram = Counter(recent_session_ready_counts)
     timeout_rows = [
@@ -462,6 +506,16 @@ def serialize_cohort(cohort):
         "post_stop_target_p50_ms": post_stop_target_p50_ms,
         "post_stop_target_p95_ms": post_stop_target_p95_ms,
         "post_stop_target_verdict": post_stop_target_verdict,
+        "press_to_paste_sample_count": len(press_to_paste_samples),
+        "press_to_paste_sample_total": cohort["press_to_paste_sample_total"],
+        "press_to_paste_samples_truncated": (
+            cohort["press_to_paste_sample_total"] > len(press_to_paste_samples)
+        ),
+        "press_to_paste_p50_ms": percentile(press_to_paste_samples, 50),
+        "press_to_paste_p95_ms": percentile(press_to_paste_samples, 95),
+        "press_to_paste_verdict": target_verdict(
+            cohort["app_version"], press_to_paste_samples
+        ),
         "capture_backend_timeouts": timeout_rows,
         "fallback_count": cohort["fallback_count"],
         "both_backends_failed_count": cohort["both_backends_failed_count"],
@@ -724,6 +778,9 @@ def build_report(root, now=None):
             ),
             "maximum_post_stop_target_samples_per_cohort": (
                 MAX_POST_STOP_TARGET_SAMPLES
+            ),
+            "maximum_press_to_paste_samples_per_cohort": (
+                MAX_PRESS_TO_PASTE_SAMPLES
             ),
             "minimum_post_stop_target_samples": MIN_POST_STOP_TARGET_SAMPLES,
             "post_stop_target_min_audio_seconds": (

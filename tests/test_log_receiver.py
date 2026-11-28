@@ -175,6 +175,52 @@ class LogReceiverHealthTests(unittest.TestCase):
             page,
         )
         self.assertNotIn("87654321", page)
+        # A report without the press-to-paste fields renders none of them.
+        self.assertNotIn("press-to-paste", page)
+
+    def test_dashboard_surfaces_press_to_paste_cohort(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "healthy",
+            "alerts": [],
+            "policy": {},
+            "cohorts": [
+                {
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.3",
+                    "last_event_at": "2026-08-05T00:00:03Z",
+                    "post_stop_latency_sample_count": 25,
+                    "post_stop_latency_p50_ms": 150,
+                    "post_stop_latency_p95_ms": 300,
+                    "post_stop_target_sample_count": 22,
+                    "post_stop_target_p50_ms": 150,
+                    "post_stop_target_p95_ms": 300,
+                    "post_stop_target_verdict": "met",
+                    "press_to_paste_sample_count": 21,
+                    "press_to_paste_p50_ms": 240,
+                    "press_to_paste_p95_ms": 410,
+                    "press_to_paste_verdict": "met",
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn(
+            "press-to-paste (hotkey, default model, auto-paste): 21 samples, "
+            "p50 240 ms, p95 410 ms, target met",
+            page,
+        )
 
     def test_dashboard_surfaces_post_stop_latency_target_alert(self) -> None:
         report = {

@@ -2738,6 +2738,9 @@ pub(crate) struct PipelineTimings {
     /// Clipboard write (and paste, when enabled) confirmed; the
     /// `releaseToPaste` endpoint exists only then (#826).
     pub delivery_confirmed: bool,
+    /// The native paste event was posted (not clipboard-only), so the
+    /// press-to-paste cohort can exclude clipboard-only delivery (#487).
+    pub auto_paste_posted: bool,
     /// Sub-millisecond marks between the named stages (A4).
     pub gaps: StageGaps,
 }
@@ -4174,6 +4177,19 @@ struct NativeDictationMetrics<'a> {
     char_count: usize,
     model_name: &'a str,
     backend_name: &'a str,
+    /// Native hotkey release → end of delivery, present only when the run's
+    /// `releaseToPaste` stage exists (hotkey-released, successful, confirmed
+    /// delivery). Never a zero sentinel (#487).
+    release_to_paste_ms: Option<u64>,
+}
+
+/// The `releaseToPaste` stage's measured value, for the content-free
+/// completion event. `None` when the stage is absent or not measured.
+fn release_to_paste_ms(stage: Option<&StageTimingV1>) -> Option<u64> {
+    match stage?.duration_ms {
+        crate::performance_metrics::MeasurementV1::Measured { value } => Some(value),
+        _ => None,
+    }
 }
 
 fn emit_native_dictation_metrics(metrics: NativeDictationMetrics<'_>) {
@@ -4197,6 +4213,12 @@ fn emit_native_dictation_metrics(metrics: NativeDictationMetrics<'_>) {
         char_count = metrics.char_count,
         rss_before_mb = metrics.timings.rss_before_mb,
         rss_after_mb = metrics.timings.rss_after_mb,
+        // Content-free cohort facts for the press-to-paste target (#487): the
+        // release build strips `model`/`backend` strings, so the default-model
+        // and delivery-mode cohort travels as booleans and one number.
+        release_to_paste_ms = metrics.release_to_paste_ms,
+        default_model = model_runtime::is_new_install_default_model(metrics.model_name),
+        auto_paste_posted = metrics.timings.auto_paste_posted,
         model = metrics.model_name,
         backend = metrics.backend_name,
         "dictation processing metrics"
@@ -5278,6 +5300,7 @@ async fn run_transcription_pipeline(
             "smart destination delivery"
         );
         timings.delivery_confirmed = delivery_confirms_paste(delivery_outcome);
+        timings.auto_paste_posted = delivery_outcome == DictationDeliveryOutcome::AutoPastePosted;
         // Hold the recording-state lock across ownership validation and event
         // publication. A concurrent cancel changes Processing to Idle under
         // this same lock before marking the ID cancelled, and a new start also
@@ -9890,12 +9913,14 @@ async fn stop_native_recording_admitted(
     };
     let warm_state = timings.warm_state.unwrap_or(ModelWarmStateV1::Unknown);
     let mut stages = pipeline_stages(&timings, total_ms);
-    stages.extend(release_to_paste_stage(
+    let release_to_paste = release_to_paste_stage(
         &outcome,
         timings.delivery_confirmed,
         hotkey_release,
         delivered_at,
-    ));
+    );
+    let release_to_paste_ms = release_to_paste_ms(release_to_paste.as_ref());
+    stages.extend(release_to_paste);
     let recording_secs = samples.len() / 16_000;
     {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
@@ -9928,6 +9953,7 @@ async fn stop_native_recording_admitted(
                     char_count,
                     model_name: &model_name,
                     backend_name: &backend_name,
+                    release_to_paste_ms,
                 });
                 emit_dictation_stage_gaps(
                     rid,
@@ -10794,6 +10820,16 @@ pub(crate) mod tests {
         outcome: DictationTerminalOutcome,
         char_count: usize,
     ) -> Vec<String> {
+        capture_native_completion_with(outcome, char_count, "test-model", false, None)
+    }
+
+    fn capture_native_completion_with(
+        outcome: DictationTerminalOutcome,
+        char_count: usize,
+        model_name: &str,
+        auto_paste_posted: bool,
+        release_to_paste_ms: Option<u64>,
+    ) -> Vec<String> {
         let layer = CompletionCaptureLayer::default();
         let captured = Arc::clone(&layer.0);
         let subscriber = Registry::default().with(layer);
@@ -10801,6 +10837,7 @@ pub(crate) mod tests {
             vad_ms: 7,
             inference_ms: 180,
             paste_ms: 12,
+            auto_paste_posted,
             ..PipelineTimings::default()
         };
 
@@ -10813,8 +10850,9 @@ pub(crate) mod tests {
                 audio_secs: 1.5,
                 word_count: 3,
                 char_count,
-                model_name: "test-model",
+                model_name,
                 backend_name: "test-backend",
+                release_to_paste_ms,
             });
         });
 
@@ -10845,6 +10883,50 @@ pub(crate) mod tests {
         assert!(fields.contains(&"recording_id=41".to_string()));
         assert!(fields.contains(&"total_ms=220".to_string()));
         assert!(fields.contains(&"char_count=18".to_string()));
+    }
+
+    #[test]
+    fn native_completion_carries_press_to_paste_cohort_facts() {
+        let fields = capture_native_completion_with(
+            DictationTerminalOutcome::Success,
+            18,
+            model_runtime::NEW_INSTALL_DEFAULT_MODEL,
+            true,
+            Some(171),
+        );
+        assert!(fields.contains(&"release_to_paste_ms=171".to_string()));
+        assert!(fields.contains(&"default_model=true".to_string()));
+        assert!(fields.contains(&"auto_paste_posted=true".to_string()));
+    }
+
+    #[test]
+    fn native_completion_without_a_release_omits_release_to_paste() {
+        let fields = capture_native_completion(DictationTerminalOutcome::Success, 18);
+        // Absent, never a zero sentinel.
+        assert!(!fields
+            .iter()
+            .any(|field| field.starts_with("release_to_paste_ms=")));
+        assert!(fields.contains(&"default_model=false".to_string()));
+        assert!(fields.contains(&"auto_paste_posted=false".to_string()));
+    }
+
+    #[test]
+    fn release_to_paste_ms_reads_only_a_measured_stage() {
+        assert_eq!(release_to_paste_ms(None), None);
+        // A legitimate measured zero stays a measurement.
+        assert_eq!(
+            release_to_paste_ms(Some(&StageTimingV1::measured(
+                PerformanceStageV1::ReleaseToPaste,
+                0
+            ))),
+            Some(0)
+        );
+        assert_eq!(
+            release_to_paste_ms(Some(&StageTimingV1::not_applicable(
+                PerformanceStageV1::ReleaseToPaste
+            ))),
+            None
+        );
     }
 
     #[test]

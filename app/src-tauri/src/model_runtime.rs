@@ -197,6 +197,17 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
     },
 ];
 
+/// The model a new install selects (`DEFAULT_SETTINGS.model` in
+/// `app/src/lib/settings.ts`). Telemetry reports only whether a dictation used
+/// it, so a press-to-paste cohort can be restricted to the default model
+/// without shipping the model identifier (#487).
+pub(crate) const NEW_INSTALL_DEFAULT_MODEL: &str = "parakeet-tdt-0.6b-v3-coreml";
+
+/// Whether `model_name` is the new-install default model.
+pub(crate) fn is_new_install_default_model(model_name: &str) -> bool {
+    model_name == NEW_INSTALL_DEFAULT_MODEL
+}
+
 pub fn model_definition(model_name: &str) -> Result<&'static ModelDefinition, String> {
     MODEL_DEFINITIONS
         .iter()
@@ -1084,6 +1095,18 @@ impl ModelRuntimeManager {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn new_install_default_model_matches_frontend_default_settings() {
+        let settings = include_str!("../../src/lib/settings.ts");
+        assert!(
+            settings.contains(&format!("model: '{NEW_INSTALL_DEFAULT_MODEL}',")),
+            "DEFAULT_SETTINGS.model drifted from NEW_INSTALL_DEFAULT_MODEL"
+        );
+        assert!(model_definition(NEW_INSTALL_DEFAULT_MODEL).is_ok());
+        assert!(is_new_install_default_model(NEW_INSTALL_DEFAULT_MODEL));
+        assert!(!is_new_install_default_model("base.en"));
+    }
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;

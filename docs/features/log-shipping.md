@@ -370,6 +370,30 @@ makes this a broad product target, not a model comparison. Use the local
 production comparison in Diagnostics for exact model, runtime, microphone,
 and configuration cohorts.
 
+#### Press-to-paste cohort (#487)
+
+`pipeline.dictation_completed` also carries three content-free cohort facts:
+`release_to_paste_ms` (native hotkey release to the end of delivery, the same
+value as the local `releaseToPaste` Diagnostics stage), `default_model` (the
+run used the new-install default model, `parakeet-tdt-0.6b-v3-coreml`), and
+`auto_paste_posted` (Murmur posted the native paste event, rather than a
+clipboard-only delivery). The model name itself is still stripped from release
+telemetry; only the boolean leaves the Mac. `release_to_paste_ms` is omitted,
+never zero, for toggle, overlay and auto-stop stops and for unconfirmed
+delivery.
+
+The watch keeps a press-to-paste subset of the target cohort: an eligible
+1 to 15 second target sample that also has a valid `release_to_paste_ms`
+(0 to 300,000 ms) and exact `true` for both booleans. Older builds without the
+fields never join it. The report adds `press_to_paste_sample_count`, `_total`,
+`_truncated`, `_p50_ms`, `_p95_ms` and `press_to_paste_verdict`, judged with the
+same 20-sample floor and strict p50 < 1,000 ms / p95 < 2,000 ms thresholds,
+bounded to 500 samples per cohort. The dashboard appends the subset to each
+stop-to-delivery row when present. It is measurement-only: no alert kind
+exists until a baseline from the new fields is read out. Like `total_ms`, it
+ends when Murmur posts the paste event and does not prove that the target app
+consumed it.
+
 The `total_ms` timer starts after Murmur accepts the stop and enters processing,
 immediately before capture teardown and 16 kHz resampling. It ends after the
 transcription pipeline and the configured clipboard or paste delivery attempt.

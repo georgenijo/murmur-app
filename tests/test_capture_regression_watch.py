@@ -1208,6 +1208,116 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(report["policy"]["post_stop_target_p50_ms"], 1_000)
         self.assertEqual(report["policy"]["post_stop_target_p95_ms"], 2_000)
 
+    def test_press_to_paste_cohort_needs_release_default_model_and_auto_paste(
+        self,
+    ) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+
+        def completion(recording_id, second, **extra):
+            data = {
+                "event_code": "pipeline.dictation_completed",
+                "recording_id": recording_id,
+                "char_count": 10,
+                "total_ms": 150,
+                "audio_secs": 5,
+            }
+            data.update(extra)
+            return event(
+                "dictation completed",
+                f"2026-08-01T00:{second // 60:02d}:{second % 60:02d}Z",
+                version="1.2.3",
+                data=data,
+            )
+
+        eligible = {"default_model": True, "auto_paste_posted": True}
+        values = [200] * 18 + [900, 1_900]
+        for index, value in enumerate(values):
+            events.append(
+                completion(index + 1, index + 1, release_to_paste_ms=value, **eligible)
+            )
+        excluded = [
+            {"release_to_paste_ms": 5_000, "default_model": False, "auto_paste_posted": True},
+            {"release_to_paste_ms": 5_000, "default_model": True, "auto_paste_posted": False},
+            {"release_to_paste_ms": 5_000, "auto_paste_posted": True},
+            {"release_to_paste_ms": 5_000, "default_model": "true", "auto_paste_posted": True},
+            dict(eligible),
+            {"release_to_paste_ms": True, **eligible},
+            {"release_to_paste_ms": -1, **eligible},
+            {"release_to_paste_ms": 300_001, **eligible},
+            {"release_to_paste_ms": float("nan"), **eligible},
+            {"release_to_paste_ms": 5_000, "audio_secs": 30, **eligible},
+        ]
+        for index, extra in enumerate(excluded):
+            events.append(completion(100 + index, 60 + index, **extra))
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["press_to_paste_sample_count"], 20)
+        self.assertEqual(cohort["press_to_paste_sample_total"], 20)
+        self.assertFalse(cohort["press_to_paste_samples_truncated"])
+        self.assertEqual(cohort["press_to_paste_p50_ms"], 200)
+        self.assertEqual(cohort["press_to_paste_p95_ms"], 900)
+        self.assertEqual(cohort["press_to_paste_verdict"], "met")
+        # The broad stop-to-delivery cohort still counts every target sample.
+        self.assertEqual(cohort["post_stop_target_sample_count"], 29)
+        self.assertEqual(
+            report["policy"]["maximum_press_to_paste_samples_per_cohort"], 500
+        )
+        # Measurement only: no press-to-paste alert kind exists yet.
+        self.assertFalse(
+            any("press_to_paste" in item["kind"] for item in report["alerts"])
+        )
+
+    def test_press_to_paste_verdict_is_strict_and_preliminary_below_floor(
+        self,
+    ) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        for index in range(watch.MIN_POST_STOP_TARGET_SAMPLES):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:00:{index + 1:02d}Z",
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": 150,
+                        "audio_secs": 5,
+                        "release_to_paste_ms": 1_000,
+                        "default_model": True,
+                        "auto_paste_posted": True,
+                    },
+                )
+            )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events[:-1])
+            preliminary = watch.build_report(root)["cohorts"][0]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            missed = watch.build_report(root)["cohorts"][0]
+
+        self.assertEqual(preliminary["press_to_paste_verdict"], "insufficient_data")
+        # p50 must be strictly below 1,000 ms.
+        self.assertEqual(missed["press_to_paste_verdict"], "missed")
+        self.assertEqual(missed["post_stop_target_verdict"], "met")
+
     def test_post_stop_target_miss_alerts_only_after_minimum_sample(self) -> None:
         events = [
             event(

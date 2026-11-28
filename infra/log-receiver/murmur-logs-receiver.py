@@ -994,6 +994,36 @@ def render_capture_watch(report):
     )
 
 
+def _press_to_paste_text(row):
+    """Release-to-delivery for the default-model auto-paste subset (#487).
+
+    Older reports have no such fields; they render nothing rather than a zero.
+    """
+    count = row.get("press_to_paste_sample_count")
+    verdict = row.get("press_to_paste_verdict")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count <= 0
+        or verdict not in ("met", "missed", "insufficient_data")
+    ):
+        return ""
+    return (
+        "; press-to-paste (hotkey, default model, auto-paste): "
+        "%s sample%s, p50 %s, p95 %s, %s"
+    ) % (
+        html.escape(str(count)[:20]),
+        "" if count == 1 else "s",
+        _slo_milliseconds(row.get("press_to_paste_p50_ms")),
+        _slo_milliseconds(row.get("press_to_paste_p95_ms")),
+        {
+            "met": "target met",
+            "missed": "target missed",
+            "insufficient_data": "preliminary",
+        }[verdict],
+    )
+
+
 def render_post_stop_latency(report):
     if report is None:
         return ""
@@ -1046,7 +1076,7 @@ def render_post_stop_latency(report):
             )
         items.append(
             "<li><code>%s</code> v%s: %s; all successful attempts: %s "
-            "sample%s, p50 %s, p95 %s</li>"
+            "sample%s, p50 %s, p95 %s%s</li>"
             % (
                 html.escape(str(row.get("install_id", ""))[:8]),
                 html.escape(str(row.get("app_version", ""))[:40]),
@@ -1055,6 +1085,7 @@ def render_post_stop_latency(report):
                 "" if row.get("post_stop_latency_sample_count") == 1 else "s",
                 _slo_milliseconds(row.get("post_stop_latency_p50_ms")),
                 _slo_milliseconds(row.get("post_stop_latency_p95_ms")),
+                _press_to_paste_text(row),
             )
         )
     target_contract = (

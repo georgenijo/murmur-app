@@ -6330,6 +6330,29 @@ mod tests {
     }
 
     #[test]
+    fn release_dictation_completion_keeps_press_to_paste_cohort_facts() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_completed",
+            "recording_id": 41,
+            "total_ms": 150,
+            "audio_secs": 3.5,
+            "release_to_paste_ms": 171,
+            "default_model": true,
+            "auto_paste_posted": true,
+            "model": "PRIVATE_MODEL",
+            "backend": "PRIVATE_BACKEND"
+        });
+
+        sanitize_event_data("pipeline", &mut data, false);
+
+        assert_eq!(data["release_to_paste_ms"], 171);
+        assert_eq!(data["default_model"], true);
+        assert_eq!(data["auto_paste_posted"], true);
+        assert!(data.get("model").is_none());
+        assert!(data.get("backend").is_none());
+    }
+
+    #[test]
     fn release_partial_interruption_keeps_neutral_metrics_contract() {
         let mut data = serde_json::json!({
             "event_code": "pipeline.dictation_metrics",
