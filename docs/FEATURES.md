@@ -204,6 +204,9 @@ file-transcription toasts remain available.
 The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
 sessions, supports copy/text export, and deletes one or all sessions locally.
+Opt-in **Show what Murmur changed** (off by default) adds a per-transcript
+comparison of the raw recognition with the delivered text: a word diff, the
+stages that changed it, and Copy what was heard. Display-only.
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings → General, and `⌘L` opens Settings → Performance.
 

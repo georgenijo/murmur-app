@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
-import { Copy, Star, Trash2 } from 'lucide-react';
+import { Copy, GitCompareArrows, Star, Trash2 } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
   entrySource,
@@ -17,6 +17,7 @@ import {
   type HistoryPinnedFilter,
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
+import { changedStageLabels, countDiffChanges, diffTranscript } from '../../lib/transcriptDiff';
 import {
   AnimatedDropdown,
   AnimatedDropdownContent,
@@ -42,6 +43,8 @@ interface HistoryPanelProps {
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
+  /** Offer the opt-in comparison of raw recognition with delivered text. */
+  showRecognition?: boolean;
 }
 
 const HISTORY_RENDER_BATCH = 30;
@@ -104,6 +107,48 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
   );
 }
 
+function RecognitionComparison({ entry, onCopyOriginal }: { entry: HistoryEntry; onCopyOriginal: () => void }) {
+  const rawText = entry.rawText ?? '';
+  const segments = useMemo(() => diffTranscript(rawText, entry.text), [rawText, entry.text]);
+  const stages = changedStageLabels(entry.recording?.stages);
+  const changes = segments ? countDiffChanges(segments) : null;
+  const summary = changes === 0
+    ? 'Delivered exactly as recognized.'
+    : changes === null
+      ? 'Too long to compare word by word.'
+      : `${changes} ${changes === 1 ? 'change' : 'changes'} from what was heard.`;
+  return (
+    <section className="transcript-compare" aria-label="What Murmur changed" onClick={(event) => event.stopPropagation()}>
+      <p className="transcript-compare-summary">
+        {summary}
+        {stages.length > 0 && changes !== 0 && <span> Changed by {stages.join(', ')}.</span>}
+      </p>
+      {segments === null ? (
+        <p className="transcript-compare-raw"><span className="transcript-compare-label">Heard</span>{rawText}</p>
+      ) : changes !== 0 && (
+        <p className="transcript-compare-diff" data-testid="transcript-diff">
+          {segments.map((segment, index) => segment.kind === 'removed' ? (
+            <del key={index}><span className="ui-visually-hidden">removed: </span>{segment.text}</del>
+          ) : segment.kind === 'added' ? (
+            <ins key={index}>
+              <span className="ui-visually-hidden">added: </span>
+              {segment.text.trim() === '' ? <span aria-hidden="true">{'⏎'}</span> : null}
+              {segment.text}
+            </ins>
+          ) : (
+            <span key={index}>{segment.text}</span>
+          ))}
+        </p>
+      )}
+      {changes !== 0 && (
+        <button type="button" className="transcript-expand" onClick={onCopyOriginal}>
+          Copy what was heard
+        </button>
+      )}
+    </section>
+  );
+}
+
 function HistoryPanelComponent({
   title,
   titleId,
@@ -114,9 +159,12 @@ function HistoryPanelComponent({
   pinnedCount = 0,
   focusSearchToken,
   onTranscribeFile = () => {},
+  showRecognition = false,
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<HistoryEntry | null>(null);
+  // Keyed by object identity: legacy history permits duplicate ids.
+  const [comparedEntry, setComparedEntry] = useState<HistoryEntry | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [dateFilter, setDateFilter] = useState<HistoryDateFilter>('all');
@@ -215,6 +263,16 @@ function HistoryPanelComponent({
       showNotice('Copied transcript as Markdown.');
     } catch {
       showNotice('Could not copy the Markdown transcript.');
+    }
+  };
+
+  const handleCopyOriginal = async (entry: HistoryEntry) => {
+    if (entry.rawText === undefined) return;
+    try {
+      await navigator.clipboard.writeText(entry.rawText);
+      showNotice('Copied what was heard.');
+    } catch {
+      showNotice('Could not copy to the clipboard.');
     }
   };
 
@@ -484,6 +542,9 @@ function HistoryPanelComponent({
                 )}
                 <ClampedTranscript text={entry.text} query={query} />
                 {entry.derived && <span className="transcript-derived">Reformatted</span>}
+                {showRecognition && comparedEntry === entry && entry.rawText !== undefined && (
+                  <RecognitionComparison entry={entry} onCopyOriginal={() => void handleCopyOriginal(entry)} />
+                )}
               </div>
               <span className="transcript-copy-feedback ui-visually-hidden" role="status" aria-live="polite">
                 {copiedId === entry.id ? 'Copied' : ''}
@@ -512,6 +573,16 @@ function HistoryPanelComponent({
                   >
                     Copy as Markdown
                   </SmartOverflowAction>
+                  {showRecognition && entry.rawText !== undefined && (
+                    <SmartOverflowAction
+                      id="compare"
+                      priority="overflow"
+                      icon={<GitCompareArrows />}
+                      onSelect={() => setComparedEntry((current) => current === entry ? null : entry)}
+                    >
+                      {comparedEntry === entry ? 'Hide what changed' : 'Show what changed'}
+                    </SmartOverflowAction>
+                  )}
                   <SmartOverflowAction
                     id="pin"
                     priority="overflow"

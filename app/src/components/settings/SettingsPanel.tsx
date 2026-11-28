@@ -301,6 +301,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls', keywords: 'destination focus media play pause next previous', macOSOnly: true },
   { page: 'delivery', target: 'file-output', title: 'Save to file', detail: 'Save transcript or audio files locally', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription history', detail: 'Keep completed dictations on this Mac', keywords: 'save retain local transcripts' },
+  { page: 'delivery', target: 'history-changes', title: 'Show what Murmur changed', detail: 'Compare raw recognition with delivered text in History', keywords: 'original raw recognition diff compare cleanup corrections heard' },
   { page: 'delivery', target: 'app-overrides-manual', editorTab: 'app-overrides', title: 'App bundle ID', detail: 'Add an app override by its exact bundle ID', keywords: 'manual advanced profile' },
   { page: 'delivery', target: 'app-overrides', title: 'App overrides', detail: 'Customize delivery for individual apps', keywords: 'profile bundle id per app' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting audio', detail: 'Choose whether source audio is retained', keywords: 'capture wav keep delete' },
@@ -1391,6 +1392,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               description="Save new transcripts on this Mac. Turning off keeps existing history."
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
+            />
+            <SettingToggle
+              targetId="history-changes"
+              title="Show what Murmur changed"
+              description="Add a History action that compares what was heard with what was delivered. Delivered text is unchanged."
+              checked={settings.historyShowRecognition} defaultChecked={DEFAULT_SETTINGS.historyShowRecognition}
+              onChange={() => onUpdateSettings({ historyShowRecognition: !settings.historyShowRecognition })}
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in NotchPill" checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             </SettingsGroup>

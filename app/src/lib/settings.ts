@@ -267,6 +267,8 @@ export interface Settings {
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
   retainHistory: boolean;
+  /** Offer a History action comparing raw recognition with delivered text. Display-only. */
+  historyShowRecognition: boolean;
   /** Keep meeting chunk WAV files after their durable transcript commits. */
   meetingRetainAudio: boolean;
   /** Opt in to local, session-scoped labels for remote meeting speakers. */
@@ -527,6 +529,7 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  historyShowRecognition: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
@@ -1095,6 +1098,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
 
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
+      }
+      if (typeof parsed.historyShowRecognition !== 'boolean') {
+        parsed.historyShowRecognition = DEFAULT_SETTINGS.historyShowRecognition;
       }
       if (typeof parsed.meetingRetainAudio !== 'boolean') {
         parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;
