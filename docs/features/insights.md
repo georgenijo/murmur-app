@@ -59,13 +59,30 @@ changes recording, transcription, delivery, or history, and nothing about it
 leaves the Mac. The bar has no transition, so there is no motion to reduce.
 Source: `app/src/lib/dailyGoal.ts` and `app/src/components/home/DailyGoalCard.tsx`.
 
+## Personal bests
+
+An opt-in **Personal bests** card sits below the charts. It is off by
+default (`showPersonalBests: false`); off shows only its switch and a one-line
+explanation. On, it lists four figures from every retained local daily bucket:
+most words in a day, best week (words in a Sunday-to-Saturday calendar week),
+most dictations in a day, and the longest run of consecutive days with at least
+one recording. Each figure names its date, week start or date range. Ties keep
+the earliest day or week. Word figures are omitted when no words were ever
+transcribed; with no statistics the card invites a first dictation.
+
+Like the goal it is display only: it reads the same buckets as the charts and
+never changes recording, transcription, delivery or history. Reset statistics
+clears it. Source: `app/src/lib/personalBests.ts` and
+`app/src/components/home/PersonalBestsCard.tsx`.
+
 ## Fixtures
 
 `visual-fixtures.html?state=insights` shows real populated components. Additional
 states are `insights-speed`, `insights-more`, `insights-empty` (zero persisted
 fixture statistics), `insights-gap` (fourth recent day absent), and
 `insights-no-speed` (recordings without transcribed words), `insights-goal`
-(a 1,000-word goal in progress), and `insights-goal-met` (a 500-word goal met). Append
+(a 1,000-word goal in progress), `insights-goal-met` (a 500-word goal met), and
+`insights-bests` (personal bests on). Append
 `appearance=light` or `appearance=dark`; use 1100×780 or 840×620 and scroll the
 compact content to its bottom. Screenshot capture requires no CSS/JS layer.
 Fixture lifetime totals and daily buckets are independently seeded synthetic

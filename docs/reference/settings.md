@@ -77,6 +77,7 @@ interface Settings {
   doubleTapKey: DoubleTapKey;
   hotkeyMissFeedback: boolean;
   dailyWordGoal: number;                   // 0 = off (default)
+  showPersonalBests: boolean;              // off by default
   autoStopSilenceMs: number;               // 0 = off (default)
   smartAutoStopEnabled: boolean;           // off by default
   microphone: string;
@@ -156,6 +157,7 @@ export const DEFAULT_SETTINGS: Settings = {
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   dailyWordGoal: 0,
+  showPersonalBests: false,
   soundCuesEnabled: true,
   soundCueVolume: 45,
   meetingSoundCuesEnabled: false,
@@ -247,6 +249,7 @@ model-selection side effects.
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control), `'fn'` (Fn / Globe), `'f1'`–`'f20'` | The key used for recording triggers. `'fn'` also enables key-down capture (see [recording-modes.md](../features/recording-modes.md#fn-and-globe-key-down-capture)). Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
 | `dailyWordGoal` | `number` | `0` | `0` (off) or a whole number of words, capped at 100,000 | Insights daily word goal, set from the Insights page (Off, 250, 500, 1,000, 2,000, 5,000). Shows today's progress, days met in the last 7, and a goal streak from local daily word counts. Display only; never changes transcription or delivery. Invalid values load as off. |
+| `showPersonalBests` | `boolean` | `false` | `true` / `false` | Insights Personal bests card, switched on from the Insights page. Shows most words in a day, best calendar week, most dictations in a day and longest recording streak from local daily statistics. Display only; never changes transcription or delivery. Only an explicit `true` enables it. |
 | `autoStopSilenceMs` | `number` | `0` | `0` (Off), `1500`, `2500`, `4000` | Trailing silence after which a recording stops itself. Applies to any recording **not started by holding the trigger key** (double-tap, button, overlay, locked mode); while the key is physically held the release owns the stop. The detector arms only after it has heard speech, so a silent start never self-terminates. Any value outside the allow-list — including a tampered or absent one — coerces back to Off. Frontend only. See [features/silence-auto-stop.md](../features/silence-auto-stop.md). |
 | `smartAutoStopEnabled` | `boolean` | `false` | `true` / `false` | Smart Auto-Stop: at each pause of a recording Stop on Silence would end, ask the local Smart Turn model whether the speaker is done and stop early when it is. `autoStopSilenceMs` stays the ceiling, so it does nothing while that is Off or the model is not downloaded. Only an explicit `true` enables it. See [features/silence-auto-stop.md](../features/silence-auto-stop.md#smart-auto-stop-experimental). |
 | `vadSensitivity` | `number` | `50` | 0 (Off), 5-100; step 5 in UI | Voice Activity Detection sensitivity. Off skips VAD for the lowest post-release latency but gives up no-speech rejection. For non-zero values, higher values keep more audio and lower values trim silence more aggressively; the backend threshold is `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
@@ -473,6 +476,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
 | `dailyWordGoal` | _(Insights display only)_ | Frontend only |
+| `showPersonalBests` | _(Insights display only)_ | Frontend only |
 | `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
 | `smartAutoStopEnabled` | _(gates the frontend's `check_smart_turn` calls)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |

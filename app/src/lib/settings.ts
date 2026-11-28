@@ -223,6 +223,8 @@ export interface Settings {
   hotkeyMissFeedback: boolean;
   /** Insights daily word goal; 0 = off (default). Display only. */
   dailyWordGoal: number;
+  /** Insights personal-bests card; off by default. Display only. */
+  showPersonalBests: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
   soundCuesEnabled: boolean;
   /** Cue output volume as an integer percentage. */
@@ -513,6 +515,7 @@ export const DEFAULT_SETTINGS: Settings = {
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   dailyWordGoal: 0,
+  showPersonalBests: false,
   soundCuesEnabled: true,
   soundCueVolume: 45,
   meetingSoundCuesEnabled: false,
@@ -1100,6 +1103,8 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       }
 
       parsed.dailyWordGoal = sanitizeDailyWordGoal(parsed.dailyWordGoal);
+      // Only an explicit `true` opts in.
+      parsed.showPersonalBests = parsed.showPersonalBests === true;
 
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;

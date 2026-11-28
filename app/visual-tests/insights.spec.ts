@@ -138,3 +138,57 @@ for (const appearance of ['light', 'dark'] as const) {
     });
   }
 }
+
+for (const appearance of ['light', 'dark'] as const) {
+  for (const viewport of [{ width: 1100, height: 780 }, { width: 840, height: 620 }]) {
+    test(`Insights personal bests: ${appearance} ${viewport.width}`, async ({ page }) => {
+      await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
+      await page.setViewportSize(viewport);
+      await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
+      const view = page.locator('.insights-view');
+      const card = view.locator('.insights-bests');
+      await expect(card).toHaveAttribute('data-bests-state', 'off');
+      await expect(card.locator('dl')).toHaveCount(0);
+
+      await page.goto(`/visual-fixtures.html?state=insights-bests&appearance=${appearance}`);
+      await expect(card).toHaveAttribute('data-bests-state', 'on');
+      await card.scrollIntoViewIfNeeded();
+      await expect(card.locator('[data-best="words-day"] strong')).toHaveText('900 words');
+      await expect(card.locator('[data-best="dictations-day"] strong')).toHaveText('7 dictations');
+      await expect(card.locator('[data-best="streak"] strong')).toHaveText('7 days');
+      const layout = await view.evaluate(element => {
+        const rect = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+        const headline = rect('[data-stats="headline"]');
+        const bests = rect('.insights-bests');
+        const sections = rect('.usage-dashboard-sections');
+        const cells = Array.from(element.querySelectorAll('.insights-bests-grid > div')).map(cell => {
+          const box = cell.getBoundingClientRect();
+          const dt = cell.querySelector('dt')!.getBoundingClientRect();
+          const dd = cell.querySelector('dd')!.getBoundingClientRect();
+          return { left: box.left, top: box.top, dtRight: dt.right, ddLeft: dd.left, ddRight: dd.right, right: box.right };
+        });
+        return { headlineLeft: headline.left, headlineRight: headline.right, bestsLeft: bests.left, bestsRight: bests.right,
+          bestsTop: bests.top, sectionsBottom: sections.bottom, cells,
+          overflow: element.scrollWidth - element.clientWidth };
+      });
+      expect(layout.bestsLeft).toBeCloseTo(layout.headlineLeft, 1);
+      expect(layout.bestsRight).toBeCloseTo(layout.headlineRight, 1);
+      // Below the charts, so it never shifts the chart under the pointer.
+      expect(layout.sectionsBottom).toBeLessThanOrEqual(layout.bestsTop);
+      expect(layout.overflow).toBe(0);
+      // Two columns, two rows, and no label running into its value.
+      expect(layout.cells).toHaveLength(4);
+      expect(layout.cells[0].top).toBeCloseTo(layout.cells[1].top, 1);
+      expect(layout.cells[1].left).toBeGreaterThan(layout.cells[0].right);
+      expect(layout.cells[2].top).toBeGreaterThan(layout.cells[0].top);
+      for (const cell of layout.cells) {
+        expect(cell.dtRight).toBeLessThanOrEqual(cell.ddLeft);
+        expect(cell.ddRight).toBeLessThanOrEqual(cell.right + 0.5);
+      }
+
+      // Turning it off without a reload hides the figures again.
+      await card.getByRole('switch', { name: 'Show personal bests' }).click();
+      await expect(card).toHaveAttribute('data-bests-state', 'off');
+    });
+  }
+}
