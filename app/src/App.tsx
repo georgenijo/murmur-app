@@ -252,7 +252,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
+  const { historyEntries, addEntry, togglePinned, deleteEntries, clearHistory, countExpired: countExpiredTranscripts } = useHistoryManagement(settings.retainHistory, settings.historyRetentionDays);
   const {
     status, isCaptureBusy, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
@@ -870,6 +870,7 @@ function App() {
               initialized={initialized}
               status={status}
               onResetStats={handleResetStats}
+              countExpiredTranscripts={countExpiredTranscripts}
               onRerunSetup={rerunSetup}
               accessibilityGranted={accessibilityGranted}
               onCheckForUpdate={checkForUpdate}

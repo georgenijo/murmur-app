@@ -5,6 +5,7 @@ import {
   readLegacyModeState,
   stripLegacyModeKeys,
 } from './legacyModes';
+import { DEFAULT_HISTORY_RETENTION_DAYS, isHistoryRetentionDays, type HistoryRetentionDays } from './history';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -267,6 +268,8 @@ export interface Settings {
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
   retainHistory: boolean;
+  /** Opt-in automatic deletion of unpinned transcripts older than this many days; 0 = never. */
+  historyRetentionDays: HistoryRetentionDays;
   /** Keep meeting chunk WAV files after their durable transcript commits. */
   meetingRetainAudio: boolean;
   /** Opt in to local, session-scoped labels for remote meeting speakers. */
@@ -527,6 +530,7 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
@@ -1095,6 +1099,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
 
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
+      }
+      if (!isHistoryRetentionDays(parsed.historyRetentionDays)) {
+        parsed.historyRetentionDays = DEFAULT_SETTINGS.historyRetentionDays;
       }
       if (typeof parsed.meetingRetainAudio !== 'boolean') {
         parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;

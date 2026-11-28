@@ -193,6 +193,51 @@ export function toggleHistoryEntryPinned(entries: HistoryEntry[], target: Histor
   return { entries: trimHistory(next), changed: true, limitReached: false };
 }
 
+// ---------------------------------------------------------------------------
+// Automatic deletion (opt-in)
+// ---------------------------------------------------------------------------
+
+/** Days a transcript is kept before automatic deletion; 0 means never. */
+export type HistoryRetentionDays = 0 | 1 | 7 | 30 | 90;
+
+export const DEFAULT_HISTORY_RETENTION_DAYS: HistoryRetentionDays = 0;
+
+export const HISTORY_RETENTION_OPTIONS: { value: HistoryRetentionDays; label: string; age: string }[] = [
+  { value: 0, label: 'Never', age: '' },
+  { value: 1, label: 'After 1 day', age: '1 day' },
+  { value: 7, label: 'After 7 days', age: '7 days' },
+  { value: 30, label: 'After 30 days', age: '30 days' },
+  { value: 90, label: 'After 90 days', age: '90 days' },
+];
+
+export function isHistoryRetentionDays(value: unknown): value is HistoryRetentionDays {
+  return HISTORY_RETENTION_OPTIONS.some((option) => option.value === value);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether automatic deletion removes this entry: an unpinned entry whose
+ * timestamp is more than `days` full days before `now`. The window is a
+ * rolling age, not a calendar boundary. Pinned entries are always kept, and
+ * an entry with an unusable or future timestamp is kept rather than guessed at.
+ */
+export function isExpiredHistoryEntry(entry: HistoryEntry, days: HistoryRetentionDays, now: number): boolean {
+  if (days === 0 || entry.pinned === true) return false;
+  if (!Number.isFinite(entry.timestamp) || !Number.isFinite(now)) return false;
+  return entry.timestamp < now - days * DAY_MS;
+}
+
+export function countExpiredHistory(entries: readonly HistoryEntry[], days: HistoryRetentionDays, now: number): number {
+  return entries.reduce((count, entry) => count + (isExpiredHistoryEntry(entry, days, now) ? 1 : 0), 0);
+}
+
+/** Remove expired entries. Returns the same array when nothing expired. */
+export function pruneExpiredHistory(entries: HistoryEntry[], days: HistoryRetentionDays, now: number): HistoryEntry[] {
+  if (countExpiredHistory(entries, days, now) === 0) return entries;
+  return trimHistory(entries.filter((entry) => !isExpiredHistoryEntry(entry, days, now)));
+}
+
 export function clearHistory(): void {
   clearDurableBlob(HISTORY_STORE);
 }
