@@ -2,6 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { Copy, Star, Trash2 } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
+  combineHistoryText,
   entrySource,
   filterHistory,
   formatTimestamp,
@@ -125,6 +126,10 @@ function HistoryPanelComponent({
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [renderLimit, setRenderLimit] = useState(HISTORY_RENDER_BATCH);
+  // Selection mode: rows toggle membership instead of copying, and a bar
+  // copies the chosen takes as one block. Never on until the user asks.
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<HistoryEntry>>(() => new Set());
   const searchInputId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -183,6 +188,50 @@ function HistoryPanelComponent({
   useEffect(() => {
     setRenderLimit(HISTORY_RENDER_BATCH);
   }, [query, filter, dateFilter, pinnedFilter]);
+  // Only rows that are still shown count as selected, so a later filter or
+  // deletion can never copy text the user can no longer see. Oldest first for
+  // the combined block: `visible` is newest first with stored order reversed on
+  // ties. The Markdown export applies its own newest-first export order.
+  const selectedShown = useMemo(
+    () => visible.filter((entry) => selected.has(entry)).reverse(),
+    [visible, selected],
+  );
+  const selectedCount = selectedShown.length;
+  const allShownSelected = visible.length > 0 && selectedCount === visible.length;
+  const clearNotice = useCallback(() => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = null;
+    setNotice(null);
+  }, []);
+  // Entering or leaving the mode drops any pending notice so feedback from one
+  // place never surfaces in the other.
+  const enterSelection = useCallback(() => {
+    clearNotice();
+    setSelected(new Set());
+    setSelecting(true);
+  }, [clearNotice]);
+  const exitSelection = useCallback(() => {
+    clearNotice();
+    setSelecting(false);
+    setSelected(new Set());
+  }, [clearNotice]);
+  useEffect(() => {
+    if (entries.length === 0) {
+      setSelecting(false);
+      setSelected(new Set());
+    }
+  }, [entries.length]);
+  const toggleSelected = (entry: HistoryEntry) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(entry)) next.delete(entry);
+      else next.add(entry);
+      return next;
+    });
+  };
+  const toggleSelectAllShown = () => {
+    setSelected(allShownSelected ? new Set() : new Set(visible));
+  };
   // The newest entry in the whole history, not the first row on screen:
   // sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
@@ -220,7 +269,27 @@ function HistoryPanelComponent({
 
   const handleCardClick = (event: ReactMouseEvent<HTMLElement>, entry: HistoryEntry) => {
     if (event.target !== event.currentTarget && (event.target as HTMLElement).closest('button, a, input, select, textarea')) return;
+    if (selecting) {
+      toggleSelected(entry);
+      return;
+    }
     void handleCopy(entry);
+  };
+
+  const handleCopySelected = async (format: 'text' | 'markdown') => {
+    if (selectedCount === 0) return;
+    const count = selectedCount;
+    const noun = count === 1 ? 'transcript' : 'transcripts';
+    try {
+      await navigator.clipboard.writeText(format === 'text'
+        ? combineHistoryText(selectedShown)
+        : formatHistoryExport(selectedShown, 'markdown', new Date()));
+      showNotice(format === 'text'
+        ? `Copied ${count} ${noun} as one block.`
+        : `Copied ${count} ${noun} as Markdown.`);
+    } catch {
+      showNotice('Could not copy to the clipboard.');
+    }
   };
 
   const handleCopyExport = async (format: HistoryExportFormat) => {
@@ -291,6 +360,15 @@ function HistoryPanelComponent({
                 }}
               >
                 Transcribe audio or video file…
+              </AnimatedDropdownItem>
+              <AnimatedDropdownItem
+                onClick={() => {
+                  setExportOpen(false);
+                  if (selecting) exitSelection();
+                  else enterSelection();
+                }}
+              >
+                {selecting ? 'Done selecting' : 'Select transcripts to combine…'}
               </AnimatedDropdownItem>
               <AnimatedDropdownSeparator />
               <p className="ui-menu-label">
@@ -414,7 +492,7 @@ function HistoryPanelComponent({
           </p>
         )}
 
-        {notice && (
+        {notice && !selecting && (
           <p role="status" className="mx-3.5 mb-1.5 rounded-lg bg-surface-container px-2.5 py-1.5 text-[11px] text-on-surface-variant">{notice}</p>
         )}
       </div>
@@ -443,17 +521,38 @@ function HistoryPanelComponent({
                 data-day-start={showDayLabel}
                 data-day-end={endsDay}
                 data-newest={isNewest}
+                data-selecting={selecting || undefined}
+                data-selected={selecting ? selected.has(entry) : undefined}
                 role="group"
                 tabIndex={0}
-                aria-label={`Transcription from ${formatTimestamp(entry.timestamp)}. Press Enter or Space to copy.`}
+                aria-label={selecting
+                  ? `Transcription from ${formatTimestamp(entry.timestamp)}, ${selected.has(entry) ? 'selected' : 'not selected'}. Press Space to ${selected.has(entry) ? 'deselect' : 'select'}.`
+                  : `Transcription from ${formatTimestamp(entry.timestamp)}. Press Enter or Space to copy.`}
                 onClick={(event) => handleCardClick(event, entry)}
                 onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget || event.key !== ' ') return;
+                  if (event.target !== event.currentTarget) return;
+                  if (selecting && event.key === 'Escape') {
+                    event.preventDefault();
+                    exitSelection();
+                    return;
+                  }
+                  if (event.key !== ' ' && !(selecting && event.key === 'Enter')) return;
                   event.preventDefault();
-                  void handleCopy(entry);
+                  if (selecting) toggleSelected(entry);
+                  else void handleCopy(entry);
                 }}
                 className="transcript-card group"
               >
+              {selecting && (
+                <input
+                  type="checkbox"
+                  className="transcript-select"
+                  checked={selected.has(entry)}
+                  onChange={() => toggleSelected(entry)}
+                  onClick={(event) => event.stopPropagation()}
+                  aria-label={`Select the transcript from ${formatTimestamp(entry.timestamp)}`}
+                />
+              )}
               <time className="transcript-time" dateTime={new Date(entry.timestamp).toISOString()}>
                 {formatTimestamp(entry.timestamp)}
               </time>
@@ -488,7 +587,7 @@ function HistoryPanelComponent({
               <span className="transcript-copy-feedback ui-visually-hidden" role="status" aria-live="polite">
                 {copiedId === entry.id ? 'Copied' : ''}
               </span>
-              <div className="transcript-actions" onClick={(event) => event.stopPropagation()}>
+              <div className="transcript-actions" hidden={selecting} onClick={(event) => event.stopPropagation()}>
                 <SmartOverflow
                   ariaLabel={`Actions for the transcript from ${formatTimestamp(entry.timestamp)}`}
                   moreLabel="More transcript actions"
@@ -551,6 +650,41 @@ function HistoryPanelComponent({
           >
             Show {Math.min(HISTORY_RENDER_BATCH, visible.length - rendered.length)} older
           </button>
+        )}
+
+        {selecting && entries.length > 0 && (
+          <div
+            role="group"
+            aria-label="Selected transcripts"
+            className="history-selection-bar"
+            data-testid="history-selection-bar"
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return;
+              event.preventDefault();
+              exitSelection();
+            }}
+          >
+            {/* While selecting, copy feedback replaces the count here because
+                the toolbar notice can be scrolled out of view. */}
+            <span className="history-selection-count" role="status" aria-live="polite">
+              {notice ?? (selectedCount === 0 ? 'Select transcripts to combine' : `${selectedCount} selected`)}
+            </span>
+            <button type="button" onClick={toggleSelectAllShown} disabled={visible.length === 0}>
+              {allShownSelected ? 'Select none' : `Select all ${visible.length} shown`}
+            </button>
+            <button
+              type="button"
+              className="history-selection-primary"
+              disabled={selectedCount === 0}
+              onClick={() => void handleCopySelected('text')}
+            >
+              Copy combined
+            </button>
+            <button type="button" disabled={selectedCount === 0} onClick={() => void handleCopySelected('markdown')}>
+              Copy as Markdown
+            </button>
+            <button type="button" onClick={exitSelection}>Done</button>
+          </div>
         )}
       </div>
 

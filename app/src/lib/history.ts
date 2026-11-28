@@ -177,6 +177,26 @@ export function removeHistoryEntries(
   return trimHistory(entries.filter((entry) => !removed.has(entry)));
 }
 
+/**
+ * Join the selected transcripts into one plain-text block, oldest first so a
+ * thought dictated in several takes reads in the order it was spoken. Each
+ * entry's stored text is kept as is apart from surrounding whitespace; entries
+ * that are blank after trimming are skipped, and takes are separated by one
+ * blank line. Same-timestamp entries keep their stored order.
+ */
+export function combineHistoryText(
+  entries: readonly HistoryEntry[],
+  storedOrder: readonly HistoryEntry[] = entries,
+): string {
+  const position = new Map(storedOrder.map((entry, index) => [entry, index] as const));
+  return entries
+    .map((entry, index) => ({ entry, index: position.get(entry) ?? index }))
+    .sort((a, b) => a.entry.timestamp - b.entry.timestamp || a.index - b.index)
+    .map(({ entry }) => entry.text.trim())
+    .filter((text) => text !== '')
+    .join('\n\n');
+}
+
 export interface TogglePinnedResult {
   entries: HistoryEntry[];
   changed: boolean;
