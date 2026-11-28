@@ -5,6 +5,7 @@ import {
   readLegacyModeState,
   stripLegacyModeKeys,
 } from './legacyModes';
+import { sanitizeDailyWordGoal } from './dailyGoal';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -219,6 +220,8 @@ export interface Settings {
   pasteLastShortcut: PasteLastShortcut | null;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
+  /** Insights daily word goal; 0 = off (default). Display only. */
+  dailyWordGoal: number;
   /** Play local output-only feedback for dictation lifecycle transitions. */
   soundCuesEnabled: boolean;
   /** Cue output volume as an integer percentage. */
@@ -502,6 +505,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pasteLastShortcut: null,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
+  dailyWordGoal: 0,
   soundCuesEnabled: true,
   soundCueVolume: 45,
   meetingSoundCuesEnabled: false,
@@ -1084,6 +1088,8 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
+
+      parsed.dailyWordGoal = sanitizeDailyWordGoal(parsed.dailyWordGoal);
 
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;

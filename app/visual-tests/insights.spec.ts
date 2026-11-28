@@ -92,3 +92,49 @@ for (const appearance of ['light', 'dark'] as const) {
     });
   }
 }
+
+for (const appearance of ['light', 'dark'] as const) {
+  for (const viewport of [{ width: 1100, height: 780 }, { width: 840, height: 620 }]) {
+    test(`Insights daily word goal: ${appearance} ${viewport.width}`, async ({ page }) => {
+      await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
+      await page.setViewportSize(viewport);
+      await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
+      const view = page.locator('.insights-view');
+      const card = view.locator('.insights-goal');
+      await expect(card).toHaveAttribute('data-goal-state', 'off');
+      await expect(card.getByRole('progressbar')).toHaveCount(0);
+
+      await page.goto(`/visual-fixtures.html?state=insights-goal&appearance=${appearance}`);
+      const bar = card.getByRole('progressbar');
+      await expect(bar).toHaveAttribute('aria-valuetext', '760 of 1,000 words today');
+      await expect(card.locator('.insights-goal-today')).toHaveText('760 of 1,000 words today · 240 to go');
+      const layout = await view.evaluate(element => {
+        const headline = element.querySelector('[data-stats="headline"]')!.getBoundingClientRect();
+        const goal = element.querySelector('.insights-goal')!.getBoundingClientRect();
+        const fill = element.querySelector('.insights-goal-bar > span')!.getBoundingClientRect();
+        const track = element.querySelector('.insights-goal-bar')!.getBoundingClientRect();
+        const sections = element.querySelector('.usage-dashboard-sections')!.getBoundingClientRect();
+        return { headlineLeft: headline.left, headlineRight: headline.right, goalLeft: goal.left, goalRight: goal.right,
+          goalBottom: goal.bottom, headlineBottom: headline.bottom, sectionsTop: sections.top,
+          titleRight: element.querySelector('.insights-goal-header h2')!.getBoundingClientRect().right,
+          pickerLeft: element.querySelector('.insights-goal-header .ui-select')!.getBoundingClientRect().left,
+          pickerWidth: element.querySelector('.insights-goal-header .ui-select')!.getBoundingClientRect().width,
+          fillRatio: fill.width / track.width, overflow: element.scrollWidth - element.clientWidth };
+      });
+      expect(layout.goalLeft).toBeCloseTo(layout.headlineLeft, 1);
+      expect(layout.goalRight).toBeCloseTo(layout.headlineRight, 1);
+      expect(layout.goalBottom).toBeLessThanOrEqual(layout.sectionsTop);
+      expect(layout.headlineBottom).toBeLessThanOrEqual(layout.goalBottom);
+      expect(layout.fillRatio).toBeCloseTo(0.76, 2);
+      expect(layout.overflow).toBe(0);
+      expect(layout.titleRight).toBeLessThanOrEqual(layout.pickerLeft);
+      expect(layout.pickerWidth).toBe(148);
+
+      // Lowering the goal below today's words marks it met without a reload.
+      await card.getByRole('combobox', { name: 'Daily word goal' }).click();
+      await page.getByRole('option', { name: '500 words' }).click();
+      await expect(card).toHaveAttribute('data-goal-state', 'met');
+      await expect(card.locator('.insights-goal-today')).toHaveText('Goal met · 760 words today');
+    });
+  }
+}

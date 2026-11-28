@@ -179,7 +179,8 @@ only between rows in the same day. Time uses right-aligned tabular sans;
 Copy and More occupy a reserved column and appear on hover or keyboard focus.
 The Home month summary and full Insights destination use only
 durable local statistics. [Insights](features/insights.md) shows four summary
-figures, a Words/Speed daily chart and an eight-week activity calendar. Nonzero
+figures, an opt-in daily word goal (off by default), a Words/Speed daily chart
+and an eight-week activity calendar. Nonzero
 dictation time, corrections taught and this month's completed meetings live
 under More statistics. Estimated typing time saved compares typing at 40 words
 per minute with dictation time.
