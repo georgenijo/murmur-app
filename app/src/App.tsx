@@ -822,6 +822,8 @@ function App() {
               ) : (
                 <InsightsView
                   statsVersion={combinedStatsVersion}
+                  dailyWordGoal={settings.dailyWordGoal}
+                  onDailyWordGoalChange={(dailyWordGoal) => updateSettings({ dailyWordGoal })}
                   onBackToHome={backToHome}
                 />
               )}

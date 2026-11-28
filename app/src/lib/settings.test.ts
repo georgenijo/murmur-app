@@ -569,6 +569,17 @@ describe('loadSettings', () => {
     expect(settings.hotkeyMissFeedback).toBe(false);
   });
 
+  it('keeps the daily word goal off by default and sanitizes stored goals', () => {
+    expect(DEFAULT_SETTINGS.dailyWordGoal).toBe(0);
+    for (const [stored, expected] of [[500, 500], [749.6, 750], [-5, 0], ['500', 0], [null, 0], [1e9, 100_000]] as const) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, dailyWordGoal: stored }));
+      expect(loadSettings().dailyWordGoal).toBe(expected);
+    }
+    const { dailyWordGoal: _omitted, ...legacy } = DEFAULT_SETTINGS;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().dailyWordGoal).toBe(0);
+  });
+
   it('validates the opt-in hotkey timing feedback setting', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

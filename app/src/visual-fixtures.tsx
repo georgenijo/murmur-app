@@ -582,6 +582,7 @@ const fixtureSettings = {
     ? ['fixture-built-in']
     : [],
   pasteLastShortcut: fixturePasteLastShortcut,
+  dailyWordGoal: requestedState === 'insights-goal' ? 1000 : requestedState === 'insights-goal-met' ? 500 : 0,
   vocabularyEntries: [{
     id: 'fixture-term',
     written: 'Murmur',
@@ -787,6 +788,8 @@ function VisualFixture() {
                 initialMetric={['insights-speed', 'insights-gap', 'insights-no-speed'].includes(requestedState) ? 'wpm' : 'words'}
                 defaultMoreOpen={requestedState === 'insights-more'}
                 statsVersion={0}
+                dailyWordGoal={settings.dailyWordGoal}
+                onDailyWordGoalChange={(dailyWordGoal) => setSettings((current) => ({ ...current, dailyWordGoal }))}
                 onBackToHome={backToHome}
               />
             ) : destination === 'meetings' ? (
