@@ -92,6 +92,7 @@ interface Settings {
   autoPasteDelayMs: number;
   pasteLastShortcut: PasteLastShortcut | null;
   retainHistory: boolean;
+  historyShowRecognition: boolean;        // display-only History comparison
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
@@ -171,6 +172,7 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  historyShowRecognition: false,
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,

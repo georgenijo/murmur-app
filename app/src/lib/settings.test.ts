@@ -127,6 +127,19 @@ describe('loadSettings', () => {
     expect(settings.meetingSuggestionsEnabled).toBe(false);
   });
 
+  it('keeps the History comparison off by default and persists the opt-in', () => {
+    expect(DEFAULT_SETTINGS.historyShowRecognition).toBe(false);
+    saveSettings({ ...DEFAULT_SETTINGS, historyShowRecognition: true });
+    expect(loadSettings().historyShowRecognition).toBe(true);
+
+    const { historyShowRecognition: _omitted, ...older } = DEFAULT_SETTINGS;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(older));
+    expect(loadSettings().historyShowRecognition).toBe(false);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, historyShowRecognition: 'yes' }));
+    expect(loadSettings().historyShowRecognition).toBe(false);
+  });
+
   it('persists the explicit meeting-suggestion opt-in and rejects malformed consent', () => {
     saveSettings({ ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true });
     expect(loadSettings().meetingSuggestionsEnabled).toBe(true);
