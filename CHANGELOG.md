@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-11-28
+
+<!-- Release notes generated using configuration in .github/release.yml at 638a26f9e24de55db23b07f49e1881abb6142c14 -->
+
+## What's Changed
+### Other Changes
+* perf(dictation): gate toggle-stop previews and eliminate zero-offset duplicate decode by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1246
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.69.0...v0.70.0
+
 ## [0.69.0] - 2026-11-28
 
 <!-- Release notes generated using configuration in .github/release.yml at d3d97bb4b983c628b2f9a53da22fd24e207736bf -->
